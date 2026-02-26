@@ -1,0 +1,18 @@
+[collect_teacher]
+env_id = "CartPole-v1"
+episodes = 200
+max_steps_per_episode = 1000
+seed = 1
+output_npz = "reinforce/outputs/teacher_cartpole.npz"
+policy = "random"
+# AHC061 の BC 教師収集では "ahc061_main_greedy" 推奨
+# model_stochastic / model_greedy を使う場合のみ指定
+model_path = ""
+flatten_obs = true
+capture_video = false
+vector_env = "sync"
+env_kwargs_json = "{}"
+log_interval_episodes = 50
+run_root = ""
+run_name = ""
+prefer_run_layout = true

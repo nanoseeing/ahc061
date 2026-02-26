@@ -1,0 +1,14 @@
+[model]
+type = "TeacherP0V1BoardAgent"
+
+[model.kwargs]
+board_channels = 88
+board_size = 10
+global_dim = 0
+width = 64
+num_blocks = 4
+global_hidden_dim = 64
+value_hidden_dims = [128, 64]
+activation = "tanh"
+use_global_film = false
+use_global_policy_bias = false

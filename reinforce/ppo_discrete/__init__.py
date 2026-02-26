@@ -1,0 +1,37 @@
+"""Discrete-board PPO framework scaffold.
+
+This package defines reusable modules for building a contest-specific PPO trainer.
+It intentionally mirrors CleanRL's PPO decomposition while separating environment-
+specific logic from generic algorithm code.
+"""
+
+from .algorithms.ppo.config import PPOConfig
+from .algorithms.ppo.rollout_buffer import RolloutBuffer
+from .algorithms.ppo.trainer import PPOTrainer
+from .env.factory import EnvSpec, infer_env_spec, make_single_env, make_vector_env
+from .models.student_m import StudentMBoardAgent, TeacherP0V1BoardAgent
+from .models.discrete_board import DiscreteBoardAgent
+from .models import build_agent, list_registered_models, normalize_model_config
+from .runtime.experiment import RunLayout, create_run_layout, make_run_name, update_manifest
+from .runtime.tracking import MetricTracker
+
+__all__ = [
+    "PPOConfig",
+    "EnvSpec",
+    "make_single_env",
+    "make_vector_env",
+    "infer_env_spec",
+    "RunLayout",
+    "make_run_name",
+    "create_run_layout",
+    "update_manifest",
+    "DiscreteBoardAgent",
+    "StudentMBoardAgent",
+    "TeacherP0V1BoardAgent",
+    "build_agent",
+    "normalize_model_config",
+    "list_registered_models",
+    "RolloutBuffer",
+    "MetricTracker",
+    "PPOTrainer",
+]

@@ -1,0 +1,17 @@
+[train_bc]
+dataset_npz = "reinforce/outputs/teacher_cartpole.npz"
+output_model = "reinforce/outputs/bc_cartpole.pt"
+metrics_jsonl = ""
+seed = 1
+epochs = 20
+batch_size = 2048
+learning_rate = 0.001
+weight_decay = 0.0
+valid_ratio = 0.1
+model_class = "" # e.g. "DiscreteBoardAgent" or "pkg.mod:Class"
+model_config_file = "" # use model dict (type + kwargs)
+model_config_json = "" # JSON object; deep-merged over model_config_file
+device = "auto"
+run_root = ""
+run_name = ""
+prefer_run_layout = true

@@ -1,0 +1,63 @@
+[train_ppo]
+env_id = "CartPole-v1"
+env_kwargs_json = "{}"
+run_dir = "reinforce/outputs/ppo_runs"
+run_name = ""
+resume = false
+resume_from = ""
+seed = 1
+device = "auto"
+
+# PPO core
+total_timesteps = 500000
+num_envs = 8
+num_steps = 128
+learning_rate = 0.00025
+learning_rate_schedule = "linear(2.5e-4,0.0)"         # e.g. "constant(2.5e-4)" / "piecewise(0:3e-4,1:1e-5)"
+gamma = 0.99
+gae_lambda = 0.95
+num_minibatches = 4
+update_epochs = 4
+norm_adv = true
+clip_coef = 0.2
+clip_coef_schedule = "constant" # constant|linear|cosine
+clip_coef_final = 0.2           # used when schedule != constant
+clip_coef_schedule_expr = ""    # optional; overrides clip_coef_schedule/final
+clip_range_vf = 0.2             # optional; if omitted, value clipping is disabled (SB3-like)
+clip_range_vf_schedule = "constant" # constant|linear|cosine
+clip_range_vf_final = 0.2           # used when schedule != constant
+clip_range_vf_schedule_expr = ""    # optional; overrides clip_range_vf_schedule/final
+clip_vloss = true
+ent_coef = 0.01
+ent_coef_schedule = "constant" # constant|linear|cosine
+ent_coef_final = 0.01          # used when schedule != constant
+ent_coef_schedule_expr = ""    # optional; overrides ent_coef_schedule/final
+vf_coef = 0.5
+max_grad_norm = 0.5
+target_kl = 0.01
+
+# Network
+model_class = "" # e.g. "DiscreteBoardAgent" or "pkg.mod:Class"
+model_config_file = "" # use model dict (type + kwargs)
+model_config_json = "" # JSON object; deep-merged over model_config_file
+flatten_obs = true
+capture_video = false
+vector_env = "sync"
+use_action_mask = false
+save_interval = 10
+checkpoint_interval_steps = 0
+eval_interval_steps = 0
+eval_episodes = 100
+eval_seed_start = 2000000
+eval_fixed_seeds = true
+eval_deterministic = true
+eval_at_start = true
+eval_vector_env = "sync"
+eval_env_kwargs_json = ""
+log_interval_iters = 1
+
+# Tracking
+tensorboard = true
+mlflow_tracking_uri = ""
+mlflow_experiment = "ppo_discrete"
+mlflow_run_name = ""

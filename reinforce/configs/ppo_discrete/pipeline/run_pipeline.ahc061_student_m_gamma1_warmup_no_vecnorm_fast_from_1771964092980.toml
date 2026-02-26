@@ -1,0 +1,103 @@
+[run_pipeline]
+env_id = "AHC061Local-v0"
+env_kwargs_json = '{"bayes_num_particles":128,"bayes_backend":"cpp","case_select_mode":"sequential","cache_cases":false}'
+run_root = "reinforce/outputs/ahc061_student_m_gamma1_warmup_no_vecnorm_fast_from_1771964092980"
+run_name = "student_m_gamma1_warmup_no_vecnorm_fast_seed1"
+resume = false
+seed = 1
+
+# collect_teacher (skip)
+collect_episodes = 0
+collect_policy = "ahc061_main_greedy"
+collect_workers = 1
+collect_vector_env = "sync"
+skip_collect = true
+
+# train_bc (skip)
+bc_epochs = 1
+skip_bc = true
+
+# train_ppo (stage-1 warmup from strong checkpoint, no vecnorm, throughput-priority)
+ppo_total_timesteps = 1000000
+ppo_num_envs = 32
+ppo_num_steps = 128
+ppo_learning_rate = 0.000005
+ppo_learning_rate_schedule = "constant(5.0e-6)"
+ppo_gamma = 1.0
+ppo_gae_lambda = 0.98
+ppo_num_minibatches = 16
+ppo_update_epochs = 3
+ppo_norm_adv = true
+ppo_clip_coef = 0.10
+ppo_clip_coef_schedule = "linear"
+ppo_clip_coef_final = 0.08
+ppo_clip_coef_schedule_expr = ""
+ppo_clip_range_vf = 0.10
+ppo_clip_range_vf_schedule = "linear"
+ppo_clip_range_vf_final = 0.08
+ppo_clip_range_vf_schedule_expr = ""
+ppo_clip_vloss = true
+ppo_ent_coef = 0.003
+ppo_ent_coef_schedule = "linear"
+ppo_ent_coef_final = 0.001
+ppo_ent_coef_schedule_expr = ""
+ppo_vf_coef = 0.5
+ppo_max_grad_norm = 0.5
+ppo_target_kl = 0.008
+ppo_checkpoint_interval_steps = 250000
+ppo_vector_env = "async"
+ppo_eval_interval_steps = 500000
+ppo_eval_episodes = 1000
+ppo_eval_seed_start = 2000000
+ppo_eval_fixed_seeds = true
+ppo_eval_deterministic = true
+ppo_eval_at_start = true
+ppo_eval_vector_env = "sync"
+ppo_eval_env_kwargs_json = ""
+ppo_vecnorm = false
+ppo_vecnorm_norm_obs = true
+ppo_vecnorm_norm_reward = false
+ppo_vecnorm_eval_norm_reward = false
+ppo_vecnorm_clip_obs = 10.0
+ppo_vecnorm_clip_reward = 10.0
+ppo_vecnorm_epsilon = 1e-8
+ppo_vecnorm_gamma = 1.0
+ppo_log_interval_iters = 100
+use_action_mask = true
+model_class = ""
+model_config_file = "reinforce/configs/ppo_discrete/model/model.ahc061_student_m.toml"
+model_config_json = ""
+ppo_init_model = "reinforce/outputs/ahc061_student_m_gamma1_from_tune/AHC061Local-v0_pipeline__seed1__1771964092980__p732418/models/ppo_final.pt"
+skip_ppo = false
+
+# evaluate_policy
+skip_last_eval = false
+eval_episodes = 1000
+eval_env_kwargs_json = ""
+eval_casegen_num_cases = 1000
+eval_casegen_seed_mode = "sequential"
+eval_casegen_seed_start = 2000000
+eval_casegen_rng_seed = 1
+eval_casegen_unique_random = true
+eval_casegen_fixed_m = 0
+eval_casegen_fixed_u = 0
+eval_casegen_tools_dir = "tools"
+
+
+# train/eval seed bands
+casegen_enable = true
+casegen_num_cases = 20000
+casegen_seed_mode = "sequential"
+casegen_seed_start = 1200000
+casegen_rng_seed = 1
+casegen_unique_random = false
+casegen_fixed_m = 0
+casegen_fixed_u = 0
+casegen_tools_dir = "tools"
+
+
+# tracking
+tensorboard = true
+mlflow_tracking_uri = "sqlite:///reinforce/outputs/mlflow.db"
+mlflow_experiment = "ahc061_ppo"
+mlflow_run_name = "student_m_gamma1_warmup_no_vecnorm_fast_from_1771964092980"
