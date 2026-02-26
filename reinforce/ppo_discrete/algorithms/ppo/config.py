@@ -39,6 +39,8 @@ class PPOConfig:
     ent_coef_final: float | None = None
     ent_coef_schedule_expr: str = ""
     vf_coef: float = 0.5
+    aux_opp_param_loss_coef: float = 0.0
+    aux_opp_param_use_valid_mask: bool = True
     max_grad_norm: float = 0.5
     target_kl: float | None = None
     clip_coef_schedule: str = "constant"

@@ -17,6 +17,7 @@ from ..runtime.checkpoint import save_agent_checkpoint
 from ..runtime.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
 from ..runtime.log_utils import get_logger
 from ..runtime.metrics import summarize
+from ..runtime.teacher_dataset import DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_VALID
 from ..runtime.tracking import MetricTracker
 
 logger = get_logger("train_bc")
@@ -48,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model-config-file", type=Path, default=None, help="optional model config (json/toml/yaml)")
     p.add_argument("--model-config-json", type=str, default="", help="optional model config JSON override")
     p.add_argument("--device", type=str, default="auto")
+    p.add_argument("--aux-opp-param-loss-coef", type=float, default=0.0)
+    p.add_argument("--aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
 
     p.add_argument("--run-root", type=Path, default=None, help="optional run root for managed outputs")
     p.add_argument("--run-name", type=str, default="")
@@ -165,6 +168,56 @@ def _count_dataset_rows(dataset_paths: list[Path]) -> tuple[int, list[int], tupl
     return int(total), sizes, obs_shape_ref, int(action_dim_ref)
 
 
+def _inspect_native_aux_keys(dataset_paths: list[Path]) -> dict[str, Any]:
+    has_aux: bool | None = None
+    opp_param_shape: tuple[int, ...] | None = None
+    opp_valid_shape: tuple[int, ...] | None = None
+    for p in dataset_paths:
+        with np.load(p) as data:
+            present = (DATASET_KEY_OPP_PARAM_TRUE in data.files) and (DATASET_KEY_OPP_VALID in data.files)
+            if has_aux is None:
+                has_aux = bool(present)
+            elif bool(has_aux) != bool(present):
+                raise ValueError(f"native aux key presence mismatch across dataset shards: {p}")
+            if not present:
+                continue
+            ps = tuple(int(x) for x in np.asarray(data[DATASET_KEY_OPP_PARAM_TRUE]).shape[1:])
+            vs = tuple(int(x) for x in np.asarray(data[DATASET_KEY_OPP_VALID]).shape[1:])
+            if opp_param_shape is None:
+                opp_param_shape = ps
+                opp_valid_shape = vs
+            else:
+                if opp_param_shape != ps:
+                    raise ValueError(f"{DATASET_KEY_OPP_PARAM_TRUE} shape mismatch across shards: {p}")
+                if opp_valid_shape != vs:
+                    raise ValueError(f"{DATASET_KEY_OPP_VALID} shape mismatch across shards: {p}")
+    if has_aux is None:
+        has_aux = False
+    return {
+        "available": bool(has_aux),
+        "keys": ([DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_VALID] if bool(has_aux) else []),
+        "opp_param_true_shape": (list(opp_param_shape) if opp_param_shape is not None else []),
+        "opp_valid_shape": (list(opp_valid_shape) if opp_valid_shape is not None else []),
+    }
+
+
+def _aux_opp_param_mse(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid: torch.Tensor,
+    *,
+    use_valid_mask: bool,
+) -> torch.Tensor:
+    if tuple(pred.shape) != tuple(target.shape):
+        raise ValueError(f"aux prediction/target shape mismatch: pred={tuple(pred.shape)}, target={tuple(target.shape)}")
+    if bool(use_valid_mask):
+        w = valid.to(dtype=pred.dtype).unsqueeze(-1)
+        se = (pred - target).pow(2) * w
+        denom = torch.clamp(w.sum() * float(pred.shape[-1]), min=1.0)
+        return se.sum() / denom
+    return F.mse_loss(pred, target)
+
+
 def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
     if args.run_root is None:
         return None, None
@@ -210,6 +263,7 @@ def main() -> int:
 
         dataset_paths = _resolve_dataset_paths(args)
         total_n, shard_sizes, obs_shape, action_dim = _count_dataset_rows(dataset_paths)
+        native_aux_info = _inspect_native_aux_keys(dataset_paths)
         if total_n < 2:
             raise ValueError(f"dataset is too small: transitions={total_n}")
 
@@ -235,15 +289,36 @@ def main() -> int:
             int(train_count),
             int(n_valid),
         )
+        if bool(native_aux_info["available"]):
+            logger.info(
+                "dataset contains optional native aux keys (%s), but train_bc currently ignores them",
+                ",".join(str(k) for k in native_aux_info["keys"]),
+            )
 
         device = _choose_device(args.device)
         model_config = _resolve_model_config(args)
+        aux_coef = float(max(0.0, float(args.aux_opp_param_loss_coef)))
+        aux_active = bool(aux_coef > 0.0)
+        if aux_active and not bool(native_aux_info["available"]):
+            raise ValueError(
+                "aux_opp_param_loss_coef > 0 requires dataset keys "
+                f"{DATASET_KEY_OPP_PARAM_TRUE}/{DATASET_KEY_OPP_VALID}"
+            )
+        if aux_active:
+            model_config = dict(model_config)
+            kwargs = dict(model_config.get("kwargs") or {})
+            kwargs.setdefault("aux_opp_param_head", True)
+            model_config["kwargs"] = kwargs
         agent, model_config = build_agent(
             obs_shape=obs_shape,
             action_dim=action_dim,
             model_config=model_config,
         )
         agent = agent.to(device)
+        if aux_active and not callable(getattr(agent, "get_aux_opp_param", None)):
+            raise ValueError(
+                "aux_opp_param_loss_coef > 0 requires model to implement get_aux_opp_param(obs) -> [B,7,5]"
+            )
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
         best_valid_loss = float("inf")
@@ -251,12 +326,15 @@ def main() -> int:
         train_loss_hist: list[float] = []
         valid_loss_hist: list[float] = []
         valid_acc_hist: list[float] = []
+        train_aux_loss_hist: list[float] = []
+        valid_aux_loss_hist: list[float] = []
         metrics_path = args.metrics_jsonl or args.output_model.with_suffix(args.output_model.suffix + ".metrics.jsonl")
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
         for epoch in range(1, args.epochs + 1):
             agent.train()
             train_loss_sum = 0.0
+            train_aux_loss_sum = 0.0
             train_seen = 0
 
             shard_order = np.arange(len(dataset_paths), dtype=np.int32)
@@ -270,6 +348,8 @@ def main() -> int:
                 with np.load(shard_path) as data:
                     obs = np.asarray(data["obs"], dtype=np.float32)
                     act = np.asarray(data["action"], dtype=np.int64)
+                    opp_param = np.asarray(data[DATASET_KEY_OPP_PARAM_TRUE], dtype=np.float32) if aux_active else None
+                    opp_valid = np.asarray(data[DATASET_KEY_OPP_VALID], dtype=np.uint8) if aux_active else None
                     local_valid_mask = valid_mask[off : off + shard_n]
                     local_train_idx = np.flatnonzero(~local_valid_mask)
                     if local_train_idx.size <= 0:
@@ -279,16 +359,35 @@ def main() -> int:
                         xb = torch.as_tensor(obs[b], dtype=torch.float32, device=device)
                         yb = torch.as_tensor(act[b], dtype=torch.long, device=device)
                         logits = agent.get_logits(xb)
-                        loss = F.cross_entropy(logits, yb)
+                        bc_loss = F.cross_entropy(logits, yb)
+                        loss = bc_loss
+                        aux_loss_v = float("nan")
+                        if aux_active:
+                            assert opp_param is not None
+                            assert opp_valid is not None
+                            tb = torch.as_tensor(opp_param[b], dtype=torch.float32, device=device)
+                            vb = torch.as_tensor(opp_valid[b], dtype=torch.uint8, device=device)
+                            pred_aux = agent.get_aux_opp_param(xb)
+                            aux_loss = _aux_opp_param_mse(
+                                pred_aux,
+                                tb,
+                                vb,
+                                use_valid_mask=bool(args.aux_opp_param_use_valid_mask),
+                            )
+                            aux_loss_v = float(aux_loss.item())
+                            loss = loss + (aux_coef * aux_loss)
                         optimizer.zero_grad()
                         loss.backward()
                         optimizer.step()
                         bs = int(yb.numel())
-                        train_loss_sum += float(loss.item()) * float(bs)
+                        train_loss_sum += float(bc_loss.item()) * float(bs)
+                        if np.isfinite(aux_loss_v):
+                            train_aux_loss_sum += float(aux_loss_v) * float(bs)
                         train_seen += bs
 
             agent.eval()
             valid_loss_sum = 0.0
+            valid_aux_loss_sum = 0.0
             valid_correct = 0
             valid_seen = 0
             with torch.no_grad():
@@ -303,11 +402,26 @@ def main() -> int:
                     with np.load(shard_path) as data:
                         obs = np.asarray(data["obs"], dtype=np.float32)
                         act = np.asarray(data["action"], dtype=np.int64)
+                        opp_param = np.asarray(data[DATASET_KEY_OPP_PARAM_TRUE], dtype=np.float32) if aux_active else None
+                        opp_valid = np.asarray(data[DATASET_KEY_OPP_VALID], dtype=np.uint8) if aux_active else None
                         for b in _batch_iter(local_valid_idx, args.batch_size):
                             xb = torch.as_tensor(obs[b], dtype=torch.float32, device=device)
                             yb = torch.as_tensor(act[b], dtype=torch.long, device=device)
                             logits_val = agent.get_logits(xb)
                             valid_loss_sum += float(F.cross_entropy(logits_val, yb, reduction="sum").item())
+                            if aux_active:
+                                assert opp_param is not None
+                                assert opp_valid is not None
+                                tb = torch.as_tensor(opp_param[b], dtype=torch.float32, device=device)
+                                vb = torch.as_tensor(opp_valid[b], dtype=torch.uint8, device=device)
+                                pred_aux = agent.get_aux_opp_param(xb)
+                                aux_val = _aux_opp_param_mse(
+                                    pred_aux,
+                                    tb,
+                                    vb,
+                                    use_valid_mask=bool(args.aux_opp_param_use_valid_mask),
+                                )
+                                valid_aux_loss_sum += float(aux_val.item()) * float(yb.numel())
                             pred = torch.argmax(logits_val, dim=-1)
                             valid_correct += int((pred == yb).sum().item())
                             valid_seen += int(yb.numel())
@@ -315,9 +429,14 @@ def main() -> int:
             mean_train_loss = float(train_loss_sum / train_seen) if train_seen > 0 else float("nan")
             valid_loss = float(valid_loss_sum / valid_seen) if valid_seen > 0 else float("nan")
             valid_acc = float(valid_correct / valid_seen) if valid_seen > 0 else float("nan")
+            train_aux_loss = float(train_aux_loss_sum / train_seen) if (aux_active and train_seen > 0) else float("nan")
+            valid_aux_loss = float(valid_aux_loss_sum / valid_seen) if (aux_active and valid_seen > 0) else float("nan")
             train_loss_hist.append(mean_train_loss)
             valid_loss_hist.append(valid_loss)
             valid_acc_hist.append(valid_acc)
+            if aux_active:
+                train_aux_loss_hist.append(train_aux_loss)
+                valid_aux_loss_hist.append(valid_aux_loss)
 
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
@@ -328,6 +447,8 @@ def main() -> int:
                 "train_loss": mean_train_loss,
                 "valid_loss": valid_loss,
                 "valid_acc": valid_acc,
+                "train_aux_opp_param_loss": (train_aux_loss if aux_active else None),
+                "valid_aux_opp_param_loss": (valid_aux_loss if aux_active else None),
             }
             with metrics_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=True) + "\n")
@@ -338,17 +459,31 @@ def main() -> int:
                         "losses/train_loss": mean_train_loss,
                         "losses/valid_loss": valid_loss,
                         "metrics/valid_acc": valid_acc,
+                        "losses/train_aux_opp_param_loss": (train_aux_loss if aux_active else float("nan")),
+                        "losses/valid_aux_opp_param_loss": (valid_aux_loss if aux_active else float("nan")),
                     },
                 )
 
-            logger.info(
-                "epoch=%d/%d train_loss=%.6f valid_loss=%.6f valid_acc=%.4f",
-                int(epoch),
-                int(args.epochs),
-                float(mean_train_loss),
-                float(valid_loss),
-                float(valid_acc),
-            )
+            if aux_active:
+                logger.info(
+                    "epoch=%d/%d train_loss=%.6f valid_loss=%.6f valid_acc=%.4f train_aux=%.6f valid_aux=%.6f",
+                    int(epoch),
+                    int(args.epochs),
+                    float(mean_train_loss),
+                    float(valid_loss),
+                    float(valid_acc),
+                    float(train_aux_loss),
+                    float(valid_aux_loss),
+                )
+            else:
+                logger.info(
+                    "epoch=%d/%d train_loss=%.6f valid_loss=%.6f valid_acc=%.4f",
+                    int(epoch),
+                    int(args.epochs),
+                    float(mean_train_loss),
+                    float(valid_loss),
+                    float(valid_acc),
+                )
 
         if best_state is not None:
             agent.load_state_dict(best_state)
@@ -361,6 +496,10 @@ def main() -> int:
             "dataset_transitions": int(total_n),
             "dataset_train_transitions": int(train_count),
             "dataset_valid_transitions": int(n_valid),
+            "dataset_native_aux": native_aux_info,
+            "aux_opp_param_loss_coef": float(aux_coef),
+            "aux_opp_param_use_valid_mask": bool(args.aux_opp_param_use_valid_mask),
+            "aux_opp_param_active": bool(aux_active),
             "seed": int(args.seed),
             "epochs": int(args.epochs),
             "batch_size": int(args.batch_size),
@@ -373,6 +512,8 @@ def main() -> int:
             "train_loss_summary": summarize(train_loss_hist).as_dict(),
             "valid_loss_summary": summarize(valid_loss_hist).as_dict(),
             "valid_acc_summary": summarize(valid_acc_hist).as_dict(),
+            "train_aux_opp_param_loss_summary": (summarize(train_aux_loss_hist).as_dict() if aux_active else {}),
+            "valid_aux_opp_param_loss_summary": (summarize(valid_aux_loss_hist).as_dict() if aux_active else {}),
             "args": to_jsonable(vars(args)),
         }
         save_agent_checkpoint(args.output_model, agent, optimizer=None, meta=meta)

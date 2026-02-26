@@ -8,19 +8,22 @@ specific logic from generic algorithm code.
 from .algorithms.ppo.config import PPOConfig
 from .algorithms.ppo.rollout_buffer import RolloutBuffer
 from .algorithms.ppo.trainer import PPOTrainer
-from .env.factory import EnvSpec, infer_env_spec, make_single_env, make_vector_env
 from .models.student_m import StudentMBoardAgent, TeacherP0V1BoardAgent
 from .models.discrete_board import DiscreteBoardAgent
-from .models import build_agent, list_registered_models, normalize_model_config
+from .models import (
+    build_agent,
+    get_model_config_from_preset,
+    get_model_preset,
+    has_model_preset,
+    list_model_presets,
+    list_registered_models,
+    normalize_model_config,
+)
 from .runtime.experiment import RunLayout, create_run_layout, make_run_name, update_manifest
 from .runtime.tracking import MetricTracker
 
 __all__ = [
     "PPOConfig",
-    "EnvSpec",
-    "make_single_env",
-    "make_vector_env",
-    "infer_env_spec",
     "RunLayout",
     "make_run_name",
     "create_run_layout",
@@ -31,6 +34,10 @@ __all__ = [
     "build_agent",
     "normalize_model_config",
     "list_registered_models",
+    "list_model_presets",
+    "has_model_preset",
+    "get_model_preset",
+    "get_model_config_from_preset",
     "RolloutBuffer",
     "MetricTracker",
     "PPOTrainer",

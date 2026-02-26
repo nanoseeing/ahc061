@@ -10,6 +10,8 @@
 reinforce/ppo_discrete/
   algorithms/ppo/
     config.py
+    native_rollout.py
+    native_vecnorm.py
     rollout_buffer.py
     trainer.py
   env/
@@ -18,6 +20,19 @@ reinforce/ppo_discrete/
     vec_normalize.py
   domains/ahc061/
     env.py
+    native_batch/
+      env.py
+      interface.py
+      feature_catalog.py
+      cpp_ext.py
+      cpp_ext/src/ahc061_ext.cpp
+      cpp_core/include/ahc061/core/
+        base/
+        env/
+        features/
+        game/
+        io/
+        opponent/
     opponent_bayes.py
     native/
       opponent_bayes_cpp.cpp
@@ -25,6 +40,7 @@ reinforce/ppo_discrete/
   models/
     discrete_board.py
     student_m.py
+    catalog.py
     nn_init.py
     builder.py
     registry.py
@@ -35,11 +51,15 @@ reinforce/ppo_discrete/
     experiment.py
     log_utils.py
     metrics.py
+    teacher_dataset.py
     tracking.py
   cli/
     collect_teacher.py
     train_bc.py
     train_ppo.py
+    train_ppo_native.py
+    native_ppo_runner.py
+    native_eval_runner.py
     eval_policy.py
     run_pipeline.py
     ahc061_agent.py

@@ -7,6 +7,15 @@ resume = false
 resume_from = ""
 seed = 1
 device = "auto"
+rollout_backend = "gym" # gym|native (native is AHC061Local-v0 only)
+native_feature_id = "submit_v1"
+native_pf_enabled = true
+native_amp = false
+native_memory_format = "auto"
+native_pin_memory = true
+native_rollout_cache_device = "auto"
+native_distributed = "auto"
+native_model_preset = ""
 
 # PPO core
 total_timesteps = 500000
@@ -33,6 +42,8 @@ ent_coef_schedule = "constant" # constant|linear|cosine
 ent_coef_final = 0.01          # used when schedule != constant
 ent_coef_schedule_expr = ""    # optional; overrides ent_coef_schedule/final
 vf_coef = 0.5
+aux_opp_param_loss_coef = 0.0
+aux_opp_param_use_valid_mask = true
 max_grad_norm = 0.5
 target_kl = 0.01
 

@@ -11,11 +11,19 @@ collect_episodes = 200
 collect_policy = "random"
 collect_workers = 1
 collect_vector_env = "sync"
+collect_rollout_backend = "gym"    # gym|native
+collect_native_feature_id = "submit_v1"
+collect_native_pf_enabled = true
+collect_native_amp = false
+collect_native_save_aux_targets = false  # native only; saves opp_param_true/opp_valid keys
 # AHC061Local-v0 の場合、collect_policy=random は実行時に ahc061_main_greedy へ自動補正
+# (collect_rollout_backend=native では random のまま)
 skip_collect = false
 
 # train_bc
 bc_epochs = 20
+bc_aux_opp_param_loss_coef = 0.0
+bc_aux_opp_param_use_valid_mask = true
 skip_bc = false
 
 # train_ppo
@@ -43,10 +51,21 @@ ppo_ent_coef_schedule = "constant"  # constant|linear|cosine
 ppo_ent_coef_final = 0.01           # used when schedule != constant
 ppo_ent_coef_schedule_expr = ""     # optional; overrides ppo_ent_coef_schedule/final
 ppo_vf_coef = 0.5
+ppo_aux_opp_param_loss_coef = 0.0
+ppo_aux_opp_param_use_valid_mask = true
 ppo_max_grad_norm = 0.5
 ppo_target_kl = 0.01
 ppo_checkpoint_interval_steps = 0
 ppo_vector_env = "sync"
+ppo_rollout_backend = "gym"      # gym|native (native is AHC061Local-v0 only)
+ppo_native_feature_id = "submit_v1"
+ppo_native_pf_enabled = true
+ppo_native_amp = false
+ppo_native_memory_format = "auto"
+ppo_native_pin_memory = true
+ppo_native_rollout_cache_device = "auto"
+ppo_native_distributed = "auto"
+ppo_native_model_preset = ""     # e.g. "student_m_submit_v1"
 ppo_eval_interval_steps = 0
 ppo_eval_episodes = 100
 ppo_eval_seed_start = 2000000

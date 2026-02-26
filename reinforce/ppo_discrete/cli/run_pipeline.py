@@ -21,6 +21,13 @@ import numpy as np
 from ..domains.ahc061.opponent_bayes import ensure_cpp_bayes_backend
 from ..runtime.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
 from ..runtime.log_utils import get_logger
+from ..runtime.teacher_dataset import (
+    AHC061_BAYES_TAIL_SHAPE,
+    AHC061_OPP_PARAM_TRUE_TAIL_SHAPE,
+    AHC061_OPP_VALID_TAIL_SHAPE,
+    DATASET_KEY_OPP_PARAM_TRUE,
+    DATASET_KEY_OPP_VALID,
+)
 from ..runtime.tracking import MetricTracker
 
 logger = get_logger("run_pipeline")
@@ -48,10 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--collect-workers", type=int, default=1)
     p.add_argument("--collect-vector-env", choices=["sync", "async"], default="sync")
+    p.add_argument("--collect-rollout-backend", choices=["gym", "native"], default="gym")
+    p.add_argument("--collect-native-feature-id", type=str, default="submit_v1")
+    p.add_argument("--collect-native-pf-enabled", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--collect-native-amp", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--collect-native-save-aux-targets", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--collect-chunk-episodes", type=int, default=10)
     p.add_argument("--skip-collect", action=argparse.BooleanOptionalAction, default=False)
 
     p.add_argument("--bc-epochs", type=int, default=20)
+    p.add_argument("--bc-aux-opp-param-loss-coef", type=float, default=0.0)
+    p.add_argument("--bc-aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument(
         "--bc-use-collect-shards",
         action=argparse.BooleanOptionalAction,
@@ -81,6 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ppo-ent-coef-final", type=float, default=None)
     p.add_argument("--ppo-ent-coef-schedule-expr", type=str, default="")
     p.add_argument("--ppo-vf-coef", type=float, default=0.5)
+    p.add_argument("--ppo-aux-opp-param-loss-coef", type=float, default=0.0)
+    p.add_argument("--ppo-aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--ppo-max-grad-norm", type=float, default=0.5)
     p.add_argument("--ppo-target-kl", type=float, default=None, help="SB3 semantics: early stop when approx_kl > 1.5 * target_kl")
     p.add_argument("--ppo-clip-coef-schedule", choices=["constant", "linear", "cosine"], default="constant")
@@ -88,6 +104,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ppo-clip-coef-schedule-expr", type=str, default="")
     p.add_argument("--ppo-checkpoint-interval-steps", type=int, default=0)
     p.add_argument("--ppo-vector-env", choices=["sync", "async"], default="sync")
+    p.add_argument("--ppo-rollout-backend", choices=["gym", "native"], default="gym")
+    p.add_argument("--ppo-native-feature-id", type=str, default="submit_v1")
+    p.add_argument("--ppo-native-pf-enabled", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--ppo-native-amp", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--ppo-native-memory-format", choices=["auto", "nchw", "channels_last"], default="auto")
+    p.add_argument("--ppo-native-pin-memory", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--ppo-native-rollout-cache-device", choices=["auto", "cpu", "gpu"], default="auto")
+    p.add_argument("--ppo-native-distributed", choices=["auto", "off", "on"], default="auto")
+    p.add_argument("--ppo-native-model-preset", type=str, default="")
     p.add_argument("--ppo-val-interval-steps", "--ppo-eval-interval-steps", dest="ppo_eval_interval_steps", type=int, default=0)
     p.add_argument("--ppo-val-episodes", "--ppo-eval-episodes", dest="ppo_eval_episodes", type=int, default=100)
     p.add_argument("--ppo-val-seed-start", "--ppo-eval-seed-start", dest="ppo_eval_seed_start", type=int, default=2_000_000)
@@ -398,6 +423,79 @@ def _parse_env_kwargs(text: str) -> dict[str, Any]:
     return obj
 
 
+def _validate_backend_combinations(args: argparse.Namespace) -> None:
+    env_id = str(args.env_id).strip()
+    is_ahc = env_id == "AHC061Local-v0"
+    collect_backend = str(args.collect_rollout_backend).strip().lower()
+    ppo_backend = str(args.ppo_rollout_backend).strip().lower()
+    collect_policy = str(args.collect_policy).strip()
+
+    if not bool(args.skip_collect):
+        if collect_backend == "native":
+            if not is_ahc:
+                raise ValueError(
+                    "collect_rollout_backend=native supports only env_id=AHC061Local-v0 "
+                    f"(got env_id={env_id!r})"
+                )
+            if str(args.collect_vector_env) != "sync":
+                raise ValueError("collect_rollout_backend=native requires collect_vector_env=sync")
+            if collect_policy == "ahc061_main_greedy":
+                raise ValueError(
+                    "collect_rollout_backend=native does not support collect_policy=ahc061_main_greedy"
+                )
+            if collect_policy in ("model_stochastic", "model_greedy"):
+                raise ValueError(
+                    "run_pipeline collect stage does not accept model_* policy yet "
+                    "(model path is not configurable in pipeline collect). "
+                    "Use collect_policy=random with native backend, or run collect_teacher directly."
+                )
+            if bool(args.collect_native_save_aux_targets) and str(args.collect_vector_env).strip().lower() != "sync":
+                raise ValueError("collect_native_save_aux_targets requires collect_vector_env=sync")
+        else:
+            if bool(args.collect_native_save_aux_targets):
+                raise ValueError("collect_native_save_aux_targets is supported only when collect_rollout_backend=native")
+            if collect_policy == "ahc061_main_greedy":
+                if not is_ahc:
+                    raise ValueError("collect_policy=ahc061_main_greedy requires env_id=AHC061Local-v0")
+                if str(args.collect_vector_env) != "sync":
+                    raise ValueError("collect_policy=ahc061_main_greedy requires collect_vector_env=sync")
+        if float(args.bc_aux_opp_param_loss_coef) > 0.0:
+            if collect_backend != "native" or not bool(args.collect_native_save_aux_targets):
+                raise ValueError(
+                    "bc_aux_opp_param_loss_coef > 0 requires collect_rollout_backend=native "
+                    "and collect_native_save_aux_targets=true when collect stage is active"
+                )
+
+    if ppo_backend == "native":
+        if not is_ahc and (not bool(args.skip_ppo) or not bool(args.skip_last_eval)):
+            raise ValueError(
+                "ppo_rollout_backend=native supports only env_id=AHC061Local-v0 "
+                f"for active ppo/eval stages (got env_id={env_id!r})"
+            )
+        if not bool(args.skip_ppo) and str(args.ppo_native_distributed).strip().lower() == "on":
+            raise ValueError(
+                "run_pipeline does not launch torchrun. "
+                "Use ppo_native_distributed=auto|off in run_pipeline, or launch train_ppo with torchrun directly."
+            )
+    if not bool(args.skip_ppo) and float(args.ppo_aux_opp_param_loss_coef) > 0.0 and ppo_backend != "native":
+        raise ValueError("ppo_aux_opp_param_loss_coef > 0 requires ppo_rollout_backend=native")
+
+    eval_casegen_requested = int(args.eval_casegen_num_cases) > 0
+    if eval_casegen_requested:
+        gym_final_eval = (not bool(args.skip_last_eval)) and ppo_backend == "gym"
+        gym_periodic_val = (
+            (not bool(args.skip_ppo))
+            and int(args.ppo_eval_interval_steps) > 0
+            and ppo_backend == "gym"
+        )
+        if not (gym_final_eval or gym_periodic_val):
+            raise ValueError(
+                "eval_casegen_* is configured but there is no gym-based eval consumer "
+                "(final eval / periodic val are native or skipped). "
+                "Set ppo_rollout_backend=gym, or disable eval_casegen_num_cases."
+            )
+
+
 def _ensure_gen_one_binary(tools_dir: Path) -> str:
     tools_dir = Path(tools_dir)
     cargo_toml = tools_dir / "Cargo.toml"
@@ -528,33 +626,41 @@ def _run_collect_workers(
     tee_fp: TextIO | None = None,
 ) -> dict[str, Any]:
     workers = int(args.collect_workers)
+    collect_backend = str(args.collect_rollout_backend).strip().lower()
+    env_kwargs_cmd = dict(env_kwargs) if collect_backend == "gym" else {}
     if workers <= 1:
-        run(
-            [
-                py,
-                "-m",
-                "reinforce.ppo_discrete.cli.collect_teacher",
-                "--env-id",
-                args.env_id,
-                "--episodes",
-                str(args.collect_episodes),
-                "--seed",
-                str(args.seed),
-                "--policy",
-                collect_policy,
-                "--vector-env",
-                args.collect_vector_env,
-                "--chunk-episodes",
-                str(args.collect_chunk_episodes),
-                "--output-npz",
-                str(output_npz),
-                "--env-kwargs-json",
-                json.dumps(env_kwargs),
-            ],
-            tracker=tracker,
-            stage="collect_teacher",
-            tee_fp=tee_fp,
-        )
+        cmd = [
+            py,
+            "-m",
+            "reinforce.ppo_discrete.cli.collect_teacher",
+            "--env-id",
+            args.env_id,
+            "--episodes",
+            str(args.collect_episodes),
+            "--seed",
+            str(args.seed),
+            "--policy",
+            collect_policy,
+            "--vector-env",
+            args.collect_vector_env,
+            "--rollout-backend",
+            collect_backend,
+            "--chunk-episodes",
+            str(args.collect_chunk_episodes),
+            "--output-npz",
+            str(output_npz),
+            "--env-kwargs-json",
+            json.dumps(env_kwargs_cmd),
+        ]
+        if collect_backend == "native":
+            cmd += [
+                "--native-feature-id",
+                str(args.collect_native_feature_id),
+            ]
+            _append_bool_flag(cmd, "native-pf-enabled", bool(args.collect_native_pf_enabled))
+            _append_bool_flag(cmd, "native-amp", bool(args.collect_native_amp))
+            _append_bool_flag(cmd, "native-save-aux-targets", bool(args.collect_native_save_aux_targets))
+        run(cmd, tracker=tracker, stage="collect_teacher", tee_fp=tee_fp)
         return {"workers": 1, "shards": [str(output_npz)], "merged": True, "output_npz": str(output_npz)}
 
     shards_dir = output_npz.parent / "collect_shards"
@@ -567,8 +673,8 @@ def _run_collect_workers(
     for wi, episodes in enumerate(shard_eps):
         shard_path = shards_dir / f"teacher_shard_{wi:03d}.npz"
         seed_i = int(args.seed) + wi * 100003
-        env_kwargs_i = dict(env_kwargs)
-        if str(args.env_id) == "AHC061Local-v0":
+        env_kwargs_i = dict(env_kwargs_cmd)
+        if str(args.env_id) == "AHC061Local-v0" and collect_backend == "gym":
             env_kwargs_i["vector_env_rank"] = int(wi)
             env_kwargs_i["vector_env_size"] = int(len(shard_eps))
         cmd = [
@@ -585,6 +691,8 @@ def _run_collect_workers(
             collect_policy,
             "--vector-env",
             args.collect_vector_env,
+            "--rollout-backend",
+            collect_backend,
             "--chunk-episodes",
             str(args.collect_chunk_episodes),
             "--output-npz",
@@ -592,6 +700,14 @@ def _run_collect_workers(
             "--env-kwargs-json",
             json.dumps(env_kwargs_i),
         ]
+        if collect_backend == "native":
+            cmd += [
+                "--native-feature-id",
+                str(args.collect_native_feature_id),
+            ]
+            _append_bool_flag(cmd, "native-pf-enabled", bool(args.collect_native_pf_enabled))
+            _append_bool_flag(cmd, "native-amp", bool(args.collect_native_amp))
+            _append_bool_flag(cmd, "native-save-aux-targets", bool(args.collect_native_save_aux_targets))
         cmds.append((wi, shard_path, cmd))
 
     t0 = time.time()
@@ -655,46 +771,75 @@ def _merge_teacher_shards(shard_paths: list[Path], output_npz: Path) -> None:
     action_dim_ref: np.ndarray | None = None
     obs_tail_shape: tuple[int, ...] | None = None
     bayes_tail_shape: tuple[int, ...] | None = None
+    has_native_aux: bool | None = None
+    opp_param_tail_shape: tuple[int, ...] | None = None
+    opp_valid_tail_shape: tuple[int, ...] | None = None
     total = 0
 
     for shard in shard_paths:
         with np.load(shard) as d:
             obs_shape = np.asarray(d["obs_shape"], dtype=np.int32)
             action_dim = np.asarray(d["action_dim"], dtype=np.int32)
+            shard_has_native_aux = (DATASET_KEY_OPP_PARAM_TRUE in d.files) and (DATASET_KEY_OPP_VALID in d.files)
+            if has_native_aux is None:
+                has_native_aux = bool(shard_has_native_aux)
+            elif bool(has_native_aux) != bool(shard_has_native_aux):
+                raise ValueError(f"native aux key presence mismatch in shard: {shard}")
             if obs_shape_ref is None:
                 obs_shape_ref = obs_shape
                 action_dim_ref = action_dim
                 obs_tail_shape = tuple(np.asarray(d["obs"]).shape[1:])
                 bayes_tail_shape = tuple(np.asarray(d["bayes_params"]).shape[1:])
+                if bool(shard_has_native_aux):
+                    opp_param_tail_shape = tuple(np.asarray(d[DATASET_KEY_OPP_PARAM_TRUE]).shape[1:])
+                    opp_valid_tail_shape = tuple(np.asarray(d[DATASET_KEY_OPP_VALID]).shape[1:])
             else:
                 if not np.array_equal(obs_shape_ref, obs_shape):
                     raise ValueError(f"obs_shape mismatch in shard: {shard}")
                 if not np.array_equal(action_dim_ref, action_dim):
                     raise ValueError(f"action_dim mismatch in shard: {shard}")
+                if bool(shard_has_native_aux):
+                    p_shape = tuple(np.asarray(d[DATASET_KEY_OPP_PARAM_TRUE]).shape[1:])
+                    v_shape = tuple(np.asarray(d[DATASET_KEY_OPP_VALID]).shape[1:])
+                    if opp_param_tail_shape != p_shape:
+                        raise ValueError(f"{DATASET_KEY_OPP_PARAM_TRUE} shape mismatch in shard: {shard}")
+                    if opp_valid_tail_shape != v_shape:
+                        raise ValueError(f"{DATASET_KEY_OPP_VALID} shape mismatch in shard: {shard}")
             total += int(np.asarray(d["action"]).shape[0])
 
     if obs_shape_ref is None or action_dim_ref is None:
         raise ValueError("no valid shards to merge")
+    if has_native_aux is None:
+        has_native_aux = False
 
     output_npz.parent.mkdir(parents=True, exist_ok=True)
     if obs_tail_shape is None:
         obs_tail_shape = tuple(int(x) for x in obs_shape_ref.tolist())
     if bayes_tail_shape is None:
-        bayes_tail_shape = (4 * 7,)
+        bayes_tail_shape = AHC061_BAYES_TAIL_SHAPE
 
     if total <= 0:
-        np.savez_compressed(
-            output_npz,
-            obs=np.zeros((0, *obs_tail_shape), dtype=np.float32),
-            action=np.zeros((0,), dtype=np.int64),
-            reward=np.zeros((0,), dtype=np.float32),
-            done=np.zeros((0,), dtype=np.uint8),
-            episode=np.zeros((0,), dtype=np.int32),
-            step=np.zeros((0,), dtype=np.int32),
-            bayes_params=np.zeros((0, *bayes_tail_shape), dtype=np.float32),
-            obs_shape=obs_shape_ref,
-            action_dim=action_dim_ref,
-        )
+        payload: dict[str, Any] = {
+            "obs": np.zeros((0, *obs_tail_shape), dtype=np.float32),
+            "action": np.zeros((0,), dtype=np.int64),
+            "reward": np.zeros((0,), dtype=np.float32),
+            "done": np.zeros((0,), dtype=np.uint8),
+            "episode": np.zeros((0,), dtype=np.int32),
+            "step": np.zeros((0,), dtype=np.int32),
+            "bayes_params": np.zeros((0, *bayes_tail_shape), dtype=np.float32),
+            "obs_shape": obs_shape_ref,
+            "action_dim": action_dim_ref,
+        }
+        if bool(has_native_aux):
+            payload[DATASET_KEY_OPP_PARAM_TRUE] = np.zeros(
+                (0, *(opp_param_tail_shape or AHC061_OPP_PARAM_TRUE_TAIL_SHAPE)),
+                dtype=np.float32,
+            )
+            payload[DATASET_KEY_OPP_VALID] = np.zeros(
+                (0, *(opp_valid_tail_shape or AHC061_OPP_VALID_TAIL_SHAPE)),
+                dtype=np.uint8,
+            )
+        np.savez_compressed(output_npz, **payload)
         return
 
     with TemporaryDirectory(prefix=f".{output_npz.stem}.merge_", dir=str(output_npz.parent)) as tmp_dir:
@@ -711,6 +856,21 @@ def _merge_teacher_shards(shard_paths: list[Path], output_npz: Path) -> None:
             dtype=np.float32,
             shape=(total, *bayes_tail_shape),
         )
+        opp_param_mm = None
+        opp_valid_mm = None
+        if bool(has_native_aux):
+            opp_param_mm = np.lib.format.open_memmap(
+                tmp / f"{DATASET_KEY_OPP_PARAM_TRUE}.npy",
+                mode="w+",
+                dtype=np.float32,
+                shape=(total, *(opp_param_tail_shape or AHC061_OPP_PARAM_TRUE_TAIL_SHAPE)),
+            )
+            opp_valid_mm = np.lib.format.open_memmap(
+                tmp / f"{DATASET_KEY_OPP_VALID}.npy",
+                mode="w+",
+                dtype=np.uint8,
+                shape=(total, *(opp_valid_tail_shape or AHC061_OPP_VALID_TAIL_SHAPE)),
+            )
 
         cursor = 0
         episode_offset = 0
@@ -726,6 +886,11 @@ def _merge_teacher_shards(shard_paths: list[Path], output_npz: Path) -> None:
                 done_mm[sl] = np.asarray(d["done"], dtype=np.uint8)
                 step_mm[sl] = np.asarray(d["step"], dtype=np.int32)
                 bayes_mm[sl] = np.asarray(d["bayes_params"], dtype=np.float32)
+                if bool(has_native_aux):
+                    assert opp_param_mm is not None
+                    assert opp_valid_mm is not None
+                    opp_param_mm[sl] = np.asarray(d[DATASET_KEY_OPP_PARAM_TRUE], dtype=np.float32)
+                    opp_valid_mm[sl] = np.asarray(d[DATASET_KEY_OPP_VALID], dtype=np.uint8)
 
                 ep = np.asarray(d["episode"], dtype=np.int32)
                 if ep.size > 0:
@@ -734,18 +899,23 @@ def _merge_teacher_shards(shard_paths: list[Path], output_npz: Path) -> None:
                 episode_mm[sl] = ep
                 cursor += n
 
-        np.savez_compressed(
-            output_npz,
-            obs=obs_mm,
-            action=action_mm,
-            reward=reward_mm,
-            done=done_mm,
-            episode=episode_mm,
-            step=step_mm,
-            bayes_params=bayes_mm,
-            obs_shape=obs_shape_ref,
-            action_dim=action_dim_ref,
-        )
+        payload: dict[str, Any] = {
+            "obs": obs_mm,
+            "action": action_mm,
+            "reward": reward_mm,
+            "done": done_mm,
+            "episode": episode_mm,
+            "step": step_mm,
+            "bayes_params": bayes_mm,
+            "obs_shape": obs_shape_ref,
+            "action_dim": action_dim_ref,
+        }
+        if bool(has_native_aux):
+            assert opp_param_mm is not None
+            assert opp_valid_mm is not None
+            payload[DATASET_KEY_OPP_PARAM_TRUE] = opp_param_mm
+            payload[DATASET_KEY_OPP_VALID] = opp_valid_mm
+        np.savez_compressed(output_npz, **payload)
 
 
 def _cleanup_collect_shards(shard_paths: list[Path], *, shards_dir: Path | None = None) -> None:
@@ -772,6 +942,7 @@ def _cleanup_collect_shards(shard_paths: list[Path], *, shards_dir: Path | None 
 
 def main() -> int:
     args = parse_args()
+    _validate_backend_combinations(args)
     eval_casegen_requested = int(args.eval_casegen_num_cases) > 0
     eval_casegen_active = bool(eval_casegen_requested and (not args.skip_last_eval or int(args.ppo_eval_interval_steps) > 0))
     base_env_kwargs = _parse_env_kwargs(args.env_kwargs_json)
@@ -813,22 +984,30 @@ def main() -> int:
 
     train_gen_cmd: str | None = None
     if str(args.env_id) == "AHC061Local-v0":
-        if not bool(args.casegen_enable):
-            raise ValueError("AHC061Local-v0 requires casegen_enable=true with casegen_num_cases > 0")
-        train_gen_cmd = _ensure_gen_one_binary(Path(args.casegen_tools_dir))
-        _apply_case_seed_kwargs(
-            env_kwargs,
-            num_cases=int(args.casegen_num_cases),
-            seed_mode=args.casegen_seed_mode,
-            seed_start=int(args.casegen_seed_start),
-            rng_seed=int(args.casegen_rng_seed),
-            unique_random=bool(args.casegen_unique_random),
-            fixed_m=int(args.casegen_fixed_m),
-            fixed_u=int(args.casegen_fixed_u),
-            tools_dir=Path(args.casegen_tools_dir),
-        )
-        env_kwargs["case_gen_cmd"] = str(train_gen_cmd)
-        if not str(args.eval_env_kwargs_json).strip():
+        collect_uses_gym = (not bool(args.skip_collect)) and str(args.collect_rollout_backend).strip().lower() == "gym"
+        ppo_uses_gym = (not bool(args.skip_ppo)) and str(args.ppo_rollout_backend).strip().lower() == "gym"
+        final_eval_uses_gym = (not bool(args.skip_last_eval)) and str(args.ppo_rollout_backend).strip().lower() == "gym"
+        needs_train_casegen = bool(collect_uses_gym or ppo_uses_gym or final_eval_uses_gym)
+
+        if needs_train_casegen and not bool(args.casegen_enable):
+            raise ValueError(
+                "AHC061Local-v0 with gym-based stages requires casegen_enable=true with casegen_num_cases > 0"
+            )
+        if bool(args.casegen_enable):
+            train_gen_cmd = _ensure_gen_one_binary(Path(args.casegen_tools_dir))
+            _apply_case_seed_kwargs(
+                env_kwargs,
+                num_cases=int(args.casegen_num_cases),
+                seed_mode=args.casegen_seed_mode,
+                seed_start=int(args.casegen_seed_start),
+                rng_seed=int(args.casegen_rng_seed),
+                unique_random=bool(args.casegen_unique_random),
+                fixed_m=int(args.casegen_fixed_m),
+                fixed_u=int(args.casegen_fixed_u),
+                tools_dir=Path(args.casegen_tools_dir),
+            )
+            env_kwargs["case_gen_cmd"] = str(train_gen_cmd)
+        if not str(args.eval_env_kwargs_json).strip() and bool(args.casegen_enable):
             _apply_case_seed_kwargs(
                 eval_env_kwargs,
                 num_cases=int(args.casegen_num_cases),
@@ -840,10 +1019,15 @@ def main() -> int:
                 fixed_u=int(args.casegen_fixed_u),
                 tools_dir=Path(args.casegen_tools_dir),
             )
-            eval_env_kwargs["case_gen_cmd"] = str(train_gen_cmd)
+            if train_gen_cmd is not None:
+                eval_env_kwargs["case_gen_cmd"] = str(train_gen_cmd)
         if eval_casegen_active:
             eval_tools_dir = Path(args.eval_casegen_tools_dir)
-            eval_gen_cmd = train_gen_cmd if eval_tools_dir.resolve() == Path(args.casegen_tools_dir).resolve() else _ensure_gen_one_binary(eval_tools_dir)
+            eval_gen_cmd = (
+                train_gen_cmd
+                if (train_gen_cmd is not None and eval_tools_dir.resolve() == Path(args.casegen_tools_dir).resolve())
+                else _ensure_gen_one_binary(eval_tools_dir)
+            )
             _apply_case_seed_kwargs(
                 eval_env_kwargs,
                 num_cases=int(args.eval_casegen_num_cases),
@@ -974,7 +1158,11 @@ def main() -> int:
                     stage_result["collect"]["teacher_shards_glob"] = collect_shards_glob
             else:
                 collect_policy = args.collect_policy
-                if args.env_id == "AHC061Local-v0" and collect_policy == "random":
+                if (
+                    args.env_id == "AHC061Local-v0"
+                    and collect_policy == "random"
+                    and str(args.collect_rollout_backend).strip().lower() == "gym"
+                ):
                     collect_policy = "ahc061_main_greedy"
                     logger.info("collect_policy auto-set to ahc061_main_greedy for AHC061Local-v0")
                 if collect_policy == "ahc061_main_greedy" and args.collect_vector_env != "sync":
@@ -996,6 +1184,11 @@ def main() -> int:
                     stage_result["collect"]["teacher_npz"] = ""
                     stage_result["collect"]["teacher_shards_glob"] = collect_shards_glob
                 stage_result["collect"]["policy"] = collect_policy
+                stage_result["collect"]["rollout_backend"] = str(args.collect_rollout_backend)
+                if str(args.collect_rollout_backend).strip().lower() == "native":
+                    stage_result["collect"]["native_feature_id"] = str(args.collect_native_feature_id)
+                    stage_result["collect"]["native_pf_enabled"] = bool(args.collect_native_pf_enabled)
+                    stage_result["collect"]["native_save_aux_targets"] = bool(args.collect_native_save_aux_targets)
                 stage_result["collect"]["workers"] = int(collect_info["workers"])
                 stage_result["collect"]["shards"] = list(collect_info["shards"])
                 stage_result["collect"]["merged"] = bool(collect_info.get("merged"))
@@ -1022,7 +1215,10 @@ def main() -> int:
                     str(args.seed),
                     "--epochs",
                     str(args.bc_epochs),
+                    "--aux-opp-param-loss-coef",
+                    str(args.bc_aux_opp_param_loss_coef),
                 ]
+                _append_bool_flag(bc_cmd, "aux-opp-param-use-valid-mask", bool(args.bc_aux_opp_param_use_valid_mask))
                 if use_shards_for_bc:
                     bc_cmd += ["--dataset-shards-glob", collect_shards_glob]
                     stage_result["bc"]["dataset"] = {"mode": "shards", "glob": collect_shards_glob}
@@ -1036,6 +1232,8 @@ def main() -> int:
                 _append_model_args(bc_cmd, args)
                 run(bc_cmd, tracker=tracker, stage="train_bc", tee_fp=stdout_fp)
                 stage_result["bc"]["model"] = str(bc_model)
+                stage_result["bc"]["aux_opp_param_loss_coef"] = float(args.bc_aux_opp_param_loss_coef)
+                stage_result["bc"]["aux_opp_param_use_valid_mask"] = bool(args.bc_aux_opp_param_use_valid_mask)
 
         trained_model = bc_model
         consolidated_model = layout.models_dir / "ppo_final.pt"
@@ -1100,12 +1298,16 @@ def main() -> int:
                     str(args.ppo_ent_coef_schedule),
                     "--vf-coef",
                     str(args.ppo_vf_coef),
+                    "--aux-opp-param-loss-coef",
+                    str(args.ppo_aux_opp_param_loss_coef),
                     "--max-grad-norm",
                     str(args.ppo_max_grad_norm),
                     "--checkpoint-interval-steps",
                     str(args.ppo_checkpoint_interval_steps),
                     "--vector-env",
                     args.ppo_vector_env,
+                    "--rollout-backend",
+                    str(args.ppo_rollout_backend),
                     "--val-interval-steps",
                     str(args.ppo_eval_interval_steps),
                     "--val-episodes",
@@ -1136,6 +1338,17 @@ def main() -> int:
                 _append_bool_flag(cmd, "vecnorm-norm-obs", bool(args.ppo_vecnorm_norm_obs))
                 _append_bool_flag(cmd, "vecnorm-norm-reward", bool(args.ppo_vecnorm_norm_reward))
                 _append_bool_flag(cmd, "vecnorm-val-norm-reward", bool(args.ppo_vecnorm_eval_norm_reward))
+                _append_bool_flag(cmd, "aux-opp-param-use-valid-mask", bool(args.ppo_aux_opp_param_use_valid_mask))
+                if str(args.ppo_rollout_backend) == "native":
+                    cmd += ["--native-feature-id", str(args.ppo_native_feature_id)]
+                    _append_bool_flag(cmd, "native-pf-enabled", bool(args.ppo_native_pf_enabled))
+                    _append_bool_flag(cmd, "native-amp", bool(args.ppo_native_amp))
+                    cmd += ["--native-memory-format", str(args.ppo_native_memory_format)]
+                    _append_bool_flag(cmd, "native-pin-memory", bool(args.ppo_native_pin_memory))
+                    cmd += ["--native-rollout-cache-device", str(args.ppo_native_rollout_cache_device)]
+                    cmd += ["--native-distributed", str(args.ppo_native_distributed)]
+                    if str(args.ppo_native_model_preset).strip():
+                        cmd += ["--native-model-preset", str(args.ppo_native_model_preset).strip()]
                 if str(args.ppo_learning_rate_schedule).strip():
                     cmd += ["--learning-rate-schedule", str(args.ppo_learning_rate_schedule)]
                 if args.ppo_clip_range_vf is not None:
@@ -1184,6 +1397,9 @@ def main() -> int:
                 elif bc_model.exists():
                     cmd += ["--init-model", str(bc_model)]
                     stage_result["ppo"]["init_model"] = str(bc_model)
+                stage_result["ppo"]["rollout_backend"] = str(args.ppo_rollout_backend)
+                stage_result["ppo"]["aux_opp_param_loss_coef"] = float(args.ppo_aux_opp_param_loss_coef)
+                stage_result["ppo"]["aux_opp_param_use_valid_mask"] = bool(args.ppo_aux_opp_param_use_valid_mask)
                 run(cmd, tracker=tracker, stage="train_ppo", tee_fp=stdout_fp)
 
                 latest = latest_dir(ppo_root)
@@ -1221,6 +1437,14 @@ def main() -> int:
                     "--env-kwargs-json",
                     json.dumps(eval_env_kwargs),
                 ]
+                if str(args.ppo_rollout_backend).strip().lower() == "native":
+                    eval_cmd += [
+                        "--rollout-backend",
+                        "native",
+                        "--native-feature-id",
+                        str(args.ppo_native_feature_id),
+                    ]
+                    _append_bool_flag(eval_cmd, "native-pf-enabled", bool(args.ppo_native_pf_enabled))
                 _append_bool_flag(eval_cmd, "use-action-mask", bool(args.use_action_mask))
                 run(
                     eval_cmd,

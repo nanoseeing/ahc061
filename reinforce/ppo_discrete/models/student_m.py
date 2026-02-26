@@ -78,6 +78,8 @@ class StudentMBoardAgent(nn.Module):
         activation: str = "tanh",
         use_global_film: bool = True,
         use_global_policy_bias: bool = True,
+        aux_opp_param_head: bool = False,
+        aux_opp_param_hidden_dim: int = 64,
     ):
         super().__init__()
         if int(action_dim) <= 0:
@@ -117,6 +119,8 @@ class StudentMBoardAgent(nn.Module):
         self.global_hidden_dim = int(max(1, global_hidden_dim))
         self.use_global_film = bool(use_global_film and self.global_dim > 0)
         self.use_global_policy_bias = bool(use_global_policy_bias and self.global_dim > 0)
+        self.use_aux_opp_param_head = bool(aux_opp_param_head)
+        self.aux_opp_param_hidden_dim = int(max(1, aux_opp_param_hidden_dim))
         self.activation = str(activation)
         value_hidden_dims_t = _to_int_tuple(value_hidden_dims)
 
@@ -156,6 +160,13 @@ class StudentMBoardAgent(nn.Module):
             cur = h
         v_layers.append(layer_init(nn.Linear(cur, 1), std=1.0))
         self.value_head = nn.Sequential(*v_layers)
+        self.aux_opp_param_head: nn.Sequential | None = None
+        if self.use_aux_opp_param_head:
+            self.aux_opp_param_head = nn.Sequential(
+                layer_init(nn.Linear(value_in_dim, self.aux_opp_param_hidden_dim)),
+                _build_activation(self.activation),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+            )
 
         self.model_config: dict[str, Any] = {
             "type": "StudentMBoardAgent",
@@ -170,11 +181,14 @@ class StudentMBoardAgent(nn.Module):
                 "activation": str(self.activation),
                 "use_global_film": bool(self.use_global_film),
                 "use_global_policy_bias": bool(self.use_global_policy_bias),
+                "aux_opp_param_head": bool(self.use_aux_opp_param_head),
+                "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
             },
         }
 
     def _flatten_obs(self, obs: torch.Tensor) -> torch.Tensor:
-        return obs.view(obs.shape[0], -1)
+        # reshape handles non-standard strides (e.g., channels_last) safely.
+        return obs.reshape(obs.shape[0], -1)
 
     def _split_obs(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         x = self._flatten_obs(obs)
@@ -198,6 +212,13 @@ class StudentMBoardAgent(nn.Module):
         h = self._encode_board(board, g_emb)
         return h, g_emb
 
+    @staticmethod
+    def _merge_value_input(h: torch.Tensor, g_emb: torch.Tensor | None) -> torch.Tensor:
+        pooled = h.mean(dim=(2, 3))
+        if g_emb is not None:
+            pooled = torch.cat([pooled, g_emb], dim=1)
+        return pooled
+
     def get_logits(self, obs: torch.Tensor) -> torch.Tensor:
         h, g_emb = self._encode(obs)
         logits = self.policy_conv(h).reshape(h.shape[0], -1)
@@ -207,16 +228,23 @@ class StudentMBoardAgent(nn.Module):
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
         h, g_emb = self._encode(obs)
-        pooled = h.mean(dim=(2, 3))
-        if g_emb is not None:
-            pooled = torch.cat([pooled, g_emb], dim=1)
+        pooled = self._merge_value_input(h, g_emb)
         return self.value_head(pooled)
+
+    def get_aux_opp_param(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.aux_opp_param_head is None:
+            raise RuntimeError("aux_opp_param_head is disabled for this model")
+        h, g_emb = self._encode(obs)
+        pooled = self._merge_value_input(h, g_emb)
+        out = self.aux_opp_param_head(pooled)
+        return out.view(out.shape[0], 7, 5)
 
     def get_action_and_value(
         self,
         obs: torch.Tensor,
         action: torch.Tensor | None = None,
         action_mask: torch.Tensor | None = None,
+        return_aux_opp_param: bool = False,
     ):
         h, g_emb = self._encode(obs)
         logits = self.policy_conv(h).reshape(h.shape[0], -1)
@@ -234,11 +262,29 @@ class StudentMBoardAgent(nn.Module):
         if action is None:
             action = dist.sample()
 
-        pooled = h.mean(dim=(2, 3))
-        if g_emb is not None:
-            pooled = torch.cat([pooled, g_emb], dim=1)
+        pooled = self._merge_value_input(h, g_emb)
         value = self.value_head(pooled)
+        if bool(return_aux_opp_param):
+            if self.aux_opp_param_head is None:
+                raise RuntimeError("aux_opp_param_head is disabled for this model")
+            aux = self.aux_opp_param_head(pooled).view(pooled.shape[0], 7, 5)
+            return action, dist.log_prob(action), dist.entropy(), value, aux
         return action, dist.log_prob(action), dist.entropy(), value
+
+    def forward(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor | None = None,
+        action_mask: torch.Tensor | None = None,
+        return_aux_opp_param: bool = False,
+    ):
+        # Keep PPO update path on module forward so DDP hooks are triggered.
+        return self.get_action_and_value(
+            obs,
+            action=action,
+            action_mask=action_mask,
+            return_aux_opp_param=bool(return_aux_opp_param),
+        )
 
     def act(
         self,

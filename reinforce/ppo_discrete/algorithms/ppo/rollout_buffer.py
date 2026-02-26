@@ -15,6 +15,8 @@ class FlattenedBatch:
     returns: torch.Tensor
     values: torch.Tensor
     action_masks: torch.Tensor | None
+    aux_opp_param_true: torch.Tensor | None
+    aux_opp_valid: torch.Tensor | None
 
 
 class RolloutBuffer:
@@ -29,6 +31,9 @@ class RolloutBuffer:
         device: torch.device,
         use_action_mask: bool = False,
         action_dim: int = 0,
+        use_aux_opp_param_targets: bool = False,
+        aux_opp_slot_count: int = 7,
+        aux_opp_param_dim: int = 5,
     ):
         self.num_steps = num_steps
         self.num_envs = num_envs
@@ -49,6 +54,26 @@ class RolloutBuffer:
             self.action_masks: torch.Tensor | None = torch.zeros((num_steps, num_envs, action_dim), device=device, dtype=torch.bool)
         else:
             self.action_masks = None
+        if use_aux_opp_param_targets:
+            slots = int(aux_opp_slot_count)
+            param_dim = int(aux_opp_param_dim)
+            if slots <= 0 or param_dim <= 0:
+                raise ValueError(
+                    "aux_opp_slot_count and aux_opp_param_dim must be positive when use_aux_opp_param_targets=True"
+                )
+            self.aux_opp_param_true: torch.Tensor | None = torch.zeros(
+                (num_steps, num_envs, slots, param_dim),
+                device=device,
+                dtype=torch.float32,
+            )
+            self.aux_opp_valid: torch.Tensor | None = torch.zeros(
+                (num_steps, num_envs, slots),
+                device=device,
+                dtype=torch.bool,
+            )
+        else:
+            self.aux_opp_param_true = None
+            self.aux_opp_valid = None
 
     def add(
         self,
@@ -86,6 +111,14 @@ class RolloutBuffer:
 
     def flatten(self) -> FlattenedBatch:
         mask = self.action_masks.reshape((-1, self.action_masks.shape[-1])) if self.action_masks is not None else None
+        aux_opp_param_true = (
+            self.aux_opp_param_true.reshape((-1, self.aux_opp_param_true.shape[-2], self.aux_opp_param_true.shape[-1]))
+            if self.aux_opp_param_true is not None
+            else None
+        )
+        aux_opp_valid = (
+            self.aux_opp_valid.reshape((-1, self.aux_opp_valid.shape[-1])) if self.aux_opp_valid is not None else None
+        )
         return FlattenedBatch(
             obs=self.obs.reshape((-1,) + self.obs.shape[2:]),
             actions=self.actions.reshape((-1,) + self.actions.shape[2:]),
@@ -94,8 +127,9 @@ class RolloutBuffer:
             returns=self.returns.reshape(-1),
             values=self.values.reshape(-1),
             action_masks=mask,
+            aux_opp_param_true=aux_opp_param_true,
+            aux_opp_valid=aux_opp_valid,
         )
 
     def shuffled_indices(self) -> np.ndarray:
         return np.random.permutation(self.num_steps * self.num_envs)
-

@@ -53,6 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--init-model", type=Path, default=None)
     p.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--resume-from", type=Path, default=None, help="checkpoint path to resume from (defaults to <run>/models/last.pt when --resume)")
+    p.add_argument("--rollout-backend", choices=["gym", "native"], default="gym")
+    p.add_argument("--native-feature-id", type=str, default="submit_v1")
+    p.add_argument("--native-pf-enabled", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--native-amp", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--native-memory-format", choices=["auto", "nchw", "channels_last"], default="auto")
+    p.add_argument("--native-pin-memory", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--native-rollout-cache-device", choices=["auto", "cpu", "gpu"], default="auto")
+    p.add_argument("--native-distributed", choices=["auto", "off", "on"], default="auto")
+    p.add_argument("--native-model-preset", type=str, default="")
 
     p.add_argument("--total-timesteps", type=int, default=500_000)
     p.add_argument("--num-envs", type=int, default=8)
@@ -102,6 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--vf-coef", type=float, default=0.5)
+    p.add_argument("--aux-opp-param-loss-coef", type=float, default=0.0)
+    p.add_argument("--aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--max-grad-norm", type=float, default=0.5)
     p.add_argument("--target-kl", type=float, default=None, help="SB3 semantics: early stop when approx_kl > 1.5 * target_kl")
     p.add_argument("--clip-coef-schedule", choices=["constant", "linear", "cosine"], default="constant")
@@ -295,6 +306,8 @@ def args_to_cfg(args: argparse.Namespace) -> PPOConfig:
         ent_coef_final=args.ent_coef_final,
         ent_coef_schedule_expr=str(args.ent_coef_schedule_expr),
         vf_coef=args.vf_coef,
+        aux_opp_param_loss_coef=float(args.aux_opp_param_loss_coef),
+        aux_opp_param_use_valid_mask=bool(args.aux_opp_param_use_valid_mask),
         max_grad_norm=args.max_grad_norm,
         target_kl=args.target_kl,
         clip_coef_schedule=str(args.clip_coef_schedule),
@@ -342,6 +355,8 @@ def _validate_ppo_cfg(cfg: PPOConfig) -> None:
         raise ValueError(f"ent_coef_final must be >= 0 when set: {cfg.ent_coef_final}")
     if cfg.target_kl is not None and float(cfg.target_kl) <= 0.0:
         raise ValueError(f"target_kl must be positive when set: {cfg.target_kl}")
+    if float(getattr(cfg, "aux_opp_param_loss_coef", 0.0)) < 0.0:
+        raise ValueError(f"aux_opp_param_loss_coef must be >= 0: {cfg.aux_opp_param_loss_coef}")
 
     batch_size = int(cfg.batch_size)
     if batch_size <= 1 and bool(cfg.norm_adv):
@@ -850,13 +865,32 @@ def _run_periodic_val(
     }
 
 
+def _run_native_backend_from_train_ppo(*, args: argparse.Namespace, cfg: PPOConfig, device: torch.device) -> int:
+    from .native_ppo_runner import run_native_ppo_from_train_ppo_args
+
+    env_kwargs = parse_env_kwargs(args.env_kwargs_json)
+    return int(
+        run_native_ppo_from_train_ppo_args(
+            train_args=args,
+            cfg=cfg,
+            device=device,
+            env_kwargs=env_kwargs,
+        )
+    )
+
+
 def main() -> int:
     args = parse_args()
     cfg = args_to_cfg(args)
     _validate_ppo_cfg(cfg)
     _validate_schedule_args(cfg)
     _validate_vecnorm_args(args, cfg)
+    if str(args.rollout_backend).strip().lower() != "native" and float(cfg.aux_opp_param_loss_coef) > 0.0:
+        raise ValueError("aux_opp_param_loss_coef > 0 is supported only with rollout_backend=native")
     device = choose_device(args.device)
+    if str(args.rollout_backend).strip().lower() == "native":
+        return _run_native_backend_from_train_ppo(args=args, cfg=cfg, device=device)
+
     env_kwargs = parse_env_kwargs(args.env_kwargs_json)
     eval_env_kwargs = (
         parse_env_kwargs(args.eval_env_kwargs_json) if str(args.eval_env_kwargs_json).strip() else dict(env_kwargs)

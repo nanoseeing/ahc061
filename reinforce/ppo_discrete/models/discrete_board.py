@@ -66,6 +66,8 @@ class DiscreteBoardAgent(nn.Module):
         trunk_hidden_dims: tuple[int, ...] | list[int] | str = (256, 128),
         actor_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
         critic_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
+        aux_opp_param_head: bool = False,
+        aux_opp_param_hidden_dim: int = 64,
     ):
         super().__init__()
         if action_dim <= 0:
@@ -115,16 +117,23 @@ class DiscreteBoardAgent(nn.Module):
         self.critic: nn.Module
         self.conv: nn.Module | None = None
         self.trunk: nn.Module | None = None
+        self.aux_opp_param_head: nn.Module | None = None
+        self.use_aux_opp_param_head = bool(aux_opp_param_head)
+        self.aux_opp_param_hidden_dim = int(max(1, aux_opp_param_hidden_dim))
         self.global_dim = 0
+        self._encoded_dim = 0
 
         if self.model_type == "mlp":
             self.actor = build_mlp(obs_dim, mlp_hidden_dims_t, self.action_dim, out_std=0.01)
             self.critic = build_mlp(obs_dim, mlp_hidden_dims_t, 1, out_std=1.0)
+            self._encoded_dim = int(obs_dim)
             self.model_config: dict[str, Any] = {
                 "type": "DiscreteBoardAgent",
                 "kwargs": {
                     "model_type": "mlp",
                     "mlp_hidden_dims": list(mlp_hidden_dims_t),
+                    "aux_opp_param_head": bool(self.use_aux_opp_param_head),
+                    "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
                 },
             }
         else:
@@ -169,6 +178,7 @@ class DiscreteBoardAgent(nn.Module):
             else:
                 self.trunk = nn.Identity()
                 trunk_out = trunk_in
+            self._encoded_dim = int(trunk_out)
 
             self.actor = build_mlp(trunk_out, actor_head_hidden_dims_t, self.action_dim, out_std=0.01)
             self.critic = build_mlp(trunk_out, critic_head_hidden_dims_t, 1, out_std=1.0)
@@ -187,11 +197,20 @@ class DiscreteBoardAgent(nn.Module):
                     "trunk_hidden_dims": list(trunk_hidden_dims_t),
                     "actor_head_hidden_dims": list(actor_head_hidden_dims_t),
                     "critic_head_hidden_dims": list(critic_head_hidden_dims_t),
+                    "aux_opp_param_head": bool(self.use_aux_opp_param_head),
+                    "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
                 },
             }
+        if self.use_aux_opp_param_head:
+            self.aux_opp_param_head = nn.Sequential(
+                layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
+                nn.Tanh(),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+            )
 
     def _flatten_obs(self, obs: torch.Tensor) -> torch.Tensor:
-        return obs.view(obs.shape[0], -1)
+        # reshape handles non-standard strides (e.g., channels_last) safely.
+        return obs.reshape(obs.shape[0], -1)
 
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
         x = self._flatten_obs(obs)
@@ -223,11 +242,19 @@ class DiscreteBoardAgent(nn.Module):
         feat = self._encode(obs)
         return self.critic(feat)
 
+    def get_aux_opp_param(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.aux_opp_param_head is None:
+            raise RuntimeError("aux_opp_param_head is disabled for this model")
+        feat = self._encode(obs)
+        out = self.aux_opp_param_head(feat)
+        return out.view(out.shape[0], 7, 5)
+
     def get_action_and_value(
         self,
         obs: torch.Tensor,
         action: torch.Tensor | None = None,
         action_mask: torch.Tensor | None = None,
+        return_aux_opp_param: bool = False,
     ):
         feat = self._encode(obs)
         logits = self.actor(feat)
@@ -242,7 +269,28 @@ class DiscreteBoardAgent(nn.Module):
         dist = Categorical(logits=logits)
         if action is None:
             action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), self.critic(feat)
+        value = self.critic(feat)
+        if bool(return_aux_opp_param):
+            if self.aux_opp_param_head is None:
+                raise RuntimeError("aux_opp_param_head is disabled for this model")
+            aux = self.aux_opp_param_head(feat).view(feat.shape[0], 7, 5)
+            return action, dist.log_prob(action), dist.entropy(), value, aux
+        return action, dist.log_prob(action), dist.entropy(), value
+
+    def forward(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor | None = None,
+        action_mask: torch.Tensor | None = None,
+        return_aux_opp_param: bool = False,
+    ):
+        # Keep PPO update path on module forward so DDP hooks are triggered.
+        return self.get_action_and_value(
+            obs,
+            action=action,
+            action_mask=action_mask,
+            return_aux_opp_param=bool(return_aux_opp_param),
+        )
 
     def act(
         self,
