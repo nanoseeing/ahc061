@@ -52,8 +52,10 @@ def _run_once(backend: str):
     return e.posterior_feature_vector(max_enemies=7, normalize=True)
 
 
-def test_python_backend_observed_candidates_runs():
-    feat = _run_once("python")
+def test_auto_backend_observed_candidates_runs():
+    if not ensure_cpp_bayes_backend(build_if_missing=False, force_build=False, verbose=False):
+        return
+    feat = _run_once("auto")
     assert feat.shape == (28,)
     assert np.all(np.isfinite(feat))
 

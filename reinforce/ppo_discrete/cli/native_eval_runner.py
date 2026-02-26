@@ -19,6 +19,7 @@ class NativeTransition:
     action: int
     reward: float
     done: bool
+    bayes_params: np.ndarray
 
 
 @dataclass
@@ -129,9 +130,11 @@ def run_native_policy_episodes(
     done = torch.empty((1,), dtype=torch.uint8, device="cpu")
     seed_t = torch.empty((1,), dtype=torch.int64, device="cpu")
     need_aux = on_aux_transition is not None
+    need_bayes = on_transition is not None
     move_dist = torch.empty((1, 8, int(a)), dtype=torch.float32, device="cpu") if need_aux else None
     opp_param = torch.empty((1, 8, 5), dtype=torch.float32, device="cpu") if need_aux else None
     opp_valid = torch.empty((1, 8), dtype=torch.uint8, device="cpu") if need_aux else None
+    bayes_params = torch.empty((1, 7, 4), dtype=torch.float32, device="cpu") if need_bayes else None
 
     use_cuda = device.type == "cuda"
     use_amp = bool(use_cuda and amp)
@@ -165,6 +168,11 @@ def run_native_policy_episodes(
             ep_len = 0
             for step in range(t_limit):
                 obs_before = np.asarray(board[0], dtype=np.float32).copy() if on_transition is not None else None
+                bayes_before = None
+                if need_bayes:
+                    assert bayes_params is not None
+                    env.bayes_params_into(bayes_params)
+                    bayes_before = np.asarray(bayes_params[0], dtype=np.float32).reshape(-1).copy()
 
                 if policy_name == "random":
                     if bool(use_action_mask):
@@ -234,6 +242,11 @@ def run_native_policy_episodes(
                             action=int(action_idx),
                             reward=float(r),
                             done=bool(d),
+                            bayes_params=(
+                                bayes_before
+                                if bayes_before is not None
+                                else np.zeros((28,), dtype=np.float32)
+                            ),
                         )
                     )
                 if on_aux_transition is not None:

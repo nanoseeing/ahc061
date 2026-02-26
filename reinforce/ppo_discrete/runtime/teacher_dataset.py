@@ -16,6 +16,7 @@ DATASET_KEY_OPP_VALID = "opp_valid"
 BAYES_SOURCE_ENV_INFO = "env_info"
 BAYES_SOURCE_ZERO_FALLBACK = "zero_fallback"
 BAYES_SOURCE_NATIVE_ZERO_COMPAT = "native_zero_compat"
+BAYES_SOURCE_NATIVE_CPP = "native_cpp"
 
 
 def zero_bayes_params(shape: tuple[int, ...] = AHC061_BAYES_TAIL_SHAPE) -> np.ndarray:

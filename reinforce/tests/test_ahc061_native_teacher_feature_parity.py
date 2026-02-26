@@ -22,7 +22,7 @@ def _build_python_env_from_tools_case(case_path: Path) -> AHC061LocalEnv:
         reward_mode="delta_log_ratio",
         illegal_action_penalty=-0.05,
         bayes_num_particles=128,
-        bayes_backend="python",
+        bayes_backend="cpp",
         obs_mode="teacher_p0_v1_88ch",
     )
 

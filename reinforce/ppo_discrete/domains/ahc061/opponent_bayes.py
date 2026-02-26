@@ -11,7 +11,6 @@ import numpy as np
 logger = logging.getLogger(__name__)
 _CPP_CLASS_CACHE: type | None = None
 _CPP_LOAD_ERROR: Exception | None = None
-_AUTO_FALLBACK_WARNED: bool = False
 
 
 W_LO = 0.3
@@ -335,8 +334,13 @@ def _normalize_backend_name(backend: str) -> str:
     b = str(backend).strip().lower()
     if not b:
         b = "auto"
-    if b not in ("auto", "python", "cpp"):
-        raise ValueError(f"unsupported bayes backend: {backend!r}; expected auto|python|cpp")
+    if b == "python":
+        raise ValueError(
+            "bayes_backend='python' is no longer supported; "
+            "use bayes_backend='cpp' (or 'auto' which resolves to cpp)"
+        )
+    if b not in ("auto", "cpp"):
+        raise ValueError(f"unsupported bayes backend: {backend!r}; expected auto|cpp")
     return b
 
 
@@ -385,27 +389,11 @@ def create_opponent_bayes_estimator(
     backend: str = "auto",
     build_if_missing: bool = True,
 ) -> Any:
-    global _AUTO_FALLBACK_WARNED
     b = _normalize_backend_name(backend)
-    if b in ("auto", "cpp"):
-        try:
-            cls = _load_cpp_estimator_class(build_if_missing=build_if_missing)
-            return cls(
-                n=n,
-                m=m,
-                u=u,
-                num_particles=num_particles,
-                resample_ess_frac=resample_ess_frac,
-                seed=seed,
-            )
-        except Exception as e:
-            if b == "cpp":
-                raise
-            if not _AUTO_FALLBACK_WARNED:
-                logger.warning("cpp bayes backend unavailable (%s); fallback to python backend", e)
-                _AUTO_FALLBACK_WARNED = True
-
-    return OpponentBayesEstimator(
+    if b not in ("auto", "cpp"):
+        raise ValueError(f"unsupported bayes backend: {backend!r}; expected auto|cpp")
+    cls = _load_cpp_estimator_class(build_if_missing=build_if_missing)
+    return cls(
         n=n,
         m=m,
         u=u,

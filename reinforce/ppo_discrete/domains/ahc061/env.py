@@ -85,7 +85,7 @@ class AHC061LocalEnv(gym.Env):
         cache_cases: bool = False,
         bayes_num_particles: int = 128,
         bayes_resample_ess_frac: float = 0.55,
-        bayes_backend: str = "auto",
+        bayes_backend: str = "cpp",
         obs_mode: str = "legacy",
     ):
         super().__init__()

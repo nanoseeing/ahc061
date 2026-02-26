@@ -98,6 +98,10 @@ def parse_args() -> argparse.Namespace:
 def _validate_args(args: argparse.Namespace) -> None:
     if args.model_path is None:
         raise ValueError("--model-path is required")
+    env_id = str(args.env_id).strip()
+    rollout_backend = str(args.rollout_backend).strip().lower()
+    if env_id == "AHC061Local-v0" and rollout_backend != "native":
+        raise ValueError("AHC061Local-v0 requires --rollout-backend native")
 
 
 def choose_device(name: str) -> torch.device:

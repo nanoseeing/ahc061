@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use-action-mask", action="store_true", default=True)
     p.add_argument("--bayes-num-particles", type=int, default=128)
     p.add_argument("--bayes-seed", type=int, default=0)
-    p.add_argument("--bayes-backend", choices=["auto", "python", "cpp"], default="auto")
+    p.add_argument("--bayes-backend", choices=["auto", "cpp"], default="cpp")
     p.add_argument("--vecnorm-mode", choices=["auto", "on", "off"], default="auto")
     p.add_argument("--debug-stderr", action="store_true")
     return p.parse_args()

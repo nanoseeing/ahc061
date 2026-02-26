@@ -81,11 +81,13 @@ python -m reinforce.ppo_discrete.cli.run_pipeline \
 - `train_ppo_native` / `train_ppo --rollout-backend native` は `--resume` / `--resume-from` に対応し、`num_envs` / `num_steps` / `batch_size` 一致を厳格チェックします。
 - native PPO は `eval_interval_steps` / `eval_episodes` / `eval_fixed_seeds` / `eval_at_start` による periodic val を利用できます。
 - native PPO は `vecnorm`（obs/reward 正規化）に対応し、checkpoint の `vecnormalize_state` に保存・resume 復元されます。
-- `run_pipeline` は backend 組み合わせを事前検証します（例: collect native は AHC061 + sync 必須、`ppo_native_distributed=on` は不可、native-only 評価で `eval_casegen_*` は不可）。
-- `collect_teacher --rollout-backend native` は `bayes_params` を 28次元ゼロ埋めで保存します（BC互換のため、現状は学習で未使用）。
+- AHC061 (`env_id=AHC061Local-v0`) では `collect_teacher` / `train_ppo` / `eval_policy` / `run_pipeline` の rollout backend は native 必須です。
+- `run_pipeline` は backend 組み合わせを事前検証します（`ppo_native_distributed=on` は不可、native-only 評価で `eval_casegen_*` は不可）。
+- `collect_teacher --rollout-backend native` は `bayes_params` を C++ 側 PF posterior（28次元）で保存します。
 - `collect_teacher --native-save-aux-targets` を有効にすると、native 収集時に `opp_param_true` / `opp_valid`（別キー）を追加保存できます。
 - `train_bc --aux-opp-param-loss-coef > 0` で `opp_param_true` / `opp_valid` を補助損失に使用できます（モデルに aux head を自動有効化）。
 - `train_ppo_native --aux-opp-param-loss-coef > 0`（または `train_ppo --rollout-backend native` 同等引数）で、native rollout から `opp_param_true` / `opp_valid` を直接取り込み補助損失を適用できます。
-- `bayes_backend=cpp` を使う場合は `pybind11` が必要です。
+- AHC061 の `bayes_backend` は cpp 専用です（`auto` も cpp 解決）。`python` は未サポートです。
+- cpp Bayes backend ビルドには `pybind11` が必要です。
 - `train_ppo` の resume は `num_envs` / `num_steps` を checkpoint 作成時と一致させてください。
 - PPO は `batch_size=num_envs*num_steps` 単位で更新するため、`global_step` が `total_timesteps` を少し超えて終了する場合があります。

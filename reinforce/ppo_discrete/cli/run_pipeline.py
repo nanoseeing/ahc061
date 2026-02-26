@@ -430,6 +430,12 @@ def _validate_backend_combinations(args: argparse.Namespace) -> None:
     ppo_backend = str(args.ppo_rollout_backend).strip().lower()
     collect_policy = str(args.collect_policy).strip()
 
+    if is_ahc:
+        if (not bool(args.skip_collect)) and collect_backend != "native":
+            raise ValueError("AHC061Local-v0 requires collect_rollout_backend=native")
+        if ((not bool(args.skip_ppo)) or (not bool(args.skip_last_eval))) and ppo_backend != "native":
+            raise ValueError("AHC061Local-v0 requires ppo_rollout_backend=native for ppo/eval stages")
+
     if not bool(args.skip_collect):
         if collect_backend == "native":
             if not is_ahc:
@@ -520,8 +526,13 @@ def _normalize_bayes_backend_name(x: Any) -> str:
     b = str(x).strip().lower()
     if not b:
         b = "auto"
-    if b not in ("auto", "python", "cpp"):
-        raise ValueError(f"unsupported bayes_backend={x!r}; expected auto|python|cpp")
+    if b == "python":
+        raise ValueError(
+            "bayes_backend='python' is no longer supported; "
+            "use bayes_backend='cpp' (or 'auto' which resolves to cpp)"
+        )
+    if b not in ("auto", "cpp"):
+        raise ValueError(f"unsupported bayes_backend={x!r}; expected auto|cpp")
     return b
 
 
@@ -531,22 +542,19 @@ def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any],
 
     train_backend = _normalize_bayes_backend_name(env_kwargs.get("bayes_backend", "auto"))
     eval_backend = _normalize_bayes_backend_name(eval_env_kwargs.get("bayes_backend", train_backend))
-    needs_cpp = bool(train_backend in ("auto", "cpp") or eval_backend in ("auto", "cpp"))
 
     meta = {
-        "enabled": needs_cpp,
+        "enabled": True,
         "prepared": False,
         "train_backend": train_backend,
         "eval_backend": eval_backend,
     }
-    if not needs_cpp:
-        return meta
 
     ok = ensure_cpp_bayes_backend(build_if_missing=True, force_build=False, verbose=False)
-    if not ok and (train_backend == "cpp" or eval_backend == "cpp"):
-        raise RuntimeError("bayes_backend=cpp was requested but cpp backend build/import failed")
     if not ok:
-        logger.warning("cpp bayes backend was unavailable; auto backend will fallback to python")
+        raise RuntimeError(
+            "AHC061 bayes backend requires cpp implementation, but cpp backend build/import failed"
+        )
     meta["prepared"] = bool(ok)
     return meta
 
@@ -993,7 +1001,9 @@ def main() -> int:
             raise ValueError(
                 "AHC061Local-v0 with gym-based stages requires casegen_enable=true with casegen_num_cases > 0"
             )
-        if bool(args.casegen_enable):
+        if bool(args.casegen_enable) and not needs_train_casegen:
+            logger.info("casegen_enable=true is ignored for native-only AHC061 pipeline stages")
+        if bool(args.casegen_enable) and needs_train_casegen:
             train_gen_cmd = _ensure_gen_one_binary(Path(args.casegen_tools_dir))
             _apply_case_seed_kwargs(
                 env_kwargs,
@@ -1007,7 +1017,7 @@ def main() -> int:
                 tools_dir=Path(args.casegen_tools_dir),
             )
             env_kwargs["case_gen_cmd"] = str(train_gen_cmd)
-        if not str(args.eval_env_kwargs_json).strip() and bool(args.casegen_enable):
+        if not str(args.eval_env_kwargs_json).strip() and bool(args.casegen_enable) and needs_train_casegen:
             _apply_case_seed_kwargs(
                 eval_env_kwargs,
                 num_cases=int(args.casegen_num_cases),

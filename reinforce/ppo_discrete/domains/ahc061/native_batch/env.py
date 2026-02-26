@@ -99,6 +99,12 @@ class BatchEnv:
     def aux_targets_into(self, move_dist: torch.Tensor, opp_param: torch.Tensor, opp_valid: torch.Tensor) -> None:
         self._env.aux_targets_into(move_dist, opp_param, opp_valid)
 
+    def bayes_params(self) -> torch.Tensor:
+        return self._env.bayes_params()
+
+    def bayes_params_into(self, bayes_params: torch.Tensor) -> None:
+        self._env.bayes_params_into(bayes_params)
+
     def step(self, actions: torch.Tensor):
         return self._env.step(actions.to(dtype=torch.int64, device="cpu"))
 

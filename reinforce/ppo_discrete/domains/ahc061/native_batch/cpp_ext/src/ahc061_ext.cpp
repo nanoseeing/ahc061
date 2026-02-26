@@ -9,6 +9,7 @@
 
 #include "ahc061/core/env/env.hpp"
 #include "ahc061/core/features/feature_registry.hpp"
+#include "ahc061/core/features/features_teacher_bayes.hpp"
 
 namespace ahc061::exp002 {
 
@@ -118,6 +119,30 @@ public:
             compute_move_dist_ai_like_from_moves(env.st, old_p, op, moves_ptr, cnt, dist_local.data());
             float* out = dist_out + static_cast<std::ptrdiff_t>(new_p) * CELL_MAX;
             std::copy(dist_local.begin(), dist_local.end(), out);
+        }
+    }
+
+    static void write_bayes_params_for_env(
+        const EnvInstance& env,
+        bool pf_enabled,
+        float* bayes_out) {  // [(M_MAX-1), 4] in old-player order (p=1..)
+        std::fill(bayes_out, bayes_out + (M_MAX - 1) * 4, 0.0f);
+        if (!pf_enabled)
+            return;
+
+        FeatureCommon common{};
+        common.st = &env.st;
+        common.pf_enabled = pf_enabled;
+        common.pf = &env.pf;
+
+        const int m = env.st.m;
+        for (int old_p = 1; old_p < m; old_p++) {
+            const auto row = teacher_bayes_norm_row_from_pf(common, old_p);
+            const std::ptrdiff_t base = static_cast<std::ptrdiff_t>(old_p - 1) * 4;
+            bayes_out[base + 0] = row[0];
+            bayes_out[base + 1] = row[1];
+            bayes_out[base + 2] = row[2];
+            bayes_out[base + 3] = row[3];
         }
     }
 
@@ -293,6 +318,35 @@ public:
             torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU));
         aux_targets_into(move_dist, opp_param, opp_valid);
         return {move_dist, opp_param, opp_valid};
+    }
+
+    void bayes_params_into(torch::Tensor bayes_params) const {
+        TORCH_CHECK(bayes_params.device().is_cpu(), "bayes_params must be on CPU");
+        TORCH_CHECK(bayes_params.scalar_type() == torch::kFloat32, "bayes_params must be float32");
+        TORCH_CHECK(bayes_params.is_contiguous(), "bayes_params must be contiguous");
+        TORCH_CHECK(
+            bayes_params.sizes() == torch::IntArrayRef({batch_size_, M_MAX - 1, 4}),
+            "bayes_params shape mismatch");
+
+        auto* bayes_ptr = bayes_params.data_ptr<float>();
+        const auto grain = pick_grain(batch_size_);
+        at::parallel_for(0, batch_size_, grain, [&](std::int64_t begin, std::int64_t end) {
+            for (std::int64_t i = begin; i < end; i++) {
+                const auto& env = envs_[static_cast<std::size_t>(i)];
+                write_bayes_params_for_env(
+                    env,
+                    pf_enabled_,
+                    bayes_ptr + static_cast<std::ptrdiff_t>(i) * (M_MAX - 1) * 4);
+            }
+        });
+    }
+
+    torch::Tensor bayes_params() const {
+        auto bayes = torch::empty(
+            {batch_size_, M_MAX - 1, 4},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+        bayes_params_into(bayes);
+        return bayes;
     }
 
     void step_into(torch::Tensor actions, torch::Tensor reward, torch::Tensor done) {
@@ -666,6 +720,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             pybind11::arg("opp_param"),
             pybind11::arg("opp_valid"))
         .def("aux_targets", &BatchEnv::aux_targets)
+        .def("bayes_params_into", &BatchEnv::bayes_params_into, pybind11::arg("bayes_params"))
+        .def("bayes_params", &BatchEnv::bayes_params)
         .def("step_into", &BatchEnv::step_into, pybind11::arg("actions"), pybind11::arg("reward"), pybind11::arg("done"))
         .def("step", &BatchEnv::step, pybind11::arg("actions"))
         .def(

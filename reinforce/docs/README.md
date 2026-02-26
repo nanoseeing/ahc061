@@ -11,7 +11,7 @@
 - `python -m reinforce.ppo_discrete.cli.run_pipeline`
   - collect -> BC -> PPO(val) -> eval を一括実行
 - `python -m reinforce.ppo_discrete.cli.collect_teacher`
-  - 教師データ収集（`--rollout-backend gym|native`）
+  - 教師データ収集（AHC061 は `--rollout-backend native` 必須）
 - `python -m reinforce.ppo_discrete.cli.train_bc`
   - BC 事前学習
 - `python -m reinforce.ppo_discrete.cli.train_ppo`
@@ -71,7 +71,7 @@ torchrun --standalone --nproc_per_node=4 -m reinforce.ppo_discrete.cli.train_ppo
 - native backend の `eval_policy` も `vecnorm-mode`（auto/on/off）をサポートします。
 - `run_pipeline` でも `ppo_rollout_backend=native` の resume を利用できます。
 - `run_pipeline` は backend 組み合わせを早期検証し、不正構成は stage 実行前にエラー化します。
-- `collect_teacher --rollout-backend native` は `bayes_params` を 28次元ゼロ埋めで保存し、NPZ schema 互換を維持します（meta に source/policy を出力）。
+- `collect_teacher --rollout-backend native` は `bayes_params` を C++ PF posterior（28次元）で保存します（meta に source/policy を出力）。
 - `collect_teacher --native-save-aux-targets` で native 補助教師信号（`opp_param_true` / `opp_valid`）を別キー保存できます。
 - `train_bc --aux-opp-param-loss-coef` で `opp_param_true` / `opp_valid` を補助損失として学習に利用できます。
 - `train_ppo_native --aux-opp-param-loss-coef`（または `train_ppo --rollout-backend native`）でも同じ補助信号を PPO 更新へ統合できます。

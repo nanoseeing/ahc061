@@ -21,6 +21,7 @@ from ..runtime.teacher_dataset import (
     AHC061_BAYES_TAIL_SHAPE,
     AHC061_OPP_PARAM_TRUE_TAIL_SHAPE,
     AHC061_OPP_VALID_TAIL_SHAPE,
+    BAYES_SOURCE_NATIVE_CPP,
     BAYES_SOURCE_NATIVE_ZERO_COMPAT,
     DATASET_KEY_OPP_PARAM_TRUE,
     DATASET_KEY_OPP_VALID,
@@ -130,7 +131,12 @@ def _validate_args(args: argparse.Namespace) -> None:
         if args.model_path is None:
             raise ValueError("--model-path is required when policy is model_stochastic/model_greedy")
 
-    if str(args.rollout_backend).strip().lower() == "native":
+    backend = str(args.rollout_backend).strip().lower()
+    env_id = str(args.env_id).strip()
+    if env_id == "AHC061Local-v0" and backend != "native":
+        raise ValueError("AHC061Local-v0 requires --rollout-backend native")
+
+    if backend == "native":
         if str(args.env_id) != "AHC061Local-v0":
             raise ValueError("rollout_backend=native requires --env-id AHC061Local-v0")
         if str(args.policy) == "ahc061_main_greedy":
@@ -442,9 +448,12 @@ def main() -> int:
                 buffers["done"].append(int(bool(tr.done)))
                 buffers["episode"].append(int(tr.episode))
                 buffers["step"].append(int(tr.step))
-                # BC currently does not consume bayes_params; keep compatible field shape.
-                b = zero_bayes_params()
-                bayes_sources.add(BAYES_SOURCE_NATIVE_ZERO_COMPAT)
+                b = np.asarray(tr.bayes_params, dtype=np.float32).reshape(-1)
+                if b.shape != AHC061_BAYES_TAIL_SHAPE:
+                    b = zero_bayes_params()
+                    bayes_sources.add(BAYES_SOURCE_NATIVE_ZERO_COMPAT)
+                else:
+                    bayes_sources.add(BAYES_SOURCE_NATIVE_CPP)
                 if first_bayes_shape is None:
                     first_bayes_shape = tuple(int(x) for x in b.shape)
                 buffers["bayes_params"].append(b)
@@ -620,7 +629,7 @@ def main() -> int:
             "action_dim": int(spec_action_dim),
             "bayes_param_shape": list(first_bayes_shape if first_bayes_shape is not None else AHC061_BAYES_TAIL_SHAPE),
             "bayes_param_sources": resolve_bayes_sources_for_meta(bayes_sources),
-            "bayes_param_policy": "keep_npz_schema_compat;native_uses_zero_vector",
+            "bayes_param_policy": "store_observation_time_bayes_params;native_uses_cpp_posterior",
             "native_aux_saved": bool(save_native_aux),
             "native_aux_keys": ([DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_VALID] if save_native_aux else []),
             "opp_param_true_shape": (

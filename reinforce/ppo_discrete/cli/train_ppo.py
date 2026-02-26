@@ -238,8 +238,13 @@ def _normalize_bayes_backend_name(x: Any) -> str:
     b = str(x).strip().lower()
     if not b:
         b = "auto"
-    if b not in ("auto", "python", "cpp"):
-        raise ValueError(f"unsupported bayes_backend={x!r}; expected auto|python|cpp")
+    if b == "python":
+        raise ValueError(
+            "bayes_backend='python' is no longer supported; "
+            "use bayes_backend='cpp' (or 'auto' which resolves to cpp)"
+        )
+    if b not in ("auto", "cpp"):
+        raise ValueError(f"unsupported bayes_backend={x!r}; expected auto|cpp")
     return b
 
 
@@ -248,21 +253,17 @@ def _prepare_cpp_bayes_backend_if_needed(*, env_id: str, train_env_kwargs: dict[
         return {"enabled": False, "prepared": False, "train_backend": "", "eval_backend": ""}
     train_backend = _normalize_bayes_backend_name(train_env_kwargs.get("bayes_backend", "auto"))
     eval_backend = _normalize_bayes_backend_name(eval_env_kwargs.get("bayes_backend", train_backend))
-    needs_cpp = bool(train_backend in ("auto", "cpp") or eval_backend in ("auto", "cpp"))
     out = {
-        "enabled": needs_cpp,
+        "enabled": True,
         "prepared": False,
         "train_backend": train_backend,
         "eval_backend": eval_backend,
     }
-    if not needs_cpp:
-        return out
-
     ok = ensure_cpp_bayes_backend(build_if_missing=True, force_build=False, verbose=False)
-    if not ok and (train_backend == "cpp" or eval_backend == "cpp"):
-        raise RuntimeError("bayes_backend=cpp was requested but cpp backend build/import failed")
     if not ok:
-        logger.warning("cpp bayes backend unavailable; auto backend will fallback to python")
+        raise RuntimeError(
+            "AHC061 bayes backend requires cpp implementation, but cpp backend build/import failed"
+        )
     out["prepared"] = bool(ok)
     return out
 
@@ -885,10 +886,14 @@ def main() -> int:
     _validate_ppo_cfg(cfg)
     _validate_schedule_args(cfg)
     _validate_vecnorm_args(args, cfg)
-    if str(args.rollout_backend).strip().lower() != "native" and float(cfg.aux_opp_param_loss_coef) > 0.0:
+    rollout_backend = str(args.rollout_backend).strip().lower()
+    env_id = str(args.env_id).strip()
+    if env_id == "AHC061Local-v0" and rollout_backend != "native":
+        raise ValueError("AHC061Local-v0 requires --rollout-backend native")
+    if rollout_backend != "native" and float(cfg.aux_opp_param_loss_coef) > 0.0:
         raise ValueError("aux_opp_param_loss_coef > 0 is supported only with rollout_backend=native")
     device = choose_device(args.device)
-    if str(args.rollout_backend).strip().lower() == "native":
+    if rollout_backend == "native":
         return _run_native_backend_from_train_ppo(args=args, cfg=cfg, device=device)
 
     env_kwargs = parse_env_kwargs(args.env_kwargs_json)
