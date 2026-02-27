@@ -7,12 +7,10 @@ from typing import Any
 import numpy as np
 
 from ..data.teacher_dataset import (
-    AHC061_BAYES_TAIL_SHAPE,
-    AHC061_OPP_PARAM_TRUE_TAIL_SHAPE,
-    AHC061_OPP_VALID_TAIL_SHAPE,
     DATASET_KEY_OPP_PARAM_TRUE,
     DATASET_KEY_OPP_VALID,
 )
+from ..game_constants import BAYES_TAIL_SHAPE, OPP_PARAM_TRUE_TAIL_SHAPE, OPP_VALID_TAIL_SHAPE
 from ..utils.log_utils import get_logger
 
 logger = get_logger("teacher_dataset_merge")
@@ -80,7 +78,7 @@ def merge_teacher_shards(
     if obs_tail_shape is None:
         obs_tail_shape = tuple(int(x) for x in obs_shape_ref.tolist())
     if bayes_tail_shape is None:
-        bayes_tail_shape = AHC061_BAYES_TAIL_SHAPE
+        bayes_tail_shape = BAYES_TAIL_SHAPE
 
     if total <= 0:
         payload: dict[str, Any] = {
@@ -96,11 +94,11 @@ def merge_teacher_shards(
         }
         if bool(has_aux_targets):
             payload[DATASET_KEY_OPP_PARAM_TRUE] = np.zeros(
-                (0, *(opp_param_tail_shape or AHC061_OPP_PARAM_TRUE_TAIL_SHAPE)),
+                (0, *(opp_param_tail_shape or OPP_PARAM_TRUE_TAIL_SHAPE)),
                 dtype=np.float32,
             )
             payload[DATASET_KEY_OPP_VALID] = np.zeros(
-                (0, *(opp_valid_tail_shape or AHC061_OPP_VALID_TAIL_SHAPE)),
+                (0, *(opp_valid_tail_shape or OPP_VALID_TAIL_SHAPE)),
                 dtype=np.uint8,
             )
         np.savez_compressed(output_npz, **payload)
@@ -127,13 +125,13 @@ def merge_teacher_shards(
                 tmp / f"{DATASET_KEY_OPP_PARAM_TRUE}.npy",
                 mode="w+",
                 dtype=np.float32,
-                shape=(total, *(opp_param_tail_shape or AHC061_OPP_PARAM_TRUE_TAIL_SHAPE)),
+                shape=(total, *(opp_param_tail_shape or OPP_PARAM_TRUE_TAIL_SHAPE)),
             )
             opp_valid_mm = np.lib.format.open_memmap(
                 tmp / f"{DATASET_KEY_OPP_VALID}.npy",
                 mode="w+",
                 dtype=np.uint8,
-                shape=(total, *(opp_valid_tail_shape or AHC061_OPP_VALID_TAIL_SHAPE)),
+                shape=(total, *(opp_valid_tail_shape or OPP_VALID_TAIL_SHAPE)),
             )
 
         cursor = 0

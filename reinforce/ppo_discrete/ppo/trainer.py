@@ -24,7 +24,7 @@ class UpdateStats:
     aux_opp_param_loss: float
 
 
-def _aux_opp_param_mse(
+def aux_opp_param_mse(
     pred: torch.Tensor,
     target: torch.Tensor,
     valid: torch.Tensor,
@@ -259,7 +259,7 @@ class PPOTrainer:
                         aux_true_mb = aux_true_mb.to(device=model_device, non_blocking=use_non_blocking)
                     if aux_valid_mb.device != model_device:
                         aux_valid_mb = aux_valid_mb.to(device=model_device, non_blocking=use_non_blocking)
-                    aux_loss = _aux_opp_param_mse(
+                    aux_loss = aux_opp_param_mse(
                         aux_pred_mb.float(),
                         aux_true_mb.float(),
                         aux_valid_mb,

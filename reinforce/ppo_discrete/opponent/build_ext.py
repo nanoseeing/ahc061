@@ -40,7 +40,7 @@ def build_extension(*, force: bool = False, verbose: bool = False) -> Path:
 
     try:
         import pybind11
-    except Exception as e:
+    except ImportError as e:
         raise RuntimeError("pybind11 is required to build opponent_bayes_cpp extension") from e
 
     ext = Extension(

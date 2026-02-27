@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from reinforce.ppo_discrete.opponent import opponent_bayes as ob
-from reinforce.ppo_discrete.opponent.opponent_bayes import create_opponent_bayes_estimator, ensure_cpp_bayes_backend
+from reinforce.ppo_discrete.opponent import ensure_cpp_backend, opponent_bayes as ob
+from reinforce.ppo_discrete.opponent.opponent_bayes import create_opponent_bayes_estimator
 
 
 def _build_small_state():
@@ -53,7 +53,7 @@ def _run_once(backend: str):
 
 
 def test_auto_backend_observed_candidates_runs():
-    if not ensure_cpp_bayes_backend(build_if_missing=False, force_build=False, verbose=False):
+    if not ensure_cpp_backend(build_if_missing=False, force_build=False, verbose=False):
         return
     feat = _run_once("auto")
     assert feat.shape == (28,)
@@ -61,7 +61,7 @@ def test_auto_backend_observed_candidates_runs():
 
 
 def test_cpp_backend_observed_candidates_runs():
-    if not ensure_cpp_bayes_backend(build_if_missing=False, force_build=False, verbose=False):
+    if not ensure_cpp_backend(build_if_missing=False, force_build=False, verbose=False):
         return
     f_cpp = _run_once("cpp")
     assert f_cpp.shape == (28,)

@@ -69,7 +69,7 @@ def load_config_file(path: str | Path) -> dict[str, Any]:
     elif suf in (".yml", ".yaml"):
         try:
             import yaml  # type: ignore
-        except Exception as e:
+        except ImportError as e:
             raise RuntimeError("YAML config requires PyYAML (`pip install pyyaml`)") from e
         obj = yaml.safe_load(text)
     else:

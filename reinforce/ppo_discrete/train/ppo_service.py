@@ -22,7 +22,6 @@ from ..train.schedule import (
     PPOScheduleSet,
     resolve_vecnorm_gamma,
     schedule_progress,
-    validate_ppo_config,
     validate_vecnorm_config,
 )
 from ..env import BatchEnv, BatchEnvProtocol, ensure_batch_env
@@ -44,6 +43,7 @@ from ..utils.experiment import (
 )
 from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize
+from ..game_constants import AUX_OPP_PARAM_TOTAL, OPP_SLOT_COUNT
 from .requests import PPORequest, TrainPPORequest, args_to_cfg, build_ppo_request
 from ..eval.eval_service import run_policy_episodes
 
@@ -173,8 +173,8 @@ def _estimate_rollout_cache_nbytes(
     if bool(use_action_mask):
         total += t * b * int(action_dim)  # bool/uint8 action masks
     if bool(use_aux_opp_param_targets):
-        total += t * b * (7 * 5) * 4  # aux opp_param_true float32
-        total += t * b * 7  # aux opp_valid uint8/bool
+        total += t * b * AUX_OPP_PARAM_TOTAL * 4  # aux opp_param_true float32
+        total += t * b * OPP_SLOT_COUNT  # aux opp_valid uint8/bool
     return int(total)
 
 
@@ -589,9 +589,941 @@ def run_ppo_from_train_request(
     return int(run_ppo(ppo_req))
 
 
+class PPORunner:
+    """Manages PPO training state across stages."""
+
+    def __init__(
+        self,
+        args: PPORequest,
+        *,
+        cfg_global: PPOConfig,
+        local_cfg: PPOConfig,
+        schedules: PPOScheduleSet,
+        vecnorm_gamma: float,
+        dist_mode: str,
+        world_size: int,
+        rank: int,
+        local_rank: int,
+        local_num_envs: int,
+        local_num_minibatches: int,
+        aux_opp_param_loss_coef: float,
+        aux_opp_param_use_valid_mask: bool,
+        aux_opp_param_active: bool,
+    ) -> None:
+        self.args = args
+        self.cfg_global = cfg_global
+        self.local_cfg = local_cfg
+        self.schedules = schedules
+        self.vecnorm_gamma = vecnorm_gamma
+        self.dist_mode = dist_mode
+        self.world_size = world_size
+        self.rank = rank
+        self.local_rank = local_rank
+        self.local_num_envs = local_num_envs
+        self.local_num_minibatches = local_num_minibatches
+        self.aux_opp_param_loss_coef = aux_opp_param_loss_coef
+        self.aux_opp_param_use_valid_mask = aux_opp_param_use_valid_mask
+        self.aux_opp_param_active = aux_opp_param_active
+        self.is_distributed = world_size > 1
+        self.is_main = rank == 0
+        self.resume_enabled = bool(args.resume or args.resume_from is not None)
+        self.run_name = str(args.run_name).strip()
+        self.resume_from: Path | None = coerce_optional_path(getattr(args, "resume_from", None), dot_is_none=True)
+        # Mutable state set by phase methods
+        self.device: torch.device = torch.device("cpu")
+        self.layout: Any = None
+        self.use_channels_last = False
+        self.use_pin_memory = False
+        self.seed_base = 0
+        self.env: BatchEnvProtocol | None = None
+        self.feature_spec: Any = None
+        self.obs_shape: tuple[int, ...] = ()
+        self.action_dim = 0
+        self.agent: torch.nn.Module | None = None
+        self.rollout_agent: torch.nn.Module | None = None
+        self.resolved_model_config: dict[str, Any] = {}
+        self.train_vecnorm: VecNormalize | None = None
+        self.optimizer: torch.optim.Optimizer | None = None
+        self.trainer: PPOTrainer | None = None
+        self.cache_device: torch.device = torch.device("cpu")
+        self.rollout_workspace: Any = None
+        self.buffer: RolloutBuffer | None = None
+        self.rng: np.random.Generator = np.random.default_rng(0)
+        self.init_meta: dict[str, Any] = {}
+        self.resume_meta: dict[str, Any] = {}
+        self.global_step = 0
+        self.best_metric_value = float("-inf")
+        self.best_metric_name = "mean_official_score"
+        self.best_metric_source = ""
+        self.eval_round = 0
+        self.next_eval_step = int(max(1, _safe_int(getattr(args, "eval_interval_steps", 0), 0)))
+        self.next_checkpoint_step = 0
+        self.checkpoint_interval_steps = 0
+        self.periodic_val_enabled = False
+        self.eval_at_start_enabled = False
+        self.train_metrics_jsonl: Path = Path(".")
+        self.periodic_val_jsonl: Path = Path(".")
+        self.best_model: Path = Path(".")
+        self.last_model: Path = Path(".")
+        self.checkpoint_dir: Path = Path(".")
+        self.start_time = 0.0
+        self.num_iterations = int(cfg_global.num_iterations)
+        self.global_batch_size = int(cfg_global.batch_size)
+        self.start_iteration = 1
+        self.summary: dict[str, Any] | None = None
+
+    # ------------------------------------------------------------------
+    # Stage 1: device and distributed setup
+    # ------------------------------------------------------------------
+
+    def _setup_device_and_dist(self) -> None:
+        """Initialize distributed process group and select compute device."""
+        if self.is_distributed:
+            if not torch.cuda.is_available():
+                raise RuntimeError("distributed training requires CUDA")
+            if str(self.args.device) not in ("auto", "cuda", f"cuda:{self.local_rank}"):
+                raise RuntimeError(
+                    f"--device={self.args.device!r} conflicts with LOCAL_RANK={self.local_rank}. "
+                    "Use --device auto/cuda with torchrun."
+                )
+            dist.init_process_group(backend="nccl")
+        if self.is_distributed:
+            self.device = torch.device(f"cuda:{self.local_rank}")
+        else:
+            self.device = choose_device(str(self.args.device))
+        if self.device.type == "cuda":
+            if self.device.index is None:
+                torch.cuda.set_device(0)
+                self.device = torch.device("cuda:0")
+            else:
+                torch.cuda.set_device(self.device)
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+
+    # ------------------------------------------------------------------
+    # Stage 2: run directory, seeding, and initial manifest
+    # ------------------------------------------------------------------
+
+    def _setup_run_dir(self) -> None:
+        """Resolve run name, create layout, seed RNG, and write initial manifest."""
+        args = self.args
+        if not self.run_name and self.resume_enabled and self.resume_from is None:
+            raise ValueError("--resume requires --run-name or --resume-from for train_ppo")
+        if not self.run_name and self.resume_from is not None:
+            rp = Path(self.resume_from).resolve()
+            if rp.parent.name == "models" and rp.parent.parent.name:
+                self.run_name = rp.parent.parent.name
+            else:
+                self.run_name = rp.parent.name
+        if not self.run_name:
+            self.run_name = make_run_name("train_ppo", seed=self.cfg_global.seed)
+        if self.is_distributed:
+            run_name_box = [self.run_name if self.is_main else ""]
+            dist.broadcast_object_list(run_name_box, src=0)
+            self.run_name = str(run_name_box[0])
+
+        self.layout = create_run_layout(args.run_dir, self.run_name)
+        if self.resume_enabled and self.resume_from is None:
+            self.resume_from = self.layout.models_dir / "last.pt"
+        if self.resume_enabled and (self.resume_from is None or not Path(self.resume_from).exists()):
+            raise FileNotFoundError(f"resume checkpoint not found: {self.resume_from}")
+
+        self.use_channels_last = _resolve_use_channels_last(device=self.device, mode=str(args.memory_format))
+        self.use_pin_memory = bool(args.pin_memory and self.device.type == "cuda")
+        self.seed_base = int(self.cfg_global.seed) + int(self.rank) * 1_000_003
+        _seed_everything(self.seed_base, device=self.device)
+
+        if self.is_main:
+            update_manifest(
+                self.layout,
+                {
+                    "kind": "train_ppo",
+                    "status": "running",
+                    "run_name": self.run_name,
+                    "resume": {
+                        "enabled": bool(self.resume_enabled),
+                        "resume_from": (str(self.resume_from) if self.resume_from is not None else ""),
+                    },
+                    "args": to_jsonable(vars(args)),
+                    "ppo_config": to_jsonable(self.cfg_global),
+                    "ppo_config_local": to_jsonable(self.local_cfg),
+                    "distributed": {
+                        "mode": str(self.dist_mode),
+                        "world_size": int(self.world_size),
+                    },
+                    "paths": self.layout.as_dict(),
+                },
+            )
+        if self.is_distributed:
+            dist.barrier()
+        if self.is_main:
+            logger.info("[RUN] %s", self.run_name)
+            logger.info("[DEVICE] %s", self.device)
+            logger.info(
+                "[DDP] mode=%s world_size=%d local_num_envs=%d local_num_minibatches=%d",
+                str(self.dist_mode),
+                int(self.world_size),
+                int(self.local_num_envs),
+                int(self.local_num_minibatches),
+            )
+
+    # ------------------------------------------------------------------
+    # Stage 3: environment and model construction
+    # ------------------------------------------------------------------
+
+    def _build_env_and_model(self) -> None:
+        """Create batch environment, build agent, set up optimizer."""
+        args = self.args
+        local_cfg = self.local_cfg
+
+        env_impl = BatchEnv(
+            batch_size=int(local_cfg.num_envs),
+            feature_id=str(args.feature_id),
+            pf_enabled=bool(args.pf_enabled),
+            verbose_build=False,
+        )
+        self.env = ensure_batch_env(env_impl)
+        self.feature_spec = get_feature_spec(str(args.feature_id), verbose_build=False)
+        if local_cfg.num_steps > int(self.env.spec.t_max):
+            raise ValueError(
+                f"num_steps must be <= env.spec.t_max ({self.env.spec.t_max}) for cpp batch env; got {local_cfg.num_steps}"
+            )
+
+        board_size = int(self.env.board_size)
+        self.action_dim = int(self.env.action_dim)
+        self.obs_shape = (int(self.env.feature_channels), board_size, board_size)
+        self.train_vecnorm = (
+            VecNormalize(
+                num_envs=int(local_cfg.num_envs),
+                obs_shape=tuple(self.obs_shape),
+                norm_obs=bool(args.vecnorm_norm_obs),
+                norm_reward=bool(args.vecnorm_norm_reward),
+                clip_obs=float(args.vecnorm_clip_obs),
+                clip_reward=float(args.vecnorm_clip_reward),
+                epsilon=float(args.vecnorm_epsilon),
+                gamma=float(self.vecnorm_gamma),
+                training=True,
+            )
+            if bool(args.vecnorm)
+            else None
+        )
+
+        model_config = _resolve_model_config(args)
+        if self.aux_opp_param_active:
+            kwargs = model_config.get("kwargs")
+            if kwargs is None:
+                kwargs = {}
+                model_config["kwargs"] = kwargs
+            if not isinstance(kwargs, dict):
+                raise ValueError(f"model_config.kwargs must be dict, got {type(kwargs)!r}")
+            kwargs.setdefault("aux_opp_param_head", True)
+        preset_id = str(getattr(args, "model_preset", "")).strip()
+        if preset_id:
+            preset = get_model_preset(preset_id)
+            if preset.default_feature_id and str(args.feature_id) != str(preset.default_feature_id):
+                logger.warning(
+                    "model_preset=%s was tuned for feature_id=%s, but current feature_id=%s",
+                    preset_id,
+                    str(preset.default_feature_id),
+                    str(args.feature_id),
+                )
+
+        agent, self.resolved_model_config = build_agent(
+            obs_shape=self.obs_shape,
+            action_dim=self.action_dim,
+            model_config=model_config,
+            default_type=str(model_config.get("type", "DiscreteBoardAgent")),
+        )
+        agent = agent.to(self.device)
+        if self.use_channels_last and self.device.type == "cuda":
+            agent = agent.to(memory_format=torch.channels_last)
+        board_channels = getattr(agent, "board_channels", None)
+        if self.is_main and board_channels is not None and int(board_channels) != int(self.env.feature_channels):
+            logger.warning(
+                "board_channels(%d) != env.feature_channels(%d); observation will be split into board/global by flatten order",
+                int(board_channels),
+                int(self.env.feature_channels),
+            )
+        if self.is_main and int(self.feature_spec.channels) != int(self.env.feature_channels):
+            logger.warning(
+                "feature catalog channels(%d) != env feature_channels(%d) for feature_id=%s",
+                int(self.feature_spec.channels),
+                int(self.env.feature_channels),
+                str(args.feature_id),
+            )
+        if self.aux_opp_param_active and not callable(getattr(agent, "get_aux_opp_param", None)):
+            raise ValueError(
+                "aux_opp_param_loss_coef > 0 requires model to implement get_aux_opp_param(obs) -> [B,7,5]"
+            )
+
+        if bool(args.compile):
+            try:
+                agent = torch.compile(agent)
+            except Exception as e:  # pragma: no cover
+                if self.is_main:
+                    logger.warning("torch.compile failed; continue without compile: %s", e)
+
+        if self.is_distributed:
+            ddp_device_id = int(self.device.index if self.device.index is not None else self.local_rank)
+            agent = DDP(
+                agent,
+                device_ids=[ddp_device_id],
+                output_device=ddp_device_id,
+                broadcast_buffers=False,
+                gradient_as_bucket_view=True,
+            )
+
+        self.agent = agent
+        self.rollout_agent = _unwrap_ddp(agent)
+        self.optimizer = torch.optim.Adam(agent.parameters(), lr=float(self.local_cfg.learning_rate), eps=1e-5)
+
+    # ------------------------------------------------------------------
+    # Stage 4: weight loading and rollout infrastructure
+    # ------------------------------------------------------------------
+
+    def _restore_weights_and_infra(self) -> None:
+        """Load weights/vecnorm from checkpoint, build trainer and rollout infrastructure."""
+        args = self.args
+        local_cfg = self.local_cfg
+
+        restored_state = _restore_training_state(
+            args=args,
+            resume_enabled=bool(self.resume_enabled),
+            resume_from=self.resume_from,
+            agent=self.agent,
+            optimizer=self.optimizer,
+            obs_shape=tuple(self.obs_shape),
+            action_dim=int(self.action_dim),
+            cfg_global=self.cfg_global,
+            device=self.device,
+            is_main=bool(self.is_main),
+            best_metric_value=float(self.best_metric_value),
+            best_metric_name=str(self.best_metric_name),
+            best_metric_source=str(self.best_metric_source),
+        )
+        self.init_meta = dict(restored_state.init_meta)
+        self.resume_meta = dict(restored_state.resume_meta)
+        self.global_step = int(restored_state.global_step)
+        self.best_metric_value = float(restored_state.best_metric_value)
+        self.best_metric_name = str(restored_state.best_metric_name)
+        self.best_metric_source = str(restored_state.best_metric_source)
+        restored_eval_round = restored_state.restored_eval_round
+        restored_next_eval_step = restored_state.restored_next_eval_step
+        restored_next_checkpoint_step = restored_state.restored_next_checkpoint_step
+
+        incoming_vec_state = None
+        incoming_vec_source = ""
+        if self.resume_enabled:
+            cand = self.resume_meta.get("vecnormalize_state")
+            if isinstance(cand, dict):
+                incoming_vec_state = cand
+                incoming_vec_source = "resume"
+        else:
+            cand = self.init_meta.get("vecnormalize_state")
+            if isinstance(cand, dict):
+                incoming_vec_state = cand
+                incoming_vec_source = "init_model"
+
+        if self.train_vecnorm is not None:
+            if isinstance(incoming_vec_state, dict):
+                self.train_vecnorm.load_state_dict(incoming_vec_state)
+                self.train_vecnorm.set_training(True)
+                if self.is_main:
+                    logger.info("restored vecnormalize state from %s checkpoint", incoming_vec_source)
+            elif self.resume_enabled and self.is_main:
+                logger.warning("vecnorm is enabled but resume checkpoint has no vecnormalize_state")
+            if self.is_main:
+                logger.info(
+                    "vecnorm: enabled=true norm_obs=%s norm_reward=%s clip_obs=%.4f clip_reward=%.4f eps=%g gamma=%.6f",
+                    bool(self.train_vecnorm.norm_obs),
+                    bool(self.train_vecnorm.norm_reward),
+                    float(self.train_vecnorm.clip_obs),
+                    float(self.train_vecnorm.clip_reward),
+                    float(self.train_vecnorm.epsilon),
+                    float(self.train_vecnorm.gamma),
+                )
+        else:
+            if isinstance(incoming_vec_state, dict) and self.is_main:
+                logger.warning(
+                    "checkpoint has vecnormalize_state but vecnorm is disabled; observations/rewards will be unnormalized"
+                )
+            if self.is_main:
+                logger.info("vecnorm: enabled=false")
+
+        self.trainer = PPOTrainer(
+            cfg=local_cfg, agent=self.agent, optimizer=self.optimizer, use_channels_last=bool(self.use_channels_last)
+        )
+
+        estimated_cache_nbytes = _estimate_rollout_cache_nbytes(
+            num_steps=int(local_cfg.num_steps),
+            num_envs=int(local_cfg.num_envs),
+            obs_channels=int(self.env.feature_channels),
+            board_size=int(self.env.board_size),
+            action_dim=int(self.action_dim),
+            use_action_mask=bool(args.use_action_mask),
+            use_aux_opp_param_targets=bool(self.aux_opp_param_active),
+        )
+        self.cache_device = _choose_rollout_cache_device(
+            mode=str(args.rollout_cache_device),
+            train_device=self.device,
+            total_bytes=int(estimated_cache_nbytes),
+        )
+        cache_gib = float(estimated_cache_nbytes) / float(1024**3)
+
+        if self.is_main:
+            logger.info(
+                "[ENV] feature_id=%s channels=%d t_max=%d pf_enabled=%s",
+                args.feature_id,
+                int(self.env.feature_channels),
+                int(self.env.spec.t_max),
+                bool(args.pf_enabled),
+            )
+            logger.info(
+                "[FEATURE] id=%s channels=%d submit_supported=%s",
+                self.feature_spec.feature_id,
+                int(self.feature_spec.channels),
+                bool(self.feature_spec.submit_supported),
+            )
+            logger.info(
+                "[PERF] memory_format=%s pin_memory=%s rollout_cache_device=%s estimate=%.2fGiB",
+                ("channels_last" if self.use_channels_last else "nchw"),
+                bool(self.use_pin_memory),
+                str(self.cache_device),
+                cache_gib,
+            )
+            logger.info(
+                "[AUX] opp_param_loss_coef=%.6g use_valid_mask=%s active=%s",
+                float(self.aux_opp_param_loss_coef),
+                bool(self.aux_opp_param_use_valid_mask),
+                bool(self.aux_opp_param_active),
+            )
+            if self.device.type == "cuda" and self.cache_device.type == "cpu":
+                logger.warning("[PERF] rollout cache is on CPU; this can reduce GPU utilization during PPO updates")
+            logger.info("[MODEL] %s", self.resolved_model_config)
+            if self.resume_enabled:
+                logger.info(
+                    "[RESUME] enabled=%s from=%s step=%d",
+                    bool(self.resume_enabled),
+                    str(self.resume_from),
+                    int(self.global_step),
+                )
+
+        self.rollout_workspace = create_rollout_workspace(
+            self.env,
+            num_steps=int(local_cfg.num_steps),
+            device=self.device,
+            channels_last=bool(self.use_channels_last),
+            pin_memory=bool(self.use_pin_memory),
+            collect_aux_targets=bool(self.aux_opp_param_active),
+        )
+        self.buffer = RolloutBuffer(
+            num_steps=local_cfg.num_steps,
+            num_envs=local_cfg.num_envs,
+            obs_shape=self.obs_shape,
+            action_shape=tuple(),
+            device=self.cache_device,
+            use_action_mask=bool(args.use_action_mask),
+            action_dim=self.action_dim,
+            use_aux_opp_param_targets=bool(self.aux_opp_param_active),
+        )
+
+        self.rng = np.random.default_rng(int(self.seed_base))
+        if self.resume_enabled and isinstance(self.resume_meta.get("rng_state"), dict):
+            try:
+                self.rng.bit_generator.state = dict(self.resume_meta["rng_state"])
+            except Exception:
+                if self.is_main:
+                    logger.warning("failed to restore rng_state from resume; continuing with seeded RNG")
+
+        self.train_metrics_jsonl = self.layout.logs_dir / "train_metrics.jsonl"
+        self.periodic_val_jsonl = self.layout.logs_dir / "periodic_val_metrics.jsonl"
+        self.best_model = self.layout.models_dir / "best.pt"
+        self.last_model = self.layout.models_dir / "last.pt"
+        self.checkpoint_dir = self.layout.models_dir / "checkpoints"
+        (
+            self.periodic_val_enabled,
+            self.eval_at_start_enabled,
+            self.best_metric_name,
+            self.eval_round,
+            self.next_eval_step,
+            self.checkpoint_interval_steps,
+            self.next_checkpoint_step,
+        ) = _resolve_eval_checkpoint_state(
+            args=args,
+            resume_enabled=bool(self.resume_enabled),
+            global_step=int(self.global_step),
+            best_metric_name=str(self.best_metric_name),
+            restored_eval_round=restored_eval_round,
+            restored_next_eval_step=restored_next_eval_step,
+            restored_next_checkpoint_step=restored_next_checkpoint_step,
+        )
+        if self.checkpoint_interval_steps > 0 and self.is_main:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        vf_clip_schedule_desc = (
+            "disabled" if self.schedules.clip_range_vf is None else self.schedules.clip_range_vf.description
+        )
+        if self.is_main:
+            logger.info(
+                "schedules: lr=%s ent=%s clip=%s vf_clip=%s",
+                self.schedules.learning_rate.description,
+                self.schedules.ent_coef.description,
+                self.schedules.clip_coef.description,
+                vf_clip_schedule_desc,
+            )
+            if bool(self.cfg_global.clip_vloss) and self.schedules.clip_range_vf is None:
+                logger.warning("clip_vloss=true but clip_range_vf is unset; value clipping is disabled")
+
+        self.start_time = time.time()
+        self.start_iteration = int(self.global_step // self.global_batch_size) + 1
+        if self.start_iteration > self.num_iterations and self.is_main:
+            logger.info(
+                "no PPO update needed: global_step=%d already reached total_timesteps=%d",
+                int(self.global_step),
+                int(self.cfg_global.total_timesteps),
+            )
+
+    # ------------------------------------------------------------------
+    # Helpers shared across stages
+    # ------------------------------------------------------------------
+
+    def _build_resume_meta(self, *, iteration: int) -> dict[str, Any]:
+        return _build_resume_meta_payload(
+            iteration=int(iteration),
+            run_name=str(self.run_name),
+            global_step=int(self.global_step),
+            world_size=int(self.world_size),
+            feature_id=str(self.args.feature_id),
+            pf_enabled=bool(self.args.pf_enabled),
+            obs_shape=tuple(self.obs_shape),
+            action_dim=int(self.action_dim),
+            use_channels_last=bool(self.use_channels_last),
+            use_pin_memory=bool(self.use_pin_memory),
+            cache_device=self.cache_device,
+            cfg_global=self.cfg_global,
+            cfg_local=self.local_cfg,
+            best_metric_name=str(self.best_metric_name),
+            best_metric_value=float(self.best_metric_value),
+            best_metric_source=str(self.best_metric_source),
+            eval_round=int(self.eval_round),
+            next_eval_step=int(self.next_eval_step),
+            next_checkpoint_step=int(self.next_checkpoint_step),
+            rng=self.rng,
+            train_vecnorm=self.train_vecnorm,
+        )
+
+    def _make_val_kwargs(self) -> dict[str, Any]:
+        """Common kwargs for _run_periodic_val calls (excludes seed_start)."""
+        return dict(
+            env_id="AHC061Local-v0",
+            feature_id=str(self.args.feature_id),
+            pf_enabled=bool(self.args.pf_enabled),
+            agent=self.rollout_agent,
+            device=self.device,
+            episodes=int(self.args.eval_episodes),
+            deterministic=bool(self.args.eval_deterministic),
+            use_action_mask=bool(self.args.use_action_mask),
+            amp=bool(self.args.amp),
+            vecnorm_state=_vecnorm_state_or_none(self.train_vecnorm),
+            vecnorm_norm_obs=bool(self.args.vecnorm_norm_obs),
+            vecnorm_norm_reward=bool(self.args.vecnorm_eval_norm_reward),
+            vecnorm_clip_obs=float(self.args.vecnorm_clip_obs),
+            vecnorm_clip_reward=float(self.args.vecnorm_clip_reward),
+            vecnorm_epsilon=float(self.args.vecnorm_epsilon),
+            vecnorm_gamma=float(self.vecnorm_gamma),
+        )
+
+    def _eval_seed_base(self) -> int:
+        if not bool(self.args.eval_fixed_seeds):
+            return int(self.args.eval_seed_start) + int(self.eval_round) * int(self.args.eval_episodes)
+        return int(self.args.eval_seed_start)
+
+    # ------------------------------------------------------------------
+    # Stage 5: optional evaluation before first training iteration
+    # ------------------------------------------------------------------
+
+    def _run_eval_at_start(self) -> None:
+        """Run optional periodic validation before the first training iteration."""
+        if not (self.eval_at_start_enabled and self.global_step == 0):
+            return
+        if self.is_distributed:
+            dist.barrier()
+        if self.is_main:
+            seed_base = self._eval_seed_base()
+            eval_summary = _run_periodic_val(seed_start=seed_base, **self._make_val_kwargs())
+            eval_row = {
+                "global_step": 0,
+                "eval_round": int(self.eval_round),
+                "seed_base": int(seed_base),
+                "fixed_seeds": bool(self.args.eval_fixed_seeds),
+                "summary": eval_summary,
+            }
+            _append_jsonl(self.periodic_val_jsonl, eval_row)
+            logger.info(
+                "periodic_val@start step=0 round=%d return=%.5f game_score=%.2f",
+                int(self.eval_round),
+                float(eval_summary["return"]["mean"]),
+                float(eval_summary["terminal_game_score"]["mean"]),
+            )
+            cand = float(eval_summary["terminal_game_score"]["mean"])
+            if np.isfinite(cand) and cand > self.best_metric_value:
+                self.best_metric_value = float(cand)
+                self.best_metric_source = "periodic_val_at_start"
+                save_agent_checkpoint(
+                    self.best_model,
+                    _unwrap_model(self.agent),
+                    optimizer=self.optimizer,
+                    meta=self._build_resume_meta(iteration=0),
+                )
+        if self.is_distributed:
+            dist.barrier()
+        self.eval_round += 1
+
+    # ------------------------------------------------------------------
+    # Stage 6: main training loop
+    # ------------------------------------------------------------------
+
+    def _main_training_loop(self) -> None:
+        """Run the main PPO training loop."""
+        args = self.args
+        local_cfg = self.local_cfg
+
+        for iteration in range(self.start_iteration, self.num_iterations + 1):
+            progress = schedule_progress(int(iteration), int(self.num_iterations))
+            lr_current = float(self.schedules.learning_rate(progress))
+            if not np.isfinite(lr_current) or lr_current < 0.0:
+                raise ValueError(f"invalid scheduled learning_rate={lr_current} at progress={progress}")
+            self.optimizer.param_groups[0]["lr"] = lr_current
+
+            ent_coef_current = float(self.schedules.ent_coef(progress))
+            clip_coef_current = float(self.schedules.clip_coef(progress))
+            if not np.isfinite(ent_coef_current) or ent_coef_current < 0.0:
+                raise ValueError(f"invalid scheduled ent_coef={ent_coef_current} at progress={progress}")
+            if not np.isfinite(clip_coef_current) or clip_coef_current < 0.0:
+                raise ValueError(f"invalid scheduled clip_coef={clip_coef_current} at progress={progress}")
+            clip_range_vf_current: float | None = None
+            if self.schedules.clip_range_vf is not None:
+                clip_range_vf_current = float(self.schedules.clip_range_vf(progress))
+                if not np.isfinite(clip_range_vf_current) or clip_range_vf_current < 0.0:
+                    raise ValueError(
+                        f"invalid scheduled clip_range_vf={clip_range_vf_current} at progress={progress}"
+                    )
+            self.trainer.set_runtime_coefficients(
+                ent_coef=float(ent_coef_current),
+                clip_coef=float(clip_coef_current),
+                clip_range_vf=(None if clip_range_vf_current is None else float(clip_range_vf_current)),
+                aux_opp_param_loss_coef=float(self.aux_opp_param_loss_coef),
+                aux_opp_param_use_valid_mask=bool(self.aux_opp_param_use_valid_mask),
+            )
+
+            seeds = torch.as_tensor(
+                self.rng.integers(0, np.iinfo(np.int64).max, size=(local_cfg.num_envs,), dtype=np.int64),
+                dtype=torch.int64,
+                device="cpu",
+            )
+            self.env.reset_random(seeds)
+
+            rollout = collect_rollout(
+                self.env,
+                self.rollout_agent,
+                self.device,
+                local_cfg.num_steps,
+                use_action_mask=bool(args.use_action_mask),
+                sample=True,
+                amp=bool(args.amp),
+                channels_last=bool(self.use_channels_last),
+                workspace=self.rollout_workspace,
+                pin_memory=bool(self.use_pin_memory),
+                vecnorm=self.train_vecnorm,
+                collect_aux_targets=bool(self.aux_opp_param_active),
+            )
+
+            copy_non_blocking = bool(self.cache_device.type == "cuda")
+            self.buffer.obs.copy_(rollout.obs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+            self.buffer.actions.copy_(rollout.actions.to(device=self.cache_device, dtype=torch.long, non_blocking=copy_non_blocking))
+            self.buffer.logprobs.copy_(rollout.logprobs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+            self.buffer.rewards.copy_(rollout.rewards.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+            self.buffer.dones.copy_(rollout.dones.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+            self.buffer.values.copy_(rollout.values.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+            if self.buffer.action_masks is not None:
+                self.buffer.action_masks.copy_(rollout.masks.to(device=self.cache_device, dtype=torch.bool, non_blocking=copy_non_blocking))
+            if bool(self.aux_opp_param_active):
+                if rollout.aux_opp_param_true is None or rollout.aux_opp_valid is None:
+                    raise RuntimeError("rollout did not provide aux_opp_param targets")
+                if self.buffer.aux_opp_param_true is None or self.buffer.aux_opp_valid is None:
+                    raise RuntimeError("rollout buffer is missing aux_opp_param storage")
+                self.buffer.aux_opp_param_true.copy_(
+                    rollout.aux_opp_param_true.to(
+                        device=self.cache_device,
+                        dtype=torch.float32,
+                        non_blocking=copy_non_blocking,
+                    )
+                )
+                self.buffer.aux_opp_valid.copy_(
+                    rollout.aux_opp_valid.to(
+                        device=self.cache_device,
+                        dtype=torch.bool,
+                        non_blocking=copy_non_blocking,
+                    )
+                )
+
+            next_value = rollout.last_value.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+            next_done = rollout.last_done.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+            self.buffer.compute_gae(next_value, next_done, local_cfg.gamma, local_cfg.gae_lambda)
+            explained_variance_local = _explained_variance(self.buffer.values, self.buffer.returns)
+            stats = self.trainer.update(self.buffer)
+
+            stats_vec = torch.tensor(
+                [
+                    float(stats.policy_loss),
+                    float(stats.value_loss),
+                    float(stats.entropy),
+                    float(stats.approx_kl),
+                    float(stats.clipfrac),
+                    (0.0 if not np.isfinite(float(stats.value_clipfrac)) else float(stats.value_clipfrac)),
+                    (1.0 if not np.isfinite(float(stats.value_clipfrac)) else 0.0),
+                    (0.0 if not np.isfinite(float(explained_variance_local)) else float(explained_variance_local)),
+                    (0.0 if not np.isfinite(float(explained_variance_local)) else 1.0),
+                    (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else float(stats.aux_opp_param_loss)),
+                    (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else 1.0),
+                ],
+                device=self.device,
+                dtype=torch.float64,
+            )
+            _all_reduce_sum_tensor(stats_vec)
+            ws = float(max(1, int(self.world_size)))
+            policy_loss_g = float((stats_vec[0] / ws).item())
+            value_loss_g = float((stats_vec[1] / ws).item())
+            entropy_g = float((stats_vec[2] / ws).item())
+            approx_kl_g = float((stats_vec[3] / ws).item())
+            clipfrac_g = float((stats_vec[4] / ws).item())
+            value_clipfrac_g = float("nan") if float(stats_vec[6].item()) >= ws else float((stats_vec[5] / ws).item())
+            explained_variance_g = float("nan") if float(stats_vec[8].item()) <= 0.0 else float((stats_vec[7] / stats_vec[8]).item())
+            aux_opp_param_loss_g = float("nan") if float(stats_vec[10].item()) <= 0.0 else float((stats_vec[9] / stats_vec[10]).item())
+
+            score_now = self.env.official_score().to(dtype=torch.float32)
+            metric_vec = torch.tensor(
+                [float(score_now.sum().item()), float(score_now.numel())],
+                device=self.device,
+                dtype=torch.float64,
+            )
+            _all_reduce_sum_tensor(metric_vec)
+            mean_official = float((metric_vec[0] / metric_vec[1]).item()) if float(metric_vec[1].item()) > 0.0 else 0.0
+
+            self.global_step += int(self.global_batch_size)
+            _sync_vecnorm_ddp_(self.train_vecnorm, device=self.device)
+            elapsed_vec = torch.tensor([max(1e-9, time.time() - self.start_time)], device=self.device, dtype=torch.float64)
+            _all_reduce_max_tensor(elapsed_vec)
+            elapsed = float(elapsed_vec[0].item())
+            sps = int(float(self.global_step) / max(1e-9, elapsed))
+
+            row: dict[str, Any] = {
+                "iteration": int(iteration),
+                "global_step": int(self.global_step),
+                "sps": int(sps),
+                "learning_rate": float(lr_current),
+                "schedule_progress": float(progress),
+                "ent_coef_current": float(ent_coef_current),
+                "clip_coef_current": float(clip_coef_current),
+                "clip_range_vf_current": (
+                    float(clip_range_vf_current) if clip_range_vf_current is not None else float("nan")
+                ),
+                "policy_loss": float(policy_loss_g),
+                "value_loss": float(value_loss_g),
+                "entropy": float(entropy_g),
+                "approx_kl": float(approx_kl_g),
+                "clipfrac": float(clipfrac_g),
+                "value_clipfrac": float(value_clipfrac_g),
+                "explained_variance": float(explained_variance_g),
+                "aux_opp_param_loss": float(aux_opp_param_loss_g),
+                "mean_official_score": float(mean_official),
+            }
+
+            run_periodic_eval = bool(self.periodic_val_enabled and self.global_step >= self.next_eval_step)
+            if run_periodic_eval and self.is_distributed:
+                dist.barrier()
+            if run_periodic_eval and self.is_main:
+                seed_base = self._eval_seed_base()
+                eval_summary = _run_periodic_val(seed_start=seed_base, **self._make_val_kwargs())
+                eval_row = {
+                    "global_step": int(self.global_step),
+                    "eval_round": int(self.eval_round),
+                    "seed_base": int(seed_base),
+                    "fixed_seeds": bool(args.eval_fixed_seeds),
+                    "summary": eval_summary,
+                }
+                _append_jsonl(self.periodic_val_jsonl, eval_row)
+                row["periodic_val_mean_return"] = float(eval_summary["return"]["mean"])
+                row["periodic_val_mean_illegal_penalty"] = float(eval_summary["illegal_penalty"]["mean"])
+                row["periodic_val_mean_terminal_score"] = float(eval_summary["terminal_score"]["mean"])
+                row["periodic_val_mean_terminal_game_score"] = float(eval_summary["terminal_game_score"]["mean"])
+                row["periodic_val_mean_game_score_ratio"] = float(eval_summary["game_score_ratio"]["mean"])
+                cand = float(eval_summary["terminal_game_score"]["mean"])
+                if np.isfinite(cand) and cand > self.best_metric_value:
+                    self.best_metric_value = float(cand)
+                    self.best_metric_source = "periodic_val"
+                    save_agent_checkpoint(
+                        self.best_model,
+                        _unwrap_model(self.agent),
+                        optimizer=self.optimizer,
+                        meta=self._build_resume_meta(iteration=int(iteration)),
+                    )
+            if run_periodic_eval and self.is_distributed:
+                dist.barrier()
+            if run_periodic_eval:
+                self.eval_round += 1
+                self.next_eval_step += int(max(1, args.eval_interval_steps))
+            elif self.is_main and not self.periodic_val_enabled:
+                cand = float(mean_official)
+                if np.isfinite(cand) and cand > self.best_metric_value:
+                    self.best_metric_value = float(cand)
+                    self.best_metric_source = "mean_official_score"
+                    save_agent_checkpoint(
+                        self.best_model,
+                        _unwrap_model(self.agent),
+                        optimizer=self.optimizer,
+                        meta=self._build_resume_meta(iteration=int(iteration)),
+                    )
+
+            if self.is_main:
+                _append_jsonl(self.train_metrics_jsonl, row)
+
+            if self.is_main and args.log_interval_iters > 0 and (iteration % int(args.log_interval_iters) == 0):
+                logger.info(
+                    "iter=%d/%d step=%d sps=%d lr=%.6g ploss=%.5f vloss=%.5f aux=%.5f ent=%.5f kl=%.5f ev=%.5f vclip=%.5f score=%.1f",
+                    iteration,
+                    self.num_iterations,
+                    self.global_step,
+                    sps,
+                    lr_current,
+                    policy_loss_g,
+                    value_loss_g,
+                    aux_opp_param_loss_g,
+                    entropy_g,
+                    approx_kl_g,
+                    explained_variance_g,
+                    value_clipfrac_g,
+                    mean_official,
+                )
+
+            if self.is_main and (iteration % int(max(1, local_cfg.save_interval)) == 0 or iteration == self.num_iterations):
+                save_agent_checkpoint(
+                    self.last_model,
+                    _unwrap_model(self.agent),
+                    optimizer=self.optimizer,
+                    meta=self._build_resume_meta(iteration=int(iteration)),
+                )
+
+            if self.is_main and self.checkpoint_interval_steps > 0 and self.global_step >= int(self.next_checkpoint_step):
+                save_agent_checkpoint(
+                    self.checkpoint_dir / f"step_{int(self.global_step):012d}.pt",
+                    _unwrap_model(self.agent),
+                    optimizer=self.optimizer,
+                    meta=self._build_resume_meta(iteration=int(iteration)),
+                )
+                self.next_checkpoint_step += int(self.checkpoint_interval_steps)
+
+    # ------------------------------------------------------------------
+    # Stage 7: finalization
+    # ------------------------------------------------------------------
+
+    def _finalize(self) -> None:
+        """Save final model and write training summary."""
+        args = self.args
+        if self.is_main:
+            final_iteration = int(max(0, min(self.num_iterations, int(self.global_step // max(1, self.global_batch_size)))))
+            save_agent_checkpoint(
+                self.last_model,
+                _unwrap_model(self.agent),
+                optimizer=self.optimizer,
+                meta=self._build_resume_meta(iteration=final_iteration),
+            )
+            self.summary = {
+                "run_name": self.run_name,
+                "run_dir": str(self.layout.root),
+                "global_step": int(self.global_step),
+                "final_iteration": int(final_iteration),
+                "env_id": "AHC061Local-v0",
+                "feature_id": str(args.feature_id),
+                "pf_enabled": bool(args.pf_enabled),
+                "aux_opp_param": {
+                    "loss_coef": float(self.aux_opp_param_loss_coef),
+                    "use_valid_mask": bool(self.aux_opp_param_use_valid_mask),
+                    "active": bool(self.aux_opp_param_active),
+                },
+                "vecnormalize": {
+                    "enabled": bool(self.train_vecnorm is not None),
+                    "norm_obs": bool(args.vecnorm_norm_obs),
+                    "norm_reward_train": bool(args.vecnorm_norm_reward),
+                    "norm_reward_val": bool(args.vecnorm_eval_norm_reward),
+                    "clip_obs": float(args.vecnorm_clip_obs),
+                    "clip_reward": float(args.vecnorm_clip_reward),
+                    "epsilon": float(args.vecnorm_epsilon),
+                    "gamma": float(self.vecnorm_gamma),
+                },
+                "periodic_val": {
+                    "enabled": bool(self.periodic_val_enabled),
+                    "interval_steps": int(args.eval_interval_steps),
+                    "episodes": int(args.eval_episodes),
+                    "seed_start": int(args.eval_seed_start),
+                    "fixed_seeds": bool(args.eval_fixed_seeds),
+                    "deterministic": bool(args.eval_deterministic),
+                    "val_at_start": bool(args.eval_at_start),
+                    "metrics_jsonl": str(self.periodic_val_jsonl),
+                },
+                "resume": {
+                    "enabled": bool(self.resume_enabled),
+                    "resume_from": (str(self.resume_from) if self.resume_from is not None else ""),
+                },
+                "best_metric": {
+                    "name": str(self.best_metric_name),
+                    "value": float(self.best_metric_value),
+                    "source": str(self.best_metric_source),
+                },
+                "models": {
+                    "best": str(self.best_model),
+                    "last": str(self.last_model),
+                    "checkpoint_dir": (str(self.checkpoint_dir) if self.checkpoint_interval_steps > 0 else ""),
+                    "checkpoint_interval_steps": int(self.checkpoint_interval_steps),
+                },
+                "logs": {
+                    "train_metrics_jsonl": str(self.train_metrics_jsonl),
+                    "periodic_val_metrics_jsonl": str(self.periodic_val_jsonl),
+                },
+                "elapsed_sec": float(time.time() - self.start_time),
+            }
+            (self.layout.reports_dir / "train_summary.json").write_text(json.dumps(self.summary, indent=2), encoding="utf-8")
+            (self.layout.root / "summary.json").write_text(json.dumps(self.summary, indent=2), encoding="utf-8")
+            update_manifest(
+                self.layout,
+                {
+                    "status": "completed",
+                    "result": self.summary,
+                },
+            )
+        if self.is_distributed:
+            dist.barrier()
+
+    # ------------------------------------------------------------------
+    # Orchestration
+    # ------------------------------------------------------------------
+
+    def run(self) -> int:
+        """Execute all training stages in sequence."""
+        self._setup_device_and_dist()
+        self._setup_run_dir()
+        self._build_env_and_model()
+        self._restore_weights_and_infra()
+        self._run_eval_at_start()
+        self._main_training_loop()
+        self._finalize()
+        return 0
+
+
 def run_ppo(args: PPORequest) -> int:
     cfg_global = args_to_cfg(args)
-    validate_ppo_config(cfg_global)
     schedules = PPOScheduleSet.from_config(cfg_global)
     validate_vecnorm_config(
         enabled=bool(args.vecnorm),
@@ -641,841 +1573,32 @@ def run_ppo(args: PPORequest) -> int:
     aux_opp_param_use_valid_mask = bool(getattr(cfg_global, "aux_opp_param_use_valid_mask", True))
     aux_opp_param_active = bool(aux_opp_param_loss_coef > 0.0)
 
-    device: torch.device | None = None
-    global_step = 0
-    is_main = int(rank) == 0
-    resume_enabled = bool(args.resume or args.resume_from is not None)
-    layout = None
-    best_metric_value = float("-inf")
-    best_metric_name = "mean_official_score"
-    best_metric_source = ""
-    eval_round = 0
-    next_eval_step = int(max(1, _safe_int(getattr(args, "eval_interval_steps", 0), 0)))
-    next_checkpoint_step = 0
-    run_name = str(args.run_name).strip()
-    resume_from = coerce_optional_path(getattr(args, "resume_from", None), dot_is_none=True)
-    summary: dict[str, Any] | None = None
-    restored_next_checkpoint_step: int | None = None
-    restored_next_eval_step: int | None = None
-    restored_eval_round: int | None = None
-    train_vecnorm: VecNormalize | None = None
+    runner = PPORunner(
+        args,
+        cfg_global=cfg_global,
+        local_cfg=local_cfg,
+        schedules=schedules,
+        vecnorm_gamma=float(vecnorm_gamma),
+        dist_mode=str(dist_mode),
+        world_size=int(world_size),
+        rank=int(rank),
+        local_rank=int(local_rank),
+        local_num_envs=int(local_num_envs),
+        local_num_minibatches=int(local_num_minibatches),
+        aux_opp_param_loss_coef=float(aux_opp_param_loss_coef),
+        aux_opp_param_use_valid_mask=bool(aux_opp_param_use_valid_mask),
+        aux_opp_param_active=bool(aux_opp_param_active),
+    )
     try:
-        if is_distributed:
-            if not torch.cuda.is_available():
-                raise RuntimeError("distributed training requires CUDA")
-            if str(args.device) not in ("auto", "cuda", f"cuda:{local_rank}"):
-                raise RuntimeError(
-                    f"--device={args.device!r} conflicts with LOCAL_RANK={local_rank}. "
-                    "Use --device auto/cuda with torchrun."
-                )
-            dist.init_process_group(backend="nccl")
-
-        if is_distributed:
-            device = torch.device(f"cuda:{local_rank}")
-        else:
-            device = choose_device(str(args.device))
-        if device.type == "cuda":
-            if device.index is None:
-                torch.cuda.set_device(0)
-                device = torch.device("cuda:0")
-            else:
-                torch.cuda.set_device(device)
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            torch.set_float32_matmul_precision("high")
-
-        if not run_name and resume_enabled and resume_from is None:
-            raise ValueError("--resume requires --run-name or --resume-from for train_ppo")
-        if not run_name and resume_from is not None:
-            rp = Path(resume_from).resolve()
-            if rp.parent.name == "models" and rp.parent.parent.name:
-                run_name = rp.parent.parent.name
-            else:
-                run_name = rp.parent.name
-        if not run_name:
-            run_name = make_run_name("train_ppo", seed=cfg_global.seed)
-
-        if is_distributed:
-            run_name_box = [run_name if is_main else ""]
-            dist.broadcast_object_list(run_name_box, src=0)
-            run_name = str(run_name_box[0])
-
-        layout = create_run_layout(args.run_dir, run_name)
-        if resume_enabled and resume_from is None:
-            resume_from = layout.models_dir / "last.pt"
-        if resume_enabled and (resume_from is None or not Path(resume_from).exists()):
-            raise FileNotFoundError(f"resume checkpoint not found: {resume_from}")
-
-        use_channels_last = _resolve_use_channels_last(device=device, mode=str(args.memory_format))
-        use_pin_memory = bool(args.pin_memory and device.type == "cuda")
-
-        seed_base = int(cfg_global.seed) + int(rank) * 1_000_003
-        _seed_everything(seed_base, device=device)
-        if is_main:
-            update_manifest(
-                layout,
-                {
-                    "kind": "train_ppo",
-                    "status": "running",
-                    "run_name": run_name,
-                    "resume": {
-                        "enabled": bool(resume_enabled),
-                        "resume_from": (str(resume_from) if resume_from is not None else ""),
-                    },
-                    "args": to_jsonable(vars(args)),
-                    "ppo_config": to_jsonable(cfg_global),
-                    "ppo_config_local": to_jsonable(local_cfg),
-                    "distributed": {
-                        "mode": str(dist_mode),
-                        "world_size": int(world_size),
-                    },
-                    "paths": layout.as_dict(),
-                },
-            )
-        if is_distributed:
-            dist.barrier()
-        if is_main:
-            logger.info("[RUN] %s", run_name)
-            logger.info("[DEVICE] %s", device)
-            logger.info(
-                "[DDP] mode=%s world_size=%d local_num_envs=%d local_num_minibatches=%d",
-                str(dist_mode),
-                int(world_size),
-                int(local_num_envs),
-                int(local_num_minibatches),
-            )
-
-        env_impl = BatchEnv(
-            batch_size=int(local_cfg.num_envs),
-            feature_id=str(args.feature_id),
-            pf_enabled=bool(args.pf_enabled),
-            verbose_build=False,
-        )
-        env: BatchEnvProtocol = ensure_batch_env(env_impl)
-        feature_spec = get_feature_spec(str(args.feature_id), verbose_build=False)
-        if local_cfg.num_steps > int(env.spec.t_max):
-            raise ValueError(
-                f"num_steps must be <= env.spec.t_max ({env.spec.t_max}) for cpp batch env; got {local_cfg.num_steps}"
-            )
-
-        board_size = int(env.board_size)
-        action_dim = int(env.action_dim)
-        obs_shape = (int(env.feature_channels), board_size, board_size)
-        train_vecnorm = (
-            VecNormalize(
-                num_envs=int(local_cfg.num_envs),
-                obs_shape=tuple(obs_shape),
-                norm_obs=bool(args.vecnorm_norm_obs),
-                norm_reward=bool(args.vecnorm_norm_reward),
-                clip_obs=float(args.vecnorm_clip_obs),
-                clip_reward=float(args.vecnorm_clip_reward),
-                epsilon=float(args.vecnorm_epsilon),
-                gamma=float(vecnorm_gamma),
-                training=True,
-            )
-            if bool(args.vecnorm)
-            else None
-        )
-        model_config = _resolve_model_config(args)
-        if aux_opp_param_active:
-            kwargs = model_config.get("kwargs")
-            if kwargs is None:
-                kwargs = {}
-                model_config["kwargs"] = kwargs
-            if not isinstance(kwargs, dict):
-                raise ValueError(f"model_config.kwargs must be dict, got {type(kwargs)!r}")
-            kwargs.setdefault("aux_opp_param_head", True)
-        preset_id = str(getattr(args, "model_preset", "")).strip()
-        if preset_id:
-            preset = get_model_preset(preset_id)
-            if preset.default_feature_id and str(args.feature_id) != str(preset.default_feature_id):
-                logger.warning(
-                    "model_preset=%s was tuned for feature_id=%s, but current feature_id=%s",
-                    preset_id,
-                    str(preset.default_feature_id),
-                    str(args.feature_id),
-                )
-
-        agent, resolved_model_config = build_agent(
-            obs_shape=obs_shape,
-            action_dim=action_dim,
-            model_config=model_config,
-            default_type=str(model_config.get("type", "DiscreteBoardAgent")),
-        )
-        agent = agent.to(device)
-        if use_channels_last and device.type == "cuda":
-            agent = agent.to(memory_format=torch.channels_last)
-        board_channels = getattr(agent, "board_channels", None)
-        if is_main and board_channels is not None and int(board_channels) != int(env.feature_channels):
-            logger.warning(
-                "board_channels(%d) != env.feature_channels(%d); observation will be split into board/global by flatten order",
-                int(board_channels),
-                int(env.feature_channels),
-            )
-        if is_main and int(feature_spec.channels) != int(env.feature_channels):
-            logger.warning(
-                "feature catalog channels(%d) != env feature_channels(%d) for feature_id=%s",
-                int(feature_spec.channels),
-                int(env.feature_channels),
-                str(args.feature_id),
-            )
-        if aux_opp_param_active and not callable(getattr(agent, "get_aux_opp_param", None)):
-            raise ValueError(
-                "aux_opp_param_loss_coef > 0 requires model to implement get_aux_opp_param(obs) -> [B,7,5]"
-            )
-
-        if bool(args.compile):
-            try:
-                agent = torch.compile(agent)
-            except Exception as e:  # pragma: no cover
-                if is_main:
-                    logger.warning("torch.compile failed; continue without compile: %s", e)
-
-        if is_distributed:
-            ddp_device_id = int(device.index if device.index is not None else local_rank)
-            agent = DDP(
-                agent,
-                device_ids=[ddp_device_id],
-                output_device=ddp_device_id,
-                broadcast_buffers=False,
-                gradient_as_bucket_view=True,
-            )
-
-        optimizer = torch.optim.Adam(agent.parameters(), lr=float(local_cfg.learning_rate), eps=1e-5)
-        restored_state = _restore_training_state(
-            args=args,
-            resume_enabled=bool(resume_enabled),
-            resume_from=resume_from,
-            agent=agent,
-            optimizer=optimizer,
-            obs_shape=tuple(obs_shape),
-            action_dim=int(action_dim),
-            cfg_global=cfg_global,
-            device=device,
-            is_main=bool(is_main),
-            best_metric_value=float(best_metric_value),
-            best_metric_name=str(best_metric_name),
-            best_metric_source=str(best_metric_source),
-        )
-        init_meta = dict(restored_state.init_meta)
-        resume_meta = dict(restored_state.resume_meta)
-        global_step = int(restored_state.global_step)
-        best_metric_value = float(restored_state.best_metric_value)
-        best_metric_name = str(restored_state.best_metric_name)
-        best_metric_source = str(restored_state.best_metric_source)
-        restored_eval_round = restored_state.restored_eval_round
-        restored_next_eval_step = restored_state.restored_next_eval_step
-        restored_next_checkpoint_step = restored_state.restored_next_checkpoint_step
-
-        incoming_vec_state = None
-        incoming_vec_source = ""
-        if resume_enabled:
-            cand = resume_meta.get("vecnormalize_state")
-            if isinstance(cand, dict):
-                incoming_vec_state = cand
-                incoming_vec_source = "resume"
-        else:
-            cand = init_meta.get("vecnormalize_state")
-            if isinstance(cand, dict):
-                incoming_vec_state = cand
-                incoming_vec_source = "init_model"
-
-        if train_vecnorm is not None:
-            if isinstance(incoming_vec_state, dict):
-                train_vecnorm.load_state_dict(incoming_vec_state)
-                train_vecnorm.set_training(True)
-                if is_main:
-                    logger.info("restored vecnormalize state from %s checkpoint", incoming_vec_source)
-            elif resume_enabled and is_main:
-                logger.warning("vecnorm is enabled but resume checkpoint has no vecnormalize_state")
-            if is_main:
-                logger.info(
-                    "vecnorm: enabled=true norm_obs=%s norm_reward=%s clip_obs=%.4f clip_reward=%.4f eps=%g gamma=%.6f",
-                    bool(train_vecnorm.norm_obs),
-                    bool(train_vecnorm.norm_reward),
-                    float(train_vecnorm.clip_obs),
-                    float(train_vecnorm.clip_reward),
-                    float(train_vecnorm.epsilon),
-                    float(train_vecnorm.gamma),
-                )
-        else:
-            if isinstance(incoming_vec_state, dict) and is_main:
-                logger.warning(
-                    "checkpoint has vecnormalize_state but vecnorm is disabled; observations/rewards will be unnormalized"
-                )
-            if is_main:
-                logger.info("vecnorm: enabled=false")
-
-        trainer = PPOTrainer(cfg=local_cfg, agent=agent, optimizer=optimizer, use_channels_last=bool(use_channels_last))
-
-        estimated_cache_nbytes = _estimate_rollout_cache_nbytes(
-            num_steps=int(local_cfg.num_steps),
-            num_envs=int(local_cfg.num_envs),
-            obs_channels=int(env.feature_channels),
-            board_size=int(env.board_size),
-            action_dim=int(action_dim),
-            use_action_mask=bool(args.use_action_mask),
-            use_aux_opp_param_targets=bool(aux_opp_param_active),
-        )
-        cache_device = _choose_rollout_cache_device(
-            mode=str(args.rollout_cache_device),
-            train_device=device,
-            total_bytes=int(estimated_cache_nbytes),
-        )
-        cache_gib = float(estimated_cache_nbytes) / float(1024**3)
-
-        if is_main:
-            logger.info(
-                "[ENV] feature_id=%s channels=%d t_max=%d pf_enabled=%s",
-                args.feature_id,
-                int(env.feature_channels),
-                int(env.spec.t_max),
-                bool(args.pf_enabled),
-            )
-            logger.info(
-                "[FEATURE] id=%s channels=%d submit_supported=%s",
-                feature_spec.feature_id,
-                int(feature_spec.channels),
-                bool(feature_spec.submit_supported),
-            )
-            logger.info(
-                "[PERF] memory_format=%s pin_memory=%s rollout_cache_device=%s estimate=%.2fGiB",
-                ("channels_last" if use_channels_last else "nchw"),
-                bool(use_pin_memory),
-                str(cache_device),
-                cache_gib,
-            )
-            logger.info(
-                "[AUX] opp_param_loss_coef=%.6g use_valid_mask=%s active=%s",
-                float(aux_opp_param_loss_coef),
-                bool(aux_opp_param_use_valid_mask),
-                bool(aux_opp_param_active),
-            )
-            if device.type == "cuda" and cache_device.type == "cpu":
-                logger.warning("[PERF] rollout cache is on CPU; this can reduce GPU utilization during PPO updates")
-            logger.info("[MODEL] %s", resolved_model_config)
-            if resume_enabled:
-                logger.info(
-                    "[RESUME] enabled=%s from=%s step=%d",
-                    bool(resume_enabled),
-                    str(resume_from),
-                    int(global_step),
-                )
-
-        rollout_workspace = create_rollout_workspace(
-            env,
-            num_steps=int(local_cfg.num_steps),
-            device=device,
-            channels_last=bool(use_channels_last),
-            pin_memory=bool(use_pin_memory),
-            collect_aux_targets=bool(aux_opp_param_active),
-        )
-        buffer = RolloutBuffer(
-            num_steps=local_cfg.num_steps,
-            num_envs=local_cfg.num_envs,
-            obs_shape=obs_shape,
-            action_shape=tuple(),
-            device=cache_device,
-            use_action_mask=bool(args.use_action_mask),
-            action_dim=action_dim,
-            use_aux_opp_param_targets=bool(aux_opp_param_active),
-        )
-
-        rng = np.random.default_rng(int(seed_base))
-        if resume_enabled and isinstance(resume_meta.get("rng_state"), dict):
-            try:
-                rng.bit_generator.state = dict(resume_meta["rng_state"])
-            except Exception:
-                if is_main:
-                    logger.warning("failed to restore rng_state from resume; continuing with seeded RNG")
-
-        train_metrics_jsonl = layout.logs_dir / "train_metrics.jsonl"
-        periodic_val_jsonl = layout.logs_dir / "periodic_val_metrics.jsonl"
-        best_model = layout.models_dir / "best.pt"
-        last_model = layout.models_dir / "last.pt"
-        checkpoint_dir = layout.models_dir / "checkpoints"
-        (
-            periodic_val_enabled,
-            eval_at_start_enabled,
-            best_metric_name,
-            eval_round,
-            next_eval_step,
-            checkpoint_interval_steps,
-            next_checkpoint_step,
-        ) = _resolve_eval_checkpoint_state(
-            args=args,
-            resume_enabled=bool(resume_enabled),
-            global_step=int(global_step),
-            best_metric_name=str(best_metric_name),
-            restored_eval_round=restored_eval_round,
-            restored_next_eval_step=restored_next_eval_step,
-            restored_next_checkpoint_step=restored_next_checkpoint_step,
-        )
-        if checkpoint_interval_steps > 0 and is_main:
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        def _build_resume_meta(*, iteration: int) -> dict[str, Any]:
-            return _build_resume_meta_payload(
-                iteration=int(iteration),
-                run_name=str(run_name),
-                global_step=int(global_step),
-                world_size=int(world_size),
-                feature_id=str(args.feature_id),
-                pf_enabled=bool(args.pf_enabled),
-                obs_shape=tuple(obs_shape),
-                action_dim=int(action_dim),
-                use_channels_last=bool(use_channels_last),
-                use_pin_memory=bool(use_pin_memory),
-                cache_device=cache_device,
-                cfg_global=cfg_global,
-                cfg_local=local_cfg,
-                best_metric_name=str(best_metric_name),
-                best_metric_value=float(best_metric_value),
-                best_metric_source=str(best_metric_source),
-                eval_round=int(eval_round),
-                next_eval_step=int(next_eval_step),
-                next_checkpoint_step=int(next_checkpoint_step),
-                rng=rng,
-                train_vecnorm=train_vecnorm,
-            )
-
-        lr_schedule_fn = schedules.learning_rate
-        ent_schedule_fn = schedules.ent_coef
-        clip_schedule_fn = schedules.clip_coef
-        vf_clip_schedule_fn = schedules.clip_range_vf
-        lr_schedule_desc = schedules.learning_rate.description
-        ent_schedule_desc = schedules.ent_coef.description
-        clip_schedule_desc = schedules.clip_coef.description
-        vf_clip_schedule_desc = (
-            "disabled" if schedules.clip_range_vf is None else schedules.clip_range_vf.description
-        )
-        if is_main:
-            logger.info(
-                "schedules: lr=%s ent=%s clip=%s vf_clip=%s",
-                lr_schedule_desc,
-                ent_schedule_desc,
-                clip_schedule_desc,
-                vf_clip_schedule_desc,
-            )
-            if bool(cfg_global.clip_vloss) and vf_clip_schedule_fn is None:
-                logger.warning("clip_vloss=true but clip_range_vf is unset; value clipping is disabled")
-
-        start_time = time.time()
-        global_batch_size = int(cfg_global.batch_size)
-        num_iterations = int(cfg_global.num_iterations)
-        rollout_agent = _unwrap_ddp(agent)
-        start_iteration = int(global_step // global_batch_size) + 1
-        if start_iteration > num_iterations and is_main:
-            logger.info(
-                "no PPO update needed: global_step=%d already reached total_timesteps=%d",
-                int(global_step),
-                int(cfg_global.total_timesteps),
-            )
-
-        if eval_at_start_enabled and global_step == 0:
-            if is_distributed:
-                dist.barrier()
-            if is_main:
-                eval_seed_base = int(args.eval_seed_start)
-                if not bool(args.eval_fixed_seeds):
-                    eval_seed_base = int(args.eval_seed_start) + int(eval_round) * int(args.eval_episodes)
-                eval_summary = _run_periodic_val(
-                    env_id="AHC061Local-v0",
-                    feature_id=str(args.feature_id),
-                    pf_enabled=bool(args.pf_enabled),
-                    agent=rollout_agent,
-                    device=device,
-                    episodes=int(args.eval_episodes),
-                    seed_start=int(eval_seed_base),
-                    deterministic=bool(args.eval_deterministic),
-                    use_action_mask=bool(args.use_action_mask),
-                    amp=bool(args.amp),
-                    vecnorm_state=_vecnorm_state_or_none(train_vecnorm),
-                    vecnorm_norm_obs=bool(args.vecnorm_norm_obs),
-                    vecnorm_norm_reward=bool(args.vecnorm_eval_norm_reward),
-                    vecnorm_clip_obs=float(args.vecnorm_clip_obs),
-                    vecnorm_clip_reward=float(args.vecnorm_clip_reward),
-                    vecnorm_epsilon=float(args.vecnorm_epsilon),
-                    vecnorm_gamma=float(vecnorm_gamma),
-                )
-                eval_row = {
-                    "global_step": 0,
-                    "eval_round": int(eval_round),
-                    "seed_base": int(eval_seed_base),
-                    "fixed_seeds": bool(args.eval_fixed_seeds),
-                    "summary": eval_summary,
-                }
-                _append_jsonl(periodic_val_jsonl, eval_row)
-                logger.info(
-                    "periodic_val@start step=0 round=%d return=%.5f game_score=%.2f",
-                    int(eval_round),
-                    float(eval_summary["return"]["mean"]),
-                    float(eval_summary["terminal_game_score"]["mean"]),
-                )
-                cand = float(eval_summary["terminal_game_score"]["mean"])
-                if np.isfinite(cand) and cand > best_metric_value:
-                    best_metric_value = float(cand)
-                    best_metric_source = "periodic_val_at_start"
-                    save_agent_checkpoint(
-                        best_model,
-                        _unwrap_model(agent),
-                        optimizer=optimizer,
-                        meta=_build_resume_meta(iteration=0),
-                    )
-            if is_distributed:
-                dist.barrier()
-            eval_round += 1
-
-        for iteration in range(start_iteration, num_iterations + 1):
-            progress = schedule_progress(int(iteration), int(num_iterations))
-            lr_current = float(lr_schedule_fn(progress))
-            if not np.isfinite(lr_current) or lr_current < 0.0:
-                raise ValueError(f"invalid scheduled learning_rate={lr_current} at progress={progress}")
-            optimizer.param_groups[0]["lr"] = lr_current
-
-            ent_coef_current = float(ent_schedule_fn(progress))
-            clip_coef_current = float(clip_schedule_fn(progress))
-            if not np.isfinite(ent_coef_current) or ent_coef_current < 0.0:
-                raise ValueError(f"invalid scheduled ent_coef={ent_coef_current} at progress={progress}")
-            if not np.isfinite(clip_coef_current) or clip_coef_current < 0.0:
-                raise ValueError(f"invalid scheduled clip_coef={clip_coef_current} at progress={progress}")
-            clip_range_vf_current: float | None = None
-            if vf_clip_schedule_fn is not None:
-                clip_range_vf_current = float(vf_clip_schedule_fn(progress))
-                if not np.isfinite(clip_range_vf_current) or clip_range_vf_current < 0.0:
-                    raise ValueError(
-                        f"invalid scheduled clip_range_vf={clip_range_vf_current} at progress={progress}"
-                    )
-            trainer.set_runtime_coefficients(
-                ent_coef=float(ent_coef_current),
-                clip_coef=float(clip_coef_current),
-                clip_range_vf=(None if clip_range_vf_current is None else float(clip_range_vf_current)),
-                aux_opp_param_loss_coef=float(aux_opp_param_loss_coef),
-                aux_opp_param_use_valid_mask=bool(aux_opp_param_use_valid_mask),
-            )
-
-            seeds = torch.as_tensor(
-                rng.integers(0, np.iinfo(np.int64).max, size=(local_cfg.num_envs,), dtype=np.int64),
-                dtype=torch.int64,
-                device="cpu",
-            )
-            env.reset_random(seeds)
-
-            rollout = collect_rollout(
-                env,
-                rollout_agent,
-                device,
-                local_cfg.num_steps,
-                use_action_mask=bool(args.use_action_mask),
-                sample=True,
-                amp=bool(args.amp),
-                channels_last=bool(use_channels_last),
-                workspace=rollout_workspace,
-                pin_memory=bool(use_pin_memory),
-                vecnorm=train_vecnorm,
-                collect_aux_targets=bool(aux_opp_param_active),
-            )
-
-            copy_non_blocking = bool(cache_device.type == "cuda")
-            buffer.obs.copy_(rollout.obs.to(device=cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            buffer.actions.copy_(rollout.actions.to(device=cache_device, dtype=torch.long, non_blocking=copy_non_blocking))
-            buffer.logprobs.copy_(rollout.logprobs.to(device=cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            buffer.rewards.copy_(rollout.rewards.to(device=cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            buffer.dones.copy_(rollout.dones.to(device=cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            buffer.values.copy_(rollout.values.to(device=cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            if buffer.action_masks is not None:
-                buffer.action_masks.copy_(rollout.masks.to(device=cache_device, dtype=torch.bool, non_blocking=copy_non_blocking))
-            if bool(aux_opp_param_active):
-                if rollout.aux_opp_param_true is None or rollout.aux_opp_valid is None:
-                    raise RuntimeError("rollout did not provide aux_opp_param targets")
-                if buffer.aux_opp_param_true is None or buffer.aux_opp_valid is None:
-                    raise RuntimeError("rollout buffer is missing aux_opp_param storage")
-                buffer.aux_opp_param_true.copy_(
-                    rollout.aux_opp_param_true.to(
-                        device=cache_device,
-                        dtype=torch.float32,
-                        non_blocking=copy_non_blocking,
-                    )
-                )
-                buffer.aux_opp_valid.copy_(
-                    rollout.aux_opp_valid.to(
-                        device=cache_device,
-                        dtype=torch.bool,
-                        non_blocking=copy_non_blocking,
-                    )
-                )
-
-            next_value = rollout.last_value.to(device=cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
-            next_done = rollout.last_done.to(device=cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
-            buffer.compute_gae(next_value, next_done, local_cfg.gamma, local_cfg.gae_lambda)
-            explained_variance_local = _explained_variance(buffer.values, buffer.returns)
-            stats = trainer.update(buffer)
-
-            stats_vec = torch.tensor(
-                [
-                    float(stats.policy_loss),
-                    float(stats.value_loss),
-                    float(stats.entropy),
-                    float(stats.approx_kl),
-                    float(stats.clipfrac),
-                    (0.0 if not np.isfinite(float(stats.value_clipfrac)) else float(stats.value_clipfrac)),
-                    (1.0 if not np.isfinite(float(stats.value_clipfrac)) else 0.0),
-                    (0.0 if not np.isfinite(float(explained_variance_local)) else float(explained_variance_local)),
-                    (0.0 if not np.isfinite(float(explained_variance_local)) else 1.0),
-                    (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else float(stats.aux_opp_param_loss)),
-                    (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else 1.0),
-                ],
-                device=device,
-                dtype=torch.float64,
-            )
-            _all_reduce_sum_tensor(stats_vec)
-            ws = float(max(1, int(world_size)))
-            policy_loss_g = float((stats_vec[0] / ws).item())
-            value_loss_g = float((stats_vec[1] / ws).item())
-            entropy_g = float((stats_vec[2] / ws).item())
-            approx_kl_g = float((stats_vec[3] / ws).item())
-            clipfrac_g = float((stats_vec[4] / ws).item())
-            if float(stats_vec[6].item()) >= ws:
-                value_clipfrac_g = float("nan")
-            else:
-                value_clipfrac_g = float((stats_vec[5] / ws).item())
-            if float(stats_vec[8].item()) <= 0.0:
-                explained_variance_g = float("nan")
-            else:
-                explained_variance_g = float((stats_vec[7] / stats_vec[8]).item())
-            if float(stats_vec[10].item()) <= 0.0:
-                aux_opp_param_loss_g = float("nan")
-            else:
-                aux_opp_param_loss_g = float((stats_vec[9] / stats_vec[10]).item())
-
-            score_now = env.official_score().to(dtype=torch.float32)
-            metric_vec = torch.tensor(
-                [
-                    float(score_now.sum().item()),
-                    float(score_now.numel()),
-                ],
-                device=device,
-                dtype=torch.float64,
-            )
-            _all_reduce_sum_tensor(metric_vec)
-            mean_official = float((metric_vec[0] / metric_vec[1]).item()) if float(metric_vec[1].item()) > 0.0 else 0.0
-
-            global_step += int(global_batch_size)
-            _sync_vecnorm_ddp_(train_vecnorm, device=device)
-            elapsed_vec = torch.tensor([max(1e-9, time.time() - start_time)], device=device, dtype=torch.float64)
-            _all_reduce_max_tensor(elapsed_vec)
-            elapsed = float(elapsed_vec[0].item())
-            sps = int(float(global_step) / max(1e-9, elapsed))
-
-            row: dict[str, Any] = {
-                "iteration": int(iteration),
-                "global_step": int(global_step),
-                "sps": int(sps),
-                "learning_rate": float(lr_current),
-                "schedule_progress": float(progress),
-                "ent_coef_current": float(ent_coef_current),
-                "clip_coef_current": float(clip_coef_current),
-                "clip_range_vf_current": (
-                    float(clip_range_vf_current) if clip_range_vf_current is not None else float("nan")
-                ),
-                "policy_loss": float(policy_loss_g),
-                "value_loss": float(value_loss_g),
-                "entropy": float(entropy_g),
-                "approx_kl": float(approx_kl_g),
-                "clipfrac": float(clipfrac_g),
-                "value_clipfrac": float(value_clipfrac_g),
-                "explained_variance": float(explained_variance_g),
-                "aux_opp_param_loss": float(aux_opp_param_loss_g),
-                "mean_official_score": float(mean_official),
-            }
-
-            run_periodic_eval = bool(periodic_val_enabled and global_step >= next_eval_step)
-            if run_periodic_eval and is_distributed:
-                dist.barrier()
-            if run_periodic_eval and is_main:
-                eval_seed_base = int(args.eval_seed_start)
-                if not bool(args.eval_fixed_seeds):
-                    eval_seed_base = int(args.eval_seed_start) + int(eval_round) * int(args.eval_episodes)
-                eval_summary = _run_periodic_val(
-                    env_id="AHC061Local-v0",
-                    feature_id=str(args.feature_id),
-                    pf_enabled=bool(args.pf_enabled),
-                    agent=rollout_agent,
-                    device=device,
-                    episodes=int(args.eval_episodes),
-                    seed_start=int(eval_seed_base),
-                    deterministic=bool(args.eval_deterministic),
-                    use_action_mask=bool(args.use_action_mask),
-                    amp=bool(args.amp),
-                    vecnorm_state=_vecnorm_state_or_none(train_vecnorm),
-                    vecnorm_norm_obs=bool(args.vecnorm_norm_obs),
-                    vecnorm_norm_reward=bool(args.vecnorm_eval_norm_reward),
-                    vecnorm_clip_obs=float(args.vecnorm_clip_obs),
-                    vecnorm_clip_reward=float(args.vecnorm_clip_reward),
-                    vecnorm_epsilon=float(args.vecnorm_epsilon),
-                    vecnorm_gamma=float(vecnorm_gamma),
-                )
-                eval_row = {
-                    "global_step": int(global_step),
-                    "eval_round": int(eval_round),
-                    "seed_base": int(eval_seed_base),
-                    "fixed_seeds": bool(args.eval_fixed_seeds),
-                    "summary": eval_summary,
-                }
-                _append_jsonl(periodic_val_jsonl, eval_row)
-                row["periodic_val_mean_return"] = float(eval_summary["return"]["mean"])
-                row["periodic_val_mean_illegal_penalty"] = float(eval_summary["illegal_penalty"]["mean"])
-                row["periodic_val_mean_terminal_score"] = float(eval_summary["terminal_score"]["mean"])
-                row["periodic_val_mean_terminal_game_score"] = float(eval_summary["terminal_game_score"]["mean"])
-                row["periodic_val_mean_game_score_ratio"] = float(eval_summary["game_score_ratio"]["mean"])
-                cand = float(eval_summary["terminal_game_score"]["mean"])
-                if np.isfinite(cand) and cand > best_metric_value:
-                    best_metric_value = float(cand)
-                    best_metric_source = "periodic_val"
-                    save_agent_checkpoint(
-                        best_model,
-                        _unwrap_model(agent),
-                        optimizer=optimizer,
-                        meta=_build_resume_meta(iteration=int(iteration)),
-                    )
-            if run_periodic_eval and is_distributed:
-                dist.barrier()
-            if run_periodic_eval:
-                eval_round += 1
-                next_eval_step += int(max(1, args.eval_interval_steps))
-            elif is_main and not periodic_val_enabled:
-                cand = float(mean_official)
-                if np.isfinite(cand) and cand > best_metric_value:
-                    best_metric_value = float(cand)
-                    best_metric_source = "mean_official_score"
-                    save_agent_checkpoint(
-                        best_model,
-                        _unwrap_model(agent),
-                        optimizer=optimizer,
-                        meta=_build_resume_meta(iteration=int(iteration)),
-                    )
-
-            if is_main:
-                _append_jsonl(train_metrics_jsonl, row)
-
-            if is_main and args.log_interval_iters > 0 and (iteration % int(args.log_interval_iters) == 0):
-                logger.info(
-                    "iter=%d/%d step=%d sps=%d lr=%.6g ploss=%.5f vloss=%.5f aux=%.5f ent=%.5f kl=%.5f ev=%.5f vclip=%.5f score=%.1f",
-                    iteration,
-                    num_iterations,
-                    global_step,
-                    sps,
-                    lr_current,
-                    policy_loss_g,
-                    value_loss_g,
-                    aux_opp_param_loss_g,
-                    entropy_g,
-                    approx_kl_g,
-                    explained_variance_g,
-                    value_clipfrac_g,
-                    mean_official,
-                )
-
-            if is_main and (iteration % int(max(1, local_cfg.save_interval)) == 0 or iteration == num_iterations):
-                save_agent_checkpoint(
-                    last_model,
-                    _unwrap_model(agent),
-                    optimizer=optimizer,
-                    meta=_build_resume_meta(iteration=int(iteration)),
-                )
-
-            if is_main and checkpoint_interval_steps > 0 and global_step >= int(next_checkpoint_step):
-                save_agent_checkpoint(
-                    checkpoint_dir / f"step_{int(global_step):012d}.pt",
-                    _unwrap_model(agent),
-                    optimizer=optimizer,
-                    meta=_build_resume_meta(iteration=int(iteration)),
-                )
-                next_checkpoint_step += int(checkpoint_interval_steps)
-
-        if is_main:
-            final_iteration = int(max(0, min(num_iterations, int(global_step // max(1, global_batch_size)))))
-            save_agent_checkpoint(
-                last_model,
-                _unwrap_model(agent),
-                optimizer=optimizer,
-                meta=_build_resume_meta(iteration=final_iteration),
-            )
-            summary = {
-                "run_name": run_name,
-                "run_dir": str(layout.root),
-                "global_step": int(global_step),
-                "final_iteration": int(final_iteration),
-                "env_id": "AHC061Local-v0",
-                "feature_id": str(args.feature_id),
-                "pf_enabled": bool(args.pf_enabled),
-                "aux_opp_param": {
-                    "loss_coef": float(aux_opp_param_loss_coef),
-                    "use_valid_mask": bool(aux_opp_param_use_valid_mask),
-                    "active": bool(aux_opp_param_active),
-                },
-                "vecnormalize": {
-                    "enabled": bool(train_vecnorm is not None),
-                    "norm_obs": bool(args.vecnorm_norm_obs),
-                    "norm_reward_train": bool(args.vecnorm_norm_reward),
-                    "norm_reward_val": bool(args.vecnorm_eval_norm_reward),
-                    "clip_obs": float(args.vecnorm_clip_obs),
-                    "clip_reward": float(args.vecnorm_clip_reward),
-                    "epsilon": float(args.vecnorm_epsilon),
-                    "gamma": float(vecnorm_gamma),
-                },
-                "periodic_val": {
-                    "enabled": bool(periodic_val_enabled),
-                    "interval_steps": int(args.eval_interval_steps),
-                    "episodes": int(args.eval_episodes),
-                    "seed_start": int(args.eval_seed_start),
-                    "fixed_seeds": bool(args.eval_fixed_seeds),
-                    "deterministic": bool(args.eval_deterministic),
-                    "val_at_start": bool(args.eval_at_start),
-                    "metrics_jsonl": str(periodic_val_jsonl),
-                },
-                "resume": {
-                    "enabled": bool(resume_enabled),
-                    "resume_from": (str(resume_from) if resume_from is not None else ""),
-                },
-                "best_metric": {
-                    "name": str(best_metric_name),
-                    "value": float(best_metric_value),
-                    "source": str(best_metric_source),
-                },
-                "models": {
-                    "best": str(best_model),
-                    "last": str(last_model),
-                    "checkpoint_dir": (str(checkpoint_dir) if checkpoint_interval_steps > 0 else ""),
-                    "checkpoint_interval_steps": int(checkpoint_interval_steps),
-                },
-                "logs": {
-                    "train_metrics_jsonl": str(train_metrics_jsonl),
-                    "periodic_val_metrics_jsonl": str(periodic_val_jsonl),
-                },
-                "elapsed_sec": float(time.time() - start_time),
-            }
-            (layout.reports_dir / "train_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-            (layout.root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-            update_manifest(
-                layout,
-                {
-                    "status": "completed",
-                    "result": summary,
-                },
-            )
-        if is_distributed:
-            dist.barrier()
-        return 0
+        return runner.run()
     except Exception as e:
-        if layout is not None and is_main:
+        if runner.layout is not None and runner.is_main:
             update_manifest(
-                layout,
+                runner.layout,
                 {
                     "status": "failed",
                     "error": str(e),
-                    "progress": {"global_step": int(global_step)},
+                    "progress": {"global_step": int(runner.global_step)},
                 },
             )
         raise

@@ -6,7 +6,7 @@ import torch
 
 from .vecnorm import VecNormalize
 from ..env.interface import BatchEnvProtocol, ensure_batch_env
-from ..data.teacher_dataset import AHC061_OPP_PARAM_TRUE_TAIL_SHAPE, AHC061_OPP_VALID_TAIL_SHAPE
+from ..game_constants import OPP_PARAM_TRUE_TAIL_SHAPE, OPP_VALID_TAIL_SHAPE
 
 
 @dataclass
@@ -70,9 +70,9 @@ def create_rollout_workspace(
     use_cuda = device.type == "cuda"
     use_channels_last = bool(use_cuda and channels_last)
     use_pinned = bool(use_cuda and pin_memory)
-    aux_opp_slots = int(AHC061_OPP_PARAM_TRUE_TAIL_SHAPE[0])
-    aux_param_dim = int(AHC061_OPP_PARAM_TRUE_TAIL_SHAPE[1])
-    aux_valid_slots = int(AHC061_OPP_VALID_TAIL_SHAPE[0])
+    aux_opp_slots = int(OPP_PARAM_TRUE_TAIL_SHAPE[0])
+    aux_param_dim = int(OPP_PARAM_TRUE_TAIL_SHAPE[1])
+    aux_valid_slots = int(OPP_VALID_TAIL_SHAPE[0])
     if bool(collect_aux_targets) and aux_valid_slots != aux_opp_slots:
         raise ValueError(
             f"aux opp slot mismatch: opp_param_true slots={aux_opp_slots}, opp_valid slots={aux_valid_slots}"
@@ -215,8 +215,8 @@ def collect_rollout(
     aux_move_dist_tmp = workspace.aux_move_dist_tmp
     aux_opp_param_tmp = workspace.aux_opp_param_tmp
     aux_opp_valid_tmp = workspace.aux_opp_valid_tmp
-    aux_opp_slots = int(AHC061_OPP_PARAM_TRUE_TAIL_SHAPE[0])
-    aux_param_dim = int(AHC061_OPP_PARAM_TRUE_TAIL_SHAPE[1])
+    aux_opp_slots = int(OPP_PARAM_TRUE_TAIL_SHAPE[0])
+    aux_param_dim = int(OPP_PARAM_TRUE_TAIL_SHAPE[1])
     aux_active = bool(collect_aux_targets)
 
     expected_obs_shape = (t_max, bsz, c, n, n)

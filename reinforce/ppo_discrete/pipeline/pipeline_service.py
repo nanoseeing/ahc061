@@ -14,11 +14,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, TextIO
 
-from ..opponent.opponent_bayes import ensure_cpp_bayes_backend
+from ..opponent import ensure_cpp_backend
 from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, to_jsonable, update_manifest
 from ..utils.log_utils import get_logger
 from ..utils.tracking import MetricTracker
 from .pipeline_commands import (
+    PipelineArgs,
     build_collect_teacher_cmd,
     build_eval_policy_cmd,
     build_train_bc_cmd,
@@ -227,7 +228,7 @@ def _parse_env_kwargs(text: str) -> dict[str, Any]:
     return obj
 
 
-def _validate_backend_combinations(args: Any) -> None:
+def _validate_backend_combinations(args: PipelineArgs) -> None:
     env_id = str(args.env_id).strip()
     if env_id != "AHC061Local-v0":
         raise ValueError("run_pipeline supports only env_id=AHC061Local-v0")
@@ -283,7 +284,7 @@ def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any],
         "eval_backend": eval_backend,
     }
 
-    ok = ensure_cpp_bayes_backend(build_if_missing=True, force_build=False, verbose=False)
+    ok = ensure_cpp_backend(build_if_missing=True, force_build=False, verbose=False)
     if not ok:
         raise RuntimeError(
             "AHC061 bayes backend requires cpp implementation, but cpp backend build/import failed"
@@ -295,7 +296,7 @@ def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any],
 def _run_collect_workers(
     *,
     py: str,
-    args: Any,
+    args: PipelineArgs,
     collect_policy: str,
     env_kwargs: dict[str, Any],
     output_npz: Path,
@@ -407,7 +408,7 @@ def _run_collect_workers(
     }
 
 
-def run_pipeline(args: Any) -> int:
+def run_pipeline(args: PipelineArgs) -> int:
     _validate_backend_combinations(args)
     base_env_kwargs = _parse_env_kwargs(args.env_kwargs_json)
     eval_env_kwargs = (

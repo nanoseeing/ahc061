@@ -12,11 +12,6 @@ from ..ppo.config import PPOConfig
 ScheduleFn = Callable[[float], float]
 
 
-def validate_ppo_config(cfg: PPOConfig) -> None:
-    # Field-level and batch constraints are now validated by PPOConfig (pydantic BaseModel).
-    # This function is kept for backward compatibility; callers can still call it safely.
-    pass
-
 
 def resolve_vecnorm_gamma(*, vecnorm_gamma: float | None, ppo_gamma: float) -> float:
     if vecnorm_gamma is None:

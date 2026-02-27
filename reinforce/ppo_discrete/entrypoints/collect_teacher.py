@@ -17,9 +17,6 @@ from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize
 from ..data.teacher_dataset_merge import merge_teacher_shards
 from ..data.teacher_dataset import (
-    AHC061_BAYES_TAIL_SHAPE,
-    AHC061_OPP_PARAM_TRUE_TAIL_SHAPE,
-    AHC061_OPP_VALID_TAIL_SHAPE,
     BAYES_SOURCE_CPP,
     BAYES_SOURCE_ZERO_COMPAT,
     DATASET_KEY_OPP_PARAM_TRUE,
@@ -28,6 +25,7 @@ from ..data.teacher_dataset import (
     resolve_bayes_sources_for_meta,
     zero_bayes_params,
 )
+from ..game_constants import BAYES_TAIL_SHAPE, OPP_PARAM_TRUE_TAIL_SHAPE, OPP_VALID_TAIL_SHAPE
 from ..utils.tracking import MetricTracker
 
 logger = get_logger("collect_teacher")
@@ -302,7 +300,7 @@ def _run(args: SimpleNamespace) -> int:
             buffers["episode"].append(int(tr.episode))
             buffers["step"].append(int(tr.step))
             b = np.asarray(tr.bayes_params, dtype=np.float32).reshape(-1)
-            if b.shape != AHC061_BAYES_TAIL_SHAPE:
+            if b.shape != BAYES_TAIL_SHAPE:
                 b = zero_bayes_params()
                 bayes_sources.add(BAYES_SOURCE_ZERO_COMPAT)
             else:
@@ -353,7 +351,7 @@ def _run(args: SimpleNamespace) -> int:
 
         args.output_npz.parent.mkdir(parents=True, exist_ok=True)
         if not chunk_paths:
-            empty_bayes_shape = first_bayes_shape if first_bayes_shape is not None else AHC061_BAYES_TAIL_SHAPE
+            empty_bayes_shape = first_bayes_shape if first_bayes_shape is not None else BAYES_TAIL_SHAPE
             np.savez_compressed(
                 args.output_npz,
                 obs=np.zeros((0, *tuple(spec_obs_shape)), dtype=np.float32),
@@ -368,11 +366,11 @@ def _run(args: SimpleNamespace) -> int:
                 **(
                     {
                         DATASET_KEY_OPP_PARAM_TRUE: np.zeros(
-                            (0, *(first_opp_param_shape or AHC061_OPP_PARAM_TRUE_TAIL_SHAPE)),
+                            (0, *(first_opp_param_shape or OPP_PARAM_TRUE_TAIL_SHAPE)),
                             dtype=np.float32,
                         ),
                         DATASET_KEY_OPP_VALID: np.zeros(
-                            (0, *(first_opp_valid_shape or AHC061_OPP_VALID_TAIL_SHAPE)),
+                            (0, *(first_opp_valid_shape or OPP_VALID_TAIL_SHAPE)),
                             dtype=np.uint8,
                         ),
                     }
@@ -402,18 +400,18 @@ def _run(args: SimpleNamespace) -> int:
             "seed": int(args.seed),
             "obs_shape": list(spec_obs_shape),
             "action_dim": int(spec_action_dim),
-            "bayes_param_shape": list(first_bayes_shape if first_bayes_shape is not None else AHC061_BAYES_TAIL_SHAPE),
+            "bayes_param_shape": list(first_bayes_shape if first_bayes_shape is not None else BAYES_TAIL_SHAPE),
             "bayes_param_sources": resolve_bayes_sources_for_meta(bayes_sources),
             "bayes_param_policy": "store_observation_time_bayes_params;cpp_posterior",
             "aux_saved": bool(save_aux_targets),
             "aux_keys": ([DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_VALID] if save_aux_targets else []),
             "opp_param_true_shape": (
-                list(first_opp_param_shape if first_opp_param_shape is not None else AHC061_OPP_PARAM_TRUE_TAIL_SHAPE)
+                list(first_opp_param_shape if first_opp_param_shape is not None else OPP_PARAM_TRUE_TAIL_SHAPE)
                 if save_aux_targets
                 else []
             ),
             "opp_valid_shape": (
-                list(first_opp_valid_shape if first_opp_valid_shape is not None else AHC061_OPP_VALID_TAIL_SHAPE)
+                list(first_opp_valid_shape if first_opp_valid_shape is not None else OPP_VALID_TAIL_SHAPE)
                 if save_aux_targets
                 else []
             ),

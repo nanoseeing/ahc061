@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
@@ -7,7 +8,8 @@ import torch
 import torch.nn as nn
 from torch.distributions.categorical import Categorical
 
-from ..utils.nn_init import layer_init, to_int_tuple as _to_int_tuple
+from ...game_constants import AUX_OPP_PARAM_TOTAL, OPP_PARAM_DIM, OPP_SLOT_COUNT
+from ..utils.nn_init import layer_init, to_int_tuple
 
 
 def _broadcast_tuple(v: tuple[int, ...], n: int, name: str) -> tuple[int, ...]:
@@ -31,7 +33,7 @@ def _build_mlp(in_dim: int, hidden_dims: tuple[int, ...], out_dim: int, *, out_s
     return nn.Sequential(*layers)
 
 
-class DiscreteBoardAgentBase(nn.Module):
+class DiscreteBoardAgentBase(nn.Module, ABC):
     """Shared forward interface for all discrete-board actor-critic agents.
 
     Concrete subclasses must implement `_encode(obs)` and expose:
@@ -52,8 +54,9 @@ class DiscreteBoardAgentBase(nn.Module):
         # reshape handles non-standard strides (e.g., channels_last) safely.
         return obs.reshape(obs.shape[0], -1)
 
+    @abstractmethod
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
+        ...
 
     def get_logits(self, obs: torch.Tensor) -> torch.Tensor:
         feat = self._encode(obs)
@@ -68,7 +71,7 @@ class DiscreteBoardAgentBase(nn.Module):
             raise RuntimeError("aux_opp_param_head is disabled for this model")
         feat = self._encode(obs)
         out = self.aux_opp_param_head(feat)
-        return out.view(out.shape[0], 7, 5)
+        return out.view(out.shape[0], OPP_SLOT_COUNT, OPP_PARAM_DIM)
 
     def get_action_and_value(
         self,
@@ -94,7 +97,7 @@ class DiscreteBoardAgentBase(nn.Module):
         if bool(return_aux_opp_param):
             if self.aux_opp_param_head is None:
                 raise RuntimeError("aux_opp_param_head is disabled for this model")
-            aux = self.aux_opp_param_head(feat).view(feat.shape[0], 7, 5)
+            aux = self.aux_opp_param_head(feat).view(feat.shape[0], OPP_SLOT_COUNT, OPP_PARAM_DIM)
             return action, dist.log_prob(action), dist.entropy(), value, aux
         return action, dist.log_prob(action), dist.entropy(), value
 
@@ -159,7 +162,7 @@ class DiscreteBoardMLPAgent(DiscreteBoardAgentBase):
         if mlp_hidden_dims is None:
             mlp_hidden_dims_t = tuple(int(hidden_dim) for _ in range(int(hidden_layers)))
         else:
-            mlp_hidden_dims_t = _to_int_tuple(mlp_hidden_dims)
+            mlp_hidden_dims_t = to_int_tuple(mlp_hidden_dims)
 
         self.actor = _build_mlp(obs_dim, mlp_hidden_dims_t, self.action_dim, out_std=0.01)
         self.critic = _build_mlp(obs_dim, mlp_hidden_dims_t, 1, out_std=1.0)
@@ -170,7 +173,7 @@ class DiscreteBoardMLPAgent(DiscreteBoardAgentBase):
             self.aux_opp_param_head = nn.Sequential(
                 layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
                 nn.Tanh(),
-                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, AUX_OPP_PARAM_TOTAL), std=0.01),
             )
 
         self.model_config: dict[str, Any] = {
@@ -224,13 +227,13 @@ class DiscreteBoardCNNFCAgent(DiscreteBoardAgentBase):
         self.board_size = int(board_size)
         self.board_dim = int(self.board_channels * self.board_size * self.board_size)
 
-        cnn_channels_t = _to_int_tuple(cnn_channels)
-        cnn_kernels_t = _to_int_tuple(cnn_kernels)
-        cnn_strides_t = _to_int_tuple(cnn_strides)
-        cnn_paddings_t = _to_int_tuple(cnn_paddings)
-        trunk_hidden_dims_t = _to_int_tuple(trunk_hidden_dims)
-        actor_head_hidden_dims_t = _to_int_tuple(actor_head_hidden_dims)
-        critic_head_hidden_dims_t = _to_int_tuple(critic_head_hidden_dims)
+        cnn_channels_t = to_int_tuple(cnn_channels)
+        cnn_kernels_t = to_int_tuple(cnn_kernels)
+        cnn_strides_t = to_int_tuple(cnn_strides)
+        cnn_paddings_t = to_int_tuple(cnn_paddings)
+        trunk_hidden_dims_t = to_int_tuple(trunk_hidden_dims)
+        actor_head_hidden_dims_t = to_int_tuple(actor_head_hidden_dims)
+        critic_head_hidden_dims_t = to_int_tuple(critic_head_hidden_dims)
 
         if obs_dim < self.board_dim:
             raise ValueError(f"obs_dim too small for cnn_fc: obs_dim={obs_dim}, board_dim={self.board_dim}")
@@ -281,7 +284,7 @@ class DiscreteBoardCNNFCAgent(DiscreteBoardAgentBase):
             self.aux_opp_param_head = nn.Sequential(
                 layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
                 nn.Tanh(),
-                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, AUX_OPP_PARAM_TOTAL), std=0.01),
             )
 
         self.model_config: dict[str, Any] = {
@@ -369,15 +372,15 @@ class DiscreteBoardAgent(DiscreteBoardAgentBase):
         if mlp_hidden_dims is None:
             mlp_hidden_dims_t = tuple(int(hidden_dim) for _ in range(int(hidden_layers)))
         else:
-            mlp_hidden_dims_t = _to_int_tuple(mlp_hidden_dims)
+            mlp_hidden_dims_t = to_int_tuple(mlp_hidden_dims)
 
-        cnn_channels_t = _to_int_tuple(cnn_channels)
-        cnn_kernels_t = _to_int_tuple(cnn_kernels)
-        cnn_strides_t = _to_int_tuple(cnn_strides)
-        cnn_paddings_t = _to_int_tuple(cnn_paddings)
-        trunk_hidden_dims_t = _to_int_tuple(trunk_hidden_dims)
-        actor_head_hidden_dims_t = _to_int_tuple(actor_head_hidden_dims)
-        critic_head_hidden_dims_t = _to_int_tuple(critic_head_hidden_dims)
+        cnn_channels_t = to_int_tuple(cnn_channels)
+        cnn_kernels_t = to_int_tuple(cnn_kernels)
+        cnn_strides_t = to_int_tuple(cnn_strides)
+        cnn_paddings_t = to_int_tuple(cnn_paddings)
+        trunk_hidden_dims_t = to_int_tuple(trunk_hidden_dims)
+        actor_head_hidden_dims_t = to_int_tuple(actor_head_hidden_dims)
+        critic_head_hidden_dims_t = to_int_tuple(critic_head_hidden_dims)
 
         resolved_model_type = model_type
         if resolved_model_type == "auto":
@@ -480,7 +483,7 @@ class DiscreteBoardAgent(DiscreteBoardAgentBase):
             self.aux_opp_param_head = nn.Sequential(
                 layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
                 nn.Tanh(),
-                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, AUX_OPP_PARAM_TOTAL), std=0.01),
             )
 
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:

@@ -9,7 +9,6 @@ from .utils.registry import list_registered_models, register_model, resolve_mode
 
 register_model("DiscreteBoardAgent", DiscreteBoardAgent)
 register_model("ppo_discrete.DiscreteBoardAgent", DiscreteBoardAgent)
-register_model("ActorCriticDiscreteBoard", DiscreteBoardAgent)
 register_model("DiscreteBoardMLPAgent", DiscreteBoardMLPAgent)
 register_model("ppo_discrete.DiscreteBoardMLPAgent", DiscreteBoardMLPAgent)
 register_model("DiscreteBoardCNNFCAgent", DiscreteBoardCNNFCAgent)

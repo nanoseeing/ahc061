@@ -10,7 +10,6 @@ import typer
 
 from ..ppo.config import PPOConfig
 from ..train.schedule import (
-    validate_ppo_config,
     validate_schedule_args,
     validate_vecnorm_config,
 )
@@ -326,7 +325,6 @@ def parse_env_kwargs(text: str) -> dict[str, Any]:
 
 def _run(args: SimpleNamespace) -> int:
     cfg = _ns_to_ppo_cfg(args)
-    validate_ppo_config(cfg)
     validate_schedule_args(cfg)
     validate_vecnorm_config(
         enabled=bool(args.vecnorm),

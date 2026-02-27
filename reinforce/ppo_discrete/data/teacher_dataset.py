@@ -4,11 +4,7 @@ from typing import Any
 
 import numpy as np
 
-AHC061_BAYES_PARAM_DIM = 4 * 7
-AHC061_BAYES_TAIL_SHAPE: tuple[int, ...] = (AHC061_BAYES_PARAM_DIM,)
-AHC061_OPP_SLOT_COUNT = 7
-AHC061_OPP_PARAM_TRUE_TAIL_SHAPE: tuple[int, ...] = (AHC061_OPP_SLOT_COUNT, 5)
-AHC061_OPP_VALID_TAIL_SHAPE: tuple[int, ...] = (AHC061_OPP_SLOT_COUNT,)
+from ..game_constants import BAYES_TAIL_SHAPE, OPP_PARAM_DIM, OPP_SLOT_COUNT
 
 DATASET_KEY_OPP_PARAM_TRUE = "opp_param_true"
 DATASET_KEY_OPP_VALID = "opp_valid"
@@ -19,7 +15,7 @@ BAYES_SOURCE_ZERO_COMPAT = "zero_compat"
 BAYES_SOURCE_CPP = "cpp"
 
 
-def zero_bayes_params(shape: tuple[int, ...] = AHC061_BAYES_TAIL_SHAPE) -> np.ndarray:
+def zero_bayes_params(shape: tuple[int, ...] = BAYES_TAIL_SHAPE) -> np.ndarray:
     return np.zeros(tuple(int(x) for x in shape), dtype=np.float32)
 
 
@@ -56,7 +52,7 @@ def aux_to_teacher_opp_arrays(opp_param: Any, opp_valid: Any) -> tuple[np.ndarra
         raise ValueError(f"opp_param shape mismatch: expected [M_MAX,5], got {p.shape}")
     if v.ndim != 1:
         raise ValueError(f"opp_valid shape mismatch: expected [M_MAX], got {v.shape}")
-    need = int(AHC061_OPP_SLOT_COUNT)
+    need = int(OPP_SLOT_COUNT)
     if p.shape[0] < need + 1 or v.shape[0] < need + 1:
         raise ValueError(f"aux player axis too short: opp_param={p.shape}, opp_valid={v.shape}")
     p_enemy = np.asarray(p[1 : 1 + need, :], dtype=np.float32).copy()

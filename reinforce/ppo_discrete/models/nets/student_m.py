@@ -7,7 +7,8 @@ import torch
 import torch.nn as nn
 from torch.distributions.categorical import Categorical
 
-from ..utils.nn_init import layer_init, to_int_tuple as _to_int_tuple
+from ...game_constants import AUX_OPP_PARAM_TOTAL, OPP_PARAM_DIM, OPP_SLOT_COUNT
+from ..utils.nn_init import layer_init, to_int_tuple
 
 
 def _build_activation(name: str) -> nn.Module:
@@ -105,7 +106,7 @@ class StudentMBoardAgent(nn.Module):
         self.use_aux_opp_param_head = bool(aux_opp_param_head)
         self.aux_opp_param_hidden_dim = int(max(1, aux_opp_param_hidden_dim))
         self.activation = str(activation)
-        value_hidden_dims_t = _to_int_tuple(value_hidden_dims)
+        value_hidden_dims_t = to_int_tuple(value_hidden_dims)
 
         self.stem = nn.Sequential(
             layer_init(nn.Conv2d(self.board_channels, self.width, kernel_size=3, stride=1, padding=1)),
@@ -148,7 +149,7 @@ class StudentMBoardAgent(nn.Module):
             self.aux_opp_param_head = nn.Sequential(
                 layer_init(nn.Linear(value_in_dim, self.aux_opp_param_hidden_dim)),
                 _build_activation(self.activation),
-                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, AUX_OPP_PARAM_TOTAL), std=0.01),
             )
 
         self.model_config: dict[str, Any] = {
@@ -220,7 +221,7 @@ class StudentMBoardAgent(nn.Module):
         h, g_emb = self._encode(obs)
         pooled = self._merge_value_input(h, g_emb)
         out = self.aux_opp_param_head(pooled)
-        return out.view(out.shape[0], 7, 5)
+        return out.view(out.shape[0], OPP_SLOT_COUNT, OPP_PARAM_DIM)
 
     def get_action_and_value(
         self,
@@ -250,7 +251,7 @@ class StudentMBoardAgent(nn.Module):
         if bool(return_aux_opp_param):
             if self.aux_opp_param_head is None:
                 raise RuntimeError("aux_opp_param_head is disabled for this model")
-            aux = self.aux_opp_param_head(pooled).view(pooled.shape[0], 7, 5)
+            aux = self.aux_opp_param_head(pooled).view(pooled.shape[0], OPP_SLOT_COUNT, OPP_PARAM_DIM)
             return action, dist.log_prob(action), dist.entropy(), value, aux
         return action, dist.log_prob(action), dist.entropy(), value
 
@@ -330,7 +331,7 @@ class TeacherP0V1BoardAgent(StudentMBoardAgent):
                 "width": int(self.width),
                 "num_blocks": int(self.num_blocks),
                 "global_hidden_dim": int(self.global_hidden_dim),
-                "value_hidden_dims": list(_to_int_tuple(value_hidden_dims)),
+                "value_hidden_dims": list(to_int_tuple(value_hidden_dims)),
                 "activation": str(self.activation),
                 "use_global_film": bool(self.use_global_film),
                 "use_global_policy_bias": bool(self.use_global_policy_bias),

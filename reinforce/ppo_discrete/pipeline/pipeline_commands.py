@@ -2,14 +2,123 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+
+class ModelArgs(Protocol):
+    """Attributes accessed by append_model_args / build_train_bc_cmd / build_train_ppo_cmd."""
+    model_class: str
+    model_config_file: Path | None
+    model_config_json: str
+
+
+class TrainBCArgs(ModelArgs, Protocol):
+    seed: int
+    bc_epochs: int
+    bc_aux_opp_param_loss_coef: float
+    bc_aux_opp_param_use_valid_mask: bool
+
+
+class TrainPPOArgs(ModelArgs, Protocol):
+    env_id: str
+    seed: int
+    ppo_total_timesteps: int
+    ppo_num_envs: int
+    ppo_num_steps: int
+    ppo_learning_rate: float
+    ppo_gamma: float
+    ppo_gae_lambda: float
+    ppo_num_minibatches: int
+    ppo_update_epochs: int
+    ppo_clip_coef: float
+    ppo_clip_coef_schedule: str
+    ppo_clip_coef_final: float | None
+    ppo_clip_coef_schedule_expr: str
+    ppo_ent_coef: float
+    ppo_ent_coef_schedule: str
+    ppo_ent_coef_final: float | None
+    ppo_ent_coef_schedule_expr: str
+    ppo_vf_coef: float
+    ppo_aux_opp_param_loss_coef: float
+    ppo_aux_opp_param_use_valid_mask: bool
+    ppo_max_grad_norm: float
+    ppo_checkpoint_interval_steps: int
+    ppo_eval_interval_steps: int
+    ppo_eval_episodes: int
+    ppo_eval_seed_start: int
+    ppo_log_interval_iters: int
+    ppo_vecnorm_clip_obs: float
+    ppo_vecnorm_clip_reward: float
+    ppo_vecnorm_epsilon: float
+    ppo_feature_id: str
+    ppo_norm_adv: bool
+    ppo_clip_vloss: bool
+    ppo_eval_at_start: bool
+    ppo_eval_fixed_seeds: bool
+    ppo_eval_deterministic: bool
+    ppo_vecnorm: bool
+    ppo_vecnorm_norm_obs: bool
+    ppo_vecnorm_norm_reward: bool
+    ppo_vecnorm_eval_norm_reward: bool
+    ppo_amp: bool
+    ppo_pin_memory: bool
+    ppo_pf_enabled: bool
+    ppo_memory_format: str
+    ppo_rollout_cache_device: str
+    ppo_distributed: str
+    ppo_model_preset: str
+    ppo_learning_rate_schedule: str
+    ppo_clip_range_vf: float | None
+    ppo_clip_range_vf_schedule: str
+    ppo_clip_range_vf_final: float | None
+    ppo_clip_range_vf_schedule_expr: str
+    ppo_target_kl: float | None
+    ppo_vecnorm_gamma: float | None
+    ppo_eval_env_kwargs_json: str
+    use_action_mask: bool
+    mlflow_tracking_uri: str
+    mlflow_experiment: str
+    mlflow_run_name: str
+    tensorboard: bool
+
+
+class EvalPolicyArgs(Protocol):
+    env_id: str
+    eval_episodes: int
+    seed: int
+    ppo_feature_id: str
+    ppo_pf_enabled: bool
+    use_action_mask: bool
+
+
+class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
+    """All attributes accessed by pipeline_service.run_pipeline and helpers."""
+    run_root: Path
+    run_name: str
+    resume: bool
+    env_kwargs_json: str
+    eval_env_kwargs_json: str
+    skip_collect: bool
+    skip_bc: bool
+    skip_ppo: bool
+    skip_last_eval: bool
+    collect_policy: str
+    collect_workers: int
+    collect_episodes: int
+    collect_chunk_episodes: int
+    collect_feature_id: str
+    collect_pf_enabled: bool
+    collect_amp: bool
+    collect_save_aux_targets: bool
+    bc_use_collect_shards: bool
+    ppo_init_model: Path | None
 
 
 def append_bool_flag(cmd: list[str], name: str, value: bool) -> None:
     cmd.append(f"--{name}" if bool(value) else f"--no-{name}")
 
 
-def append_model_args(cmd: list[str], args: Any) -> None:
+def append_model_args(cmd: list[str], args: ModelArgs) -> None:
     model_class = str(args.model_class).strip()
     model_config_file = str(args.model_config_file).strip() if args.model_config_file is not None else ""
     model_config_json = str(args.model_config_json).strip()
@@ -67,7 +176,7 @@ def build_collect_teacher_cmd(
 def build_train_bc_cmd(
     *,
     py: str,
-    args: Any,
+    args: TrainBCArgs,
     output_model: Path,
     dataset_npz: Path | None = None,
     dataset_shards_glob: str = "",
@@ -97,7 +206,7 @@ def build_train_bc_cmd(
 def build_train_ppo_cmd(
     *,
     py: str,
-    args: Any,
+    args: TrainPPOArgs,
     run_dir: Path,
     env_kwargs: dict[str, Any],
     ppo_val_env_kwargs_json: str,
@@ -235,7 +344,7 @@ def build_train_ppo_cmd(
 def build_eval_policy_cmd(
     *,
     py: str,
-    args: Any,
+    args: EvalPolicyArgs,
     model_path: Path,
     output_json: Path,
     env_kwargs: dict[str, Any],

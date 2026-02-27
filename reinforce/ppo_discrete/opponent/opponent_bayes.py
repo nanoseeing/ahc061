@@ -366,18 +366,6 @@ def _load_cpp_estimator_class(*, build_if_missing: bool = True) -> type:
         raise
 
 
-def ensure_cpp_bayes_backend(*, build_if_missing: bool = True, force_build: bool = False, verbose: bool = False) -> bool:
-    from . import ensure_cpp_backend
-
-    return bool(
-        ensure_cpp_backend(
-            build_if_missing=build_if_missing,
-            force_build=force_build,
-            verbose=verbose,
-        )
-    )
-
-
 def create_opponent_bayes_estimator(
     *,
     n: int,
