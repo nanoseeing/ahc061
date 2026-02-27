@@ -251,6 +251,7 @@ def collect_rollout(
         raise RuntimeError("CUDA rollout requires board_dev/mask_dev/logp_dev/values_dev in workspace")
 
     last_done.zero_()
+    was_training = agent.training
     agent.eval()
     env.observe_into(obs[0], masks[0])
     if vecnorm is not None:
@@ -382,6 +383,9 @@ def collect_rollout(
         torch.cuda.current_stream(device).synchronize()
     else:
         last_value.copy_(last_v, non_blocking=False)
+
+    if was_training:
+        agent.train()
 
     return Rollout(
         obs=obs,

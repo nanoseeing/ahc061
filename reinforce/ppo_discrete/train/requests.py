@@ -47,6 +47,7 @@ class TrainPPORequest:
     pin_memory: bool
     rollout_cache_device: str
     distributed: str
+    compile: bool
     log_interval_iters: int
 
 
@@ -250,6 +251,6 @@ def build_ppo_request(
         pin_memory=bool(train_req.pin_memory),
         rollout_cache_device=str(train_req.rollout_cache_device),
         distributed=str(train_req.distributed),
-        compile=False,
+        compile=bool(train_req.compile),
         log_interval_iters=int(train_req.log_interval_iters),
     )

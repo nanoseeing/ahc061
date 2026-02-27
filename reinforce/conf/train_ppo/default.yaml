@@ -52,7 +52,8 @@ clip_coef_schedule_expr: ""
 model_class: ""
 model_config_file: null
 model_config_json: ""
-use_action_mask: false
+compile: false
+use_action_mask: true
 # checkpointing / eval
 save_interval: 10
 checkpoint_interval_steps: 0

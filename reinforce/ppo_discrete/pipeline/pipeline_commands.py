@@ -13,10 +13,19 @@ class ModelArgs(Protocol):
 
 
 class TrainBCArgs(ModelArgs, Protocol):
+    env_id: str
     seed: int
-    bc_epochs: int
-    bc_aux_opp_param_loss_coef: float
-    bc_aux_opp_param_use_valid_mask: bool
+    bc_total_transitions: int
+    bc_num_envs: int
+    bc_num_steps: int
+    bc_learning_rate: float
+    bc_num_minibatches: int
+    bc_max_grad_norm: float
+    bc_temperature: float
+    bc_teacher_model_path: Path | None
+    ppo_feature_id: str
+    ppo_pf_enabled: bool
+    use_action_mask: bool
 
 
 class TrainPPOArgs(ModelArgs, Protocol):
@@ -66,6 +75,7 @@ class TrainPPOArgs(ModelArgs, Protocol):
     ppo_memory_format: str
     ppo_rollout_cache_device: str
     ppo_distributed: str
+    ppo_compile: bool
     ppo_model_preset: str
     ppo_learning_rate_schedule: str
     ppo_clip_range_vf: float | None
@@ -98,19 +108,10 @@ class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
     resume: bool
     env_kwargs_json: str
     eval_env_kwargs_json: str
-    skip_collect: bool
     skip_bc: bool
     skip_ppo: bool
     skip_last_eval: bool
-    collect_policy: str
-    collect_workers: int
-    collect_episodes: int
-    collect_chunk_episodes: int
-    collect_feature_id: str
-    collect_pf_enabled: bool
-    collect_amp: bool
-    collect_save_aux_targets: bool
-    bc_use_collect_shards: bool
+    bc_teacher_model_path: Path | None
     ppo_init_model: Path | None
 
 
@@ -138,62 +139,32 @@ def append_model_args(cmd: list[str], args: ModelArgs) -> None:
         cmd.append(f"model_config_json='{model_config_json}'")
 
 
-def build_collect_teacher_cmd(
-    *,
-    py: str,
-    env_id: str,
-    episodes: int,
-    seed: int,
-    collect_policy: str,
-    chunk_episodes: int,
-    output_npz: Path,
-    env_kwargs: dict[str, Any],
-    feature_id: str,
-    pf_enabled: bool,
-    amp: bool,
-    save_aux_targets: bool,
-) -> list[str]:
-    cmd = [
-        py,
-        "-m",
-        "reinforce.ppo_discrete.entrypoints.collect_teacher",
-        f"env_id={env_id}",
-        f"episodes={int(episodes)}",
-        f"seed={int(seed)}",
-        f"policy={collect_policy}",
-        f"chunk_episodes={int(chunk_episodes)}",
-        f"output_npz={output_npz}",
-        f"env_kwargs_json='{json.dumps(env_kwargs)}'",
-        f"feature_id={feature_id}",
-    ]
-    append_bool_flag(cmd, "pf_enabled", bool(pf_enabled))
-    append_bool_flag(cmd, "amp", bool(amp))
-    append_bool_flag(cmd, "save_aux_targets", bool(save_aux_targets))
-    return cmd
-
-
 def build_train_bc_cmd(
     *,
     py: str,
     args: TrainBCArgs,
     output_model: Path,
-    dataset_npz: Path | None = None,
-    dataset_shards_glob: str = "",
+    teacher_model_path: Path,
 ) -> list[str]:
     cmd = [
         py,
         "-m",
         "reinforce.ppo_discrete.entrypoints.train_bc",
         f"output_model={output_model}",
+        f"teacher_model_path={teacher_model_path}",
+        f"env_id={args.env_id}",
         f"seed={int(args.seed)}",
-        f"epochs={int(args.bc_epochs)}",
-        f"aux_opp_param_loss_coef={float(args.bc_aux_opp_param_loss_coef)}",
+        f"total_transitions={int(args.bc_total_transitions)}",
+        f"num_envs={int(args.bc_num_envs)}",
+        f"num_steps={int(args.bc_num_steps)}",
+        f"learning_rate={float(args.bc_learning_rate)}",
+        f"num_minibatches={int(args.bc_num_minibatches)}",
+        f"max_grad_norm={float(args.bc_max_grad_norm)}",
+        f"temperature={float(args.bc_temperature)}",
+        f"feature_id={args.ppo_feature_id}",
     ]
-    append_bool_flag(cmd, "aux_opp_param_use_valid_mask", bool(args.bc_aux_opp_param_use_valid_mask))
-    if dataset_shards_glob:
-        cmd.append(f"dataset_shards_glob='{dataset_shards_glob}'")
-    elif dataset_npz is not None:
-        cmd.append(f"dataset_npz={dataset_npz}")
+    append_bool_flag(cmd, "pf_enabled", bool(args.ppo_pf_enabled))
+    append_bool_flag(cmd, "use_action_mask", bool(args.use_action_mask))
     append_model_args(cmd, args)
     return cmd
 
@@ -245,6 +216,7 @@ def build_train_ppo_cmd(
         f"rollout_cache_device={args.ppo_rollout_cache_device}",
         f"distributed={args.ppo_distributed}",
     ]
+    append_bool_flag(cmd, "compile", bool(args.ppo_compile))
     append_model_args(cmd, args)
     append_bool_flag(cmd, "norm_adv", bool(args.ppo_norm_adv))
     append_bool_flag(cmd, "clip_vloss", bool(args.ppo_clip_vloss))

@@ -10,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -20,12 +19,10 @@ from ..utils.log_utils import get_logger
 from ..utils.tracking import MetricTracker
 from .pipeline_commands import (
     PipelineArgs,
-    build_collect_teacher_cmd,
     build_eval_policy_cmd,
     build_train_bc_cmd,
     build_train_ppo_cmd,
 )
-from ..data.teacher_dataset_merge import cleanup_teacher_shards, merge_teacher_shards, split_counts
 
 logger = get_logger("run_pipeline")
 _STREAM_EMIT_LOCK = threading.Lock()
@@ -124,32 +121,6 @@ def _emit_child_output(text: str, *, tee_fp: TextIO | None) -> None:
             tee_fp.flush()
 
 
-def _run_collect_worker_stream(
-    *,
-    wi: int,
-    shard: Path,
-    cmd: list[str],
-    tee_fp: TextIO | None,
-) -> int:
-    _emit_child_output(f"[collect_worker={wi}] cmd={' '.join(cmd)}", tee_fp=tee_fp)
-    with subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    ) as proc:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if line:
-                _emit_child_output(f"[collect_worker={wi}] {line}", tee_fp=tee_fp)
-        rc = int(proc.wait())
-    logger.info("collect worker=%d rc=%d shard=%s", wi, rc, shard)
-    return rc
-
 
 def run(
     cmd: list[str],
@@ -233,22 +204,6 @@ def _validate_backend_combinations(args: PipelineArgs) -> None:
     if env_id != "AHC061Local-v0":
         raise ValueError("run_pipeline supports only env_id=AHC061Local-v0")
 
-    collect_policy = str(args.collect_policy).strip()
-
-    if not bool(args.skip_collect):
-        if collect_policy in ("model_stochastic", "model_greedy"):
-            raise ValueError(
-                "run_pipeline collect stage does not accept model_* policy yet "
-                "(model path is not configurable in pipeline collect). "
-                "Use collect_policy=random, or run collect_teacher directly."
-            )
-        if float(args.bc_aux_opp_param_loss_coef) > 0.0:
-            if not bool(args.collect_save_aux_targets):
-                raise ValueError(
-                    "bc_aux_opp_param_loss_coef > 0 requires collect_save_aux_targets=true "
-                    "when collect stage is active"
-                )
-
     if not bool(args.skip_ppo) and str(args.ppo_distributed).strip().lower() == "on":
         raise ValueError(
             "run_pipeline does not launch torchrun. "
@@ -292,120 +247,6 @@ def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any],
     meta["prepared"] = bool(ok)
     return meta
 
-
-def _run_collect_workers(
-    *,
-    py: str,
-    args: PipelineArgs,
-    collect_policy: str,
-    env_kwargs: dict[str, Any],
-    output_npz: Path,
-    tracker: MetricTracker | None,
-    merge_output: bool = True,
-    cleanup_shards: bool = True,
-    tee_fp: TextIO | None = None,
-) -> dict[str, Any]:
-    workers = int(args.collect_workers)
-    env_kwargs_cmd: dict[str, Any] = dict(env_kwargs)
-    if workers <= 1:
-        cmd = build_collect_teacher_cmd(
-            py=py,
-            env_id=str(args.env_id),
-            episodes=int(args.collect_episodes),
-            seed=int(args.seed),
-            collect_policy=str(collect_policy),
-            chunk_episodes=int(args.collect_chunk_episodes),
-            output_npz=output_npz,
-            env_kwargs=dict(env_kwargs_cmd),
-            feature_id=str(args.collect_feature_id),
-            pf_enabled=bool(args.collect_pf_enabled),
-            amp=bool(args.collect_amp),
-            save_aux_targets=bool(args.collect_save_aux_targets),
-        )
-        run(cmd, tracker=tracker, stage="collect_teacher", tee_fp=tee_fp)
-        return {"workers": 1, "shards": [str(output_npz)], "merged": True, "output_npz": str(output_npz)}
-
-    shards_dir = output_npz.parent / "collect_shards"
-    shards_dir.mkdir(parents=True, exist_ok=True)
-    shard_eps = [x for x in _split_counts(int(args.collect_episodes), workers) if x > 0]
-    if not shard_eps:
-        raise ValueError("collect_episodes must be > 0")
-
-    cmds: list[tuple[int, Path, list[str]]] = []
-    for wi, episodes in enumerate(shard_eps):
-        shard_path = shards_dir / f"teacher_shard_{wi:03d}.npz"
-        seed_i = int(args.seed) + wi * 100003
-        env_kwargs_i = dict(env_kwargs_cmd)
-        cmd = build_collect_teacher_cmd(
-            py=py,
-            env_id=str(args.env_id),
-            episodes=int(episodes),
-            seed=int(seed_i),
-            collect_policy=str(collect_policy),
-            chunk_episodes=int(args.collect_chunk_episodes),
-            output_npz=shard_path,
-            env_kwargs=env_kwargs_i,
-            feature_id=str(args.collect_feature_id),
-            pf_enabled=bool(args.collect_pf_enabled),
-            amp=bool(args.collect_amp),
-            save_aux_targets=bool(args.collect_save_aux_targets),
-        )
-        cmds.append((wi, shard_path, cmd))
-
-    t0 = time.time()
-    if tracker is not None:
-        tracker.log_event(
-            "stage_start",
-            {
-                "stage": "collect_teacher_parallel",
-                "workers": len(cmds),
-                "episodes": int(args.collect_episodes),
-            },
-        )
-
-    with ThreadPoolExecutor(max_workers=len(cmds)) as ex:
-        futs = {
-            ex.submit(
-                _run_collect_worker_stream,
-                wi=wi,
-                shard=shard,
-                cmd=cmd,
-                tee_fp=tee_fp,
-            ): (wi, shard, cmd)
-            for wi, shard, cmd in cmds
-        }
-        for fut in as_completed(futs):
-            wi, shard, cmd = futs[fut]
-            rc = int(fut.result())
-            if rc != 0:
-                raise RuntimeError(
-                    "collect worker failed: "
-                    f"idx={wi} rc={rc}\ncmd={' '.join(cmd)}"
-                )
-
-    shard_paths = [shard for _, shard, _ in cmds]
-    if merge_output:
-        merge_teacher_shards(shard_paths, output_npz, offset_episode_ids=True)
-        if cleanup_shards:
-            cleanup_teacher_shards(shard_paths, shards_dir=shards_dir)
-    elapsed = time.time() - t0
-    if tracker is not None:
-        tracker.log_event(
-            "stage_done",
-            {
-                "stage": "collect_teacher_parallel",
-                "elapsed_sec": elapsed,
-                "workers": len(cmds),
-                "output_npz": str(output_npz),
-            },
-        )
-    return {
-        "workers": len(cmds),
-        "shards": [str(s) for _, s, _ in cmds],
-        "merged": bool(merge_output),
-        "output_npz": (str(output_npz) if merge_output else ""),
-        "shards_dir": str(shards_dir),
-    }
 
 
 def run_pipeline(args: PipelineArgs) -> int:
@@ -483,10 +324,8 @@ def run_pipeline(args: PipelineArgs) -> int:
     )
 
     py = sys.executable
-    teacher_npz = layout.data_dir / "teacher.npz"
-    collect_shards_dir = teacher_npz.parent / "collect_shards"
-    collect_shards_glob = str(collect_shards_dir / "teacher_shard_*.npz")
     bc_model = layout.models_dir / "bc_init.pt"
+    bc_teacher_model_path = coerce_optional_path(args.bc_teacher_model_path, dot_is_none=True)
     ppo_init_model = coerce_optional_path(args.ppo_init_model, dot_is_none=True)
     if ppo_init_model is not None and not ppo_init_model.exists():
         raise FileNotFoundError(f"--ppo-init-model was set but file does not exist: {ppo_init_model}")
@@ -496,96 +335,30 @@ def run_pipeline(args: PipelineArgs) -> int:
     stage_result: dict[str, Any] = {
         "resume": {"enabled": bool(resume_enabled)},
         "bayes_backend": bayes_backend_meta,
-        "collect": {"skipped": bool(args.skip_collect)},
-        "bc": {"skipped": bool(args.skip_bc)},
+        "bc": {"skipped": bool(args.skip_bc) or bc_teacher_model_path is None},
         "ppo": {"skipped": bool(args.skip_ppo)},
         "eval": {"skipped": bool(args.skip_last_eval)},
         "logs": {"stdout_log": str(stdout_log_path)},
     }
 
     try:
-        bc_prefers_collect_shards = bool(
-            (not args.skip_bc)
-            and bool(args.bc_use_collect_shards)
-            and int(args.collect_workers) > 1
-        )
-        if not args.skip_collect:
-            resume_has_teacher_npz = bool(teacher_npz.exists())
-            resume_has_collect_shards = bool(
-                bc_prefers_collect_shards
-                and collect_shards_dir.exists()
-                and any(collect_shards_dir.glob("teacher_shard_*.npz"))
-            )
-            if resume_enabled and (resume_has_teacher_npz or resume_has_collect_shards):
-                if resume_has_teacher_npz:
-                    logger.info("resume: skip collect_teacher (found %s)", teacher_npz)
-                else:
-                    logger.info("resume: skip collect_teacher (found shards %s)", collect_shards_glob)
-                stage_result["collect"]["resumed"] = True
-                stage_result["collect"]["teacher_npz"] = (str(teacher_npz) if resume_has_teacher_npz else "")
-                if resume_has_collect_shards:
-                    stage_result["collect"]["teacher_shards_glob"] = collect_shards_glob
-            else:
-                collect_policy = args.collect_policy
-                collect_info = _run_collect_workers(
-                    py=py,
-                    args=args,
-                    collect_policy=collect_policy,
-                    env_kwargs=env_kwargs,
-                    output_npz=teacher_npz,
-                    tracker=tracker,
-                    merge_output=not bc_prefers_collect_shards,
-                    cleanup_shards=not bc_prefers_collect_shards,
-                    tee_fp=stdout_fp,
-                )
-                if bool(collect_info.get("merged")):
-                    stage_result["collect"]["teacher_npz"] = str(teacher_npz)
-                else:
-                    stage_result["collect"]["teacher_npz"] = ""
-                stage_result["collect"]["teacher_shards_glob"] = collect_shards_glob
-                stage_result["collect"]["policy"] = collect_policy
-                stage_result["collect"]["feature_id"] = str(args.collect_feature_id)
-                stage_result["collect"]["pf_enabled"] = bool(args.collect_pf_enabled)
-                stage_result["collect"]["save_aux_targets"] = bool(args.collect_save_aux_targets)
-                stage_result["collect"]["workers"] = int(collect_info["workers"])
-                stage_result["collect"]["shards"] = list(collect_info["shards"])
-                stage_result["collect"]["merged"] = bool(collect_info.get("merged"))
-
-        if not args.skip_bc:
+        if not args.skip_bc and bc_teacher_model_path is not None:
             if resume_enabled and bc_model.exists():
                 logger.info("resume: skip train_bc (found %s)", bc_model)
                 stage_result["bc"]["resumed"] = True
                 stage_result["bc"]["model"] = str(bc_model)
             else:
-                use_shards_for_bc = False
-                if bool(args.bc_use_collect_shards) and int(args.collect_workers) > 1:
-                    has_shards = collect_shards_dir.exists() and any(collect_shards_dir.glob("teacher_shard_*.npz"))
-                    if has_shards:
-                        use_shards_for_bc = True
-
-                bc_dataset_npz: Path | None = None
-                bc_dataset_shards_glob = ""
-                if use_shards_for_bc:
-                    bc_dataset_shards_glob = collect_shards_glob
-                    stage_result["bc"]["dataset"] = {"mode": "shards", "glob": collect_shards_glob}
-                else:
-                    if not teacher_npz.exists():
-                        raise FileNotFoundError(
-                            f"teacher dataset was not found: {teacher_npz} (and no collect shards matched {collect_shards_glob})"
-                        )
-                    bc_dataset_npz = teacher_npz
-                    stage_result["bc"]["dataset"] = {"mode": "npz", "path": str(teacher_npz)}
+                if not bc_teacher_model_path.exists():
+                    raise FileNotFoundError(f"bc_teacher_model_path does not exist: {bc_teacher_model_path}")
                 bc_cmd = build_train_bc_cmd(
                     py=py,
                     args=args,
                     output_model=bc_model,
-                    dataset_npz=bc_dataset_npz,
-                    dataset_shards_glob=bc_dataset_shards_glob,
+                    teacher_model_path=bc_teacher_model_path,
                 )
                 run(bc_cmd, tracker=tracker, stage="train_bc", tee_fp=stdout_fp)
                 stage_result["bc"]["model"] = str(bc_model)
-                stage_result["bc"]["aux_opp_param_loss_coef"] = float(args.bc_aux_opp_param_loss_coef)
-                stage_result["bc"]["aux_opp_param_use_valid_mask"] = bool(args.bc_aux_opp_param_use_valid_mask)
+                stage_result["bc"]["teacher_model"] = str(bc_teacher_model_path)
 
         trained_model = bc_model
         consolidated_model = layout.models_dir / "ppo_final.pt"

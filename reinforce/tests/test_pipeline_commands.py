@@ -9,7 +9,6 @@ import pytest
 
 from reinforce.ppo_discrete.pipeline.pipeline_commands import (
     append_bool_flag,
-    build_collect_teacher_cmd,
     build_eval_policy_cmd,
     build_train_bc_cmd,
     build_train_ppo_cmd,
@@ -41,55 +40,25 @@ def test_append_bool_flag_hyphen_converted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# build_collect_teacher_cmd
-# ---------------------------------------------------------------------------
-
-
-def test_build_collect_teacher_cmd_basic(tmp_path: Path) -> None:
-    out = tmp_path / "data.npz"
-    cmd = build_collect_teacher_cmd(
-        py="python",
-        env_id="AHC061Local-v0",
-        episodes=10,
-        seed=42,
-        collect_policy="greedy",
-        chunk_episodes=5,
-        output_npz=out,
-        env_kwargs={"x": 1},
-        feature_id="v1",
-        pf_enabled=False,
-        amp=False,
-        save_aux_targets=True,
-    )
-    assert cmd[0] == "python"
-    assert "env_id=AHC061Local-v0" in cmd
-    assert "episodes=10" in cmd
-    assert "seed=42" in cmd
-    assert "policy=greedy" in cmd
-    assert "chunk_episodes=5" in cmd
-    assert f"output_npz={out}" in cmd
-    assert "feature_id=v1" in cmd
-    assert "pf_enabled=false" in cmd
-    assert "amp=false" in cmd
-    assert "save_aux_targets=true" in cmd
-    # env_kwargs should be JSON-encoded inside OmegaConf single-quote wrapper
-    ek_elem = next(e for e in cmd if e.startswith("env_kwargs_json="))
-    inner = ek_elem[len("env_kwargs_json="):]
-    assert inner.startswith("'") and inner.endswith("'")
-    assert json.loads(inner[1:-1]) == {"x": 1}
-
-
-# ---------------------------------------------------------------------------
-# build_train_bc_cmd with dataset_npz
+# build_train_bc_cmd (online BC)
 # ---------------------------------------------------------------------------
 
 
 def _make_train_bc_args(**kwargs) -> SimpleNamespace:
     defaults = dict(
+        env_id="AHC061Local-v0",
         seed=7,
-        bc_epochs=5,
-        bc_aux_opp_param_loss_coef=0.0,
-        bc_aux_opp_param_use_valid_mask=True,
+        bc_total_transitions=50000,
+        bc_num_envs=4,
+        bc_num_steps=64,
+        bc_learning_rate=1e-3,
+        bc_num_minibatches=4,
+        bc_max_grad_norm=0.5,
+        bc_temperature=1.0,
+        bc_teacher_model_path=None,
+        ppo_feature_id="submit_v1",
+        ppo_pf_enabled=True,
+        use_action_mask=True,
         model_class="",
         model_config_file=None,
         model_config_json="",
@@ -98,44 +67,34 @@ def _make_train_bc_args(**kwargs) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-def test_build_train_bc_cmd_with_npz(tmp_path: Path) -> None:
+def test_build_train_bc_cmd_basic(tmp_path: Path) -> None:
+    teacher = tmp_path / "teacher.pt"
+    out = tmp_path / "student.pt"
     args = _make_train_bc_args()
-    out = tmp_path / "model.pt"
-    dataset = tmp_path / "data.npz"
-    cmd = build_train_bc_cmd(py="python", args=args, output_model=out, dataset_npz=dataset)
+    cmd = build_train_bc_cmd(py="python", args=args, output_model=out, teacher_model_path=teacher)
     assert cmd[0] == "python"
     assert f"output_model={out}" in cmd
-    assert f"dataset_npz={dataset}" in cmd
+    assert f"teacher_model_path={teacher}" in cmd
+    assert "env_id=AHC061Local-v0" in cmd
     assert "seed=7" in cmd
-    assert "epochs=5" in cmd
-    # no shards glob when npz is given
-    assert not any(e.startswith("dataset_shards_glob=") for e in cmd)
+    assert "total_transitions=50000" in cmd
+    assert "num_envs=4" in cmd
+    assert "num_steps=64" in cmd
+    assert "learning_rate=0.001" in cmd
+    assert "num_minibatches=4" in cmd
+    assert "temperature=1.0" in cmd
+    assert "feature_id=submit_v1" in cmd
+    assert "pf_enabled=true" in cmd
+    assert "use_action_mask=true" in cmd
 
 
-def test_build_train_bc_cmd_with_shards_glob(tmp_path: Path) -> None:
-    args = _make_train_bc_args()
-    out = tmp_path / "model.pt"
-    cmd = build_train_bc_cmd(
-        py="python",
-        args=args,
-        output_model=out,
-        dataset_shards_glob="/tmp/shards/*.npz",
-    )
-    assert any(e.startswith("dataset_shards_glob=") for e in cmd)
-    shards_elem = next(e for e in cmd if e.startswith("dataset_shards_glob="))
-    assert "/tmp/shards/*.npz" in shards_elem
-    assert not any(e.startswith("dataset_npz=") for e in cmd)
-
-
-def test_build_train_bc_cmd_aux_mask_flag() -> None:
-    args = _make_train_bc_args(bc_aux_opp_param_use_valid_mask=False)
-    cmd = build_train_bc_cmd(
-        py="python",
-        args=args,
-        output_model=Path("/tmp/out.pt"),
-        dataset_npz=Path("/tmp/data.npz"),
-    )
-    assert "aux_opp_param_use_valid_mask=false" in cmd
+def test_build_train_bc_cmd_pf_disabled(tmp_path: Path) -> None:
+    teacher = tmp_path / "teacher.pt"
+    out = tmp_path / "student.pt"
+    args = _make_train_bc_args(ppo_pf_enabled=False, use_action_mask=False)
+    cmd = build_train_bc_cmd(py="python", args=args, output_model=out, teacher_model_path=teacher)
+    assert "pf_enabled=false" in cmd
+    assert "use_action_mask=false" in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +150,7 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
         ppo_memory_format="nchw",
         ppo_rollout_cache_device="auto",
         ppo_distributed="auto",
+        ppo_compile=False,
         ppo_model_preset="",
         ppo_learning_rate_schedule="",
         ppo_clip_range_vf=None,

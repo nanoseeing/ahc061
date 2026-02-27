@@ -143,6 +143,7 @@ def _run_backend(*, args: SimpleNamespace, cfg: PPOConfig, device: torch.device)
         pin_memory=bool(args.pin_memory),
         rollout_cache_device=str(args.rollout_cache_device),
         distributed=str(args.distributed),
+        compile=bool(args.compile),
         log_interval_iters=int(args.log_interval_iters),
     )
     return int(

@@ -858,6 +858,9 @@ class PPORunner:
                 "aux_opp_param_loss_coef > 0 requires model to implement get_aux_opp_param(obs) -> [B,7,5]"
             )
 
+        # Check before compile: aux head present but coef=0 → DDP must track unused params.
+        _has_aux_head = bool(getattr(agent, "use_aux_opp_param_head", False))
+
         if bool(args.compile):
             try:
                 agent = torch.compile(agent)
@@ -867,12 +870,14 @@ class PPORunner:
 
         if self.is_distributed:
             ddp_device_id = int(self.device.index if self.device.index is not None else self.local_rank)
+            _find_unused = _has_aux_head and not self.aux_opp_param_active
             agent = DDP(
                 agent,
                 device_ids=[ddp_device_id],
                 output_device=ddp_device_id,
                 broadcast_buffers=False,
                 gradient_as_bucket_view=True,
+                find_unused_parameters=_find_unused,
             )
 
         self.agent = agent

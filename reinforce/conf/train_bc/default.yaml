@@ -1,23 +1,34 @@
 # @package _global_
-dataset_npz: null
-dataset_shards_glob: ""
-output_model: null
-metrics_jsonl: null
-seed: 1
-epochs: 20
-batch_size: 2048
-learning_rate: 1.0e-3
-weight_decay: 0.0
-valid_ratio: 0.1
+env_id: AHC061Local-v0
+feature_id: submit_v1
+pf_enabled: true
+amp: false
+use_action_mask: true
+# Teacher model (required)
+teacher_model_path: null
+# Student model
 model_class: ""
 model_config_file: null
 model_config_json: ""
-device: auto
-aux_opp_param_loss_coef: 0.0
-aux_opp_param_use_valid_mask: true
+model_preset: ""
+init_model: null
+# Rollout
+num_envs: 8
+num_steps: 100
+# Training
+total_transitions: 200000
+learning_rate: 1.0e-3
+weight_decay: 0.0
+num_minibatches: 4
+max_grad_norm: 0.5
+temperature: 1.0
+log_interval_iters: 10
+seed: 1
+# Output
+output_model: null
+# Run management
 run_root: null
 run_name: ""
-prefer_run_layout: true
 
 hydra:
   run:
