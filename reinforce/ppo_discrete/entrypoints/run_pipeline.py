@@ -4,8 +4,8 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from ..infra.experiment import coerce_optional_path, resolve_config
-from ..usecases.pipeline_service import run_pipeline
+from ..utils.experiment import coerce_optional_path, resolve_config
+from ..pipeline.pipeline_service import run_pipeline
 
 
 def build_parser() -> argparse.ArgumentParser:

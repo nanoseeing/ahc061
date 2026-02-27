@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from reinforce.ppo_discrete.usecases.model_checkpoint_service import load_agent_checkpoint, save_agent_checkpoint
-from reinforce.ppo_discrete.agents.discrete_board import DiscreteBoardAgent
-from reinforce.ppo_discrete.agents import StudentMBoardAgent, TeacherP0V1BoardAgent, build_agent
+from reinforce.ppo_discrete.pipeline.model_checkpoint_service import load_agent_checkpoint, save_agent_checkpoint
+from reinforce.ppo_discrete.models.nets.discrete_board import DiscreteBoardAgent
+from reinforce.ppo_discrete.models import StudentMBoardAgent, TeacherP0V1BoardAgent, build_agent
 
 
 class TestPPOCoreModelAndCheckpoint:

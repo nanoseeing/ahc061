@@ -8,9 +8,9 @@ import torch
 import torch.nn as nn
 from torch.distributions.categorical import Categorical
 
-from reinforce.ppo_discrete.core.ppo.config import PPOConfig
-from reinforce.ppo_discrete.core.ppo.rollout_buffer import RolloutBuffer
-from reinforce.ppo_discrete.core.ppo.trainer import PPOTrainer
+from reinforce.ppo_discrete.ppo.config import PPOConfig
+from reinforce.ppo_discrete.ppo.rollout_buffer import RolloutBuffer
+from reinforce.ppo_discrete.ppo.trainer import PPOTrainer
 
 
 class _DummyAgent(nn.Module):

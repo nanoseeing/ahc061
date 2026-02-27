@@ -7,15 +7,15 @@ from typing import Any
 
 import torch
 
-from ..core.ppo.config import PPOConfig
-from ..core.ppo.train_utils import (
+from ..ppo.config import PPOConfig
+from ..train.schedule import (
     resolve_vecnorm_gamma,
     validate_ppo_config,
     validate_schedule_args,
     validate_vecnorm_config,
 )
-from ..infra.experiment import coerce_optional_path, resolve_config
-from ..infra.log_utils import get_logger
+from ..utils.experiment import coerce_optional_path, resolve_config
+from ..utils.log_utils import get_logger
 
 logger = get_logger("train_ppo")
 
@@ -269,7 +269,7 @@ _validate_schedule_args = validate_schedule_args
 
 
 def _run_backend_from_train_ppo(*, args: argparse.Namespace, cfg: PPOConfig, device: torch.device) -> int:
-    from ..usecases.ppo_service import TrainPPORequest, run_ppo_from_train_request
+    from ..train.ppo_service import TrainPPORequest, run_ppo_from_train_request
 
     env_kwargs = parse_env_kwargs(args.env_kwargs_json)
     train_req = TrainPPORequest(

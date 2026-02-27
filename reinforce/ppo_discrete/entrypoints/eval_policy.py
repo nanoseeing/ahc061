@@ -8,12 +8,12 @@ from typing import Any
 
 import torch
 
-from ..usecases.eval_service import run_policy_episodes
-from ..usecases.model_checkpoint_service import load_agent_checkpoint
-from ..infra.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
-from ..infra.log_utils import get_logger
-from ..infra.metrics import summarize
-from ..infra.tracking import MetricTracker
+from ..eval.eval_service import run_policy_episodes
+from ..pipeline.model_checkpoint_service import load_agent_checkpoint
+from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
+from ..utils.log_utils import get_logger
+from ..utils.metrics import summarize
+from ..utils.tracking import MetricTracker
 
 logger = get_logger("eval_policy")
 

@@ -12,13 +12,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..agents import build_agent, load_model_config_from_sources, normalize_model_config
-from ..usecases.model_checkpoint_service import save_agent_checkpoint
-from ..infra.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
-from ..infra.log_utils import get_logger
-from ..infra.metrics import summarize
-from ..domain.ahc061.teacher_dataset import DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_VALID
-from ..infra.tracking import MetricTracker
+from ..models import build_agent, load_model_config_from_sources, normalize_model_config
+from ..pipeline.model_checkpoint_service import save_agent_checkpoint
+from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
+from ..utils.log_utils import get_logger
+from ..utils.metrics import summarize
+from ..data.teacher_dataset import DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_VALID
+from ..utils.tracking import MetricTracker
 
 logger = get_logger("train_bc")
 

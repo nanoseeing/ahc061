@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from reinforce.ppo_discrete.usecases.teacher_dataset_merge import merge_teacher_shards
+from reinforce.ppo_discrete.data.teacher_dataset_merge import merge_teacher_shards
 
 
 def _write_teacher_shard(

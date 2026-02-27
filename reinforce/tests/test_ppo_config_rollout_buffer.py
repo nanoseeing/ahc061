@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from reinforce.ppo_discrete.core.ppo.config import PPOConfig
-from reinforce.ppo_discrete.core.ppo.rollout_buffer import RolloutBuffer
+from reinforce.ppo_discrete.ppo.config import PPOConfig
+from reinforce.ppo_discrete.ppo.rollout_buffer import RolloutBuffer
 
 
 class TestPPOConfigAndRolloutBuffer:

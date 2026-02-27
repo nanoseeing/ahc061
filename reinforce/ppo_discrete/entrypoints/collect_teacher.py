@@ -9,13 +9,13 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..usecases.eval_service import AuxTransition, Transition, run_policy_episodes
-from ..usecases.model_checkpoint_service import load_agent_checkpoint
-from ..infra.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
-from ..infra.log_utils import get_logger
-from ..infra.metrics import summarize
-from ..usecases.teacher_dataset_merge import merge_teacher_shards
-from ..domain.ahc061.teacher_dataset import (
+from ..eval.eval_service import AuxTransition, Transition, run_policy_episodes
+from ..pipeline.model_checkpoint_service import load_agent_checkpoint
+from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
+from ..utils.log_utils import get_logger
+from ..utils.metrics import summarize
+from ..data.teacher_dataset_merge import merge_teacher_shards
+from ..data.teacher_dataset import (
     AHC061_BAYES_TAIL_SHAPE,
     AHC061_OPP_PARAM_TRUE_TAIL_SHAPE,
     AHC061_OPP_VALID_TAIL_SHAPE,
@@ -27,7 +27,7 @@ from ..domain.ahc061.teacher_dataset import (
     resolve_bayes_sources_for_meta,
     zero_bayes_params,
 )
-from ..infra.tracking import MetricTracker
+from ..utils.tracking import MetricTracker
 
 logger = get_logger("collect_teacher")
 _DATA_KEYS = ("obs", "action", "reward", "done", "episode", "step", "bayes_params")
