@@ -8,7 +8,13 @@ import torch
 
 from reinforce.ppo_discrete.pipeline.model_checkpoint_service import load_agent_checkpoint, save_agent_checkpoint
 from reinforce.ppo_discrete.models.nets.discrete_board import DiscreteBoardAgent
-from reinforce.ppo_discrete.models import StudentMBoardAgent, TeacherP0V1BoardAgent, build_agent
+from reinforce.ppo_discrete.models import (
+    Exp002ResNetBoardAgent,
+    StudentMBoardAgent,
+    TeacherP0V1BoardAgent,
+    build_agent,
+    get_model_config_from_preset,
+)
 
 
 class TestPPOCoreModelAndCheckpoint:
@@ -68,6 +74,21 @@ class TestPPOCoreModelAndCheckpoint:
         )
         assert isinstance(agent, TeacherP0V1BoardAgent)
         assert resolved["type"] == "TeacherP0V1BoardAgent"
+        obs = torch.zeros((2, 88 * 10 * 10), dtype=torch.float32)
+        logits = agent.get_logits(obs)
+        value = agent.get_value(obs)
+        assert tuple(logits.shape) == (2, 100)
+        assert tuple(value.shape) == (2, 1)
+
+    def test_build_agent_exp002_submit_v1_88ch(self) -> None:
+        model_cfg = get_model_config_from_preset("exp002_submit_v1_88ch")
+        agent, resolved = build_agent(
+            obs_shape=(88 * 10 * 10,),
+            action_dim=100,
+            model_config=model_cfg,
+        )
+        assert isinstance(agent, Exp002ResNetBoardAgent)
+        assert resolved["type"] == "Exp002ResNetBoardAgent"
         obs = torch.zeros((2, 88 * 10 * 10), dtype=torch.float32)
         logits = agent.get_logits(obs)
         value = agent.get_value(obs)

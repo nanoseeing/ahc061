@@ -54,6 +54,22 @@ _MODEL_PRESET_TABLE: dict[str, ModelPreset] = {
         default_feature_id="teacher_p0_v1_88ch",
         note="Teacher P0 v1 preset.",
     ),
+    "exp002_submit_v1_88ch": ModelPreset(
+        id="exp002_submit_v1_88ch",
+        model_config={
+            "type": "Exp002ResNetBoardAgent",
+            "kwargs": {
+                "board_channels": 88,
+                "board_size": 10,
+                "global_dim": 0,
+                "hidden_channels": 64,
+                "blocks": 6,
+                "aux_opp_param_head": False,
+            },
+        },
+        default_feature_id="teacher_p0_v1_88ch",
+        note="exp002 submit-v1(resnet_v1) architecture on 88ch teacher features.",
+    ),
 }
 
 

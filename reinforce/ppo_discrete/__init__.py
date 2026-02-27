@@ -8,6 +8,7 @@ specific logic from generic algorithm code.
 from .ppo.config import PPOConfig
 from .ppo.rollout_buffer import RolloutBuffer
 from .ppo.trainer import PPOTrainer
+from .models.nets.exp002_resnet import Exp002ResNetBoardAgent
 from .models.nets.student_m import StudentMBoardAgent, TeacherP0V1BoardAgent
 from .models.nets.discrete_board import DiscreteBoardAgent
 from .models import (
@@ -29,6 +30,7 @@ __all__ = [
     "create_run_layout",
     "update_manifest",
     "DiscreteBoardAgent",
+    "Exp002ResNetBoardAgent",
     "StudentMBoardAgent",
     "TeacherP0V1BoardAgent",
     "build_agent",

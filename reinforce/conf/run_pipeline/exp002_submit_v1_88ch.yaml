@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+run_name: exp002_submit_v1_88ch
+
+# Use exp002 submit-v1 (resnet_v1, hidden=64, blocks=6) architecture on 88ch features.
+ppo_feature_id: teacher_p0_v1_88ch
+ppo_model_preset: exp002_submit_v1_88ch
+
+# This preset is PPO-only by default.
+skip_bc: true
