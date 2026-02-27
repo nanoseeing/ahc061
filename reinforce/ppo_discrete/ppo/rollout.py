@@ -105,70 +105,21 @@ def create_rollout_workspace(
             _empty_cpu((bsz, m_max), dtype=torch.uint8, pin_memory=pin),
         )
 
+    def _do_alloc(pin: bool) -> tuple[tuple[torch.Tensor, ...], tuple]:
+        main = _alloc_cpu(pin)
+        aux = _alloc_aux_cpu(pin) if bool(collect_aux_targets) else (None, None, None, None, None)
+        return main, aux
+
     if use_pinned:
         try:
-            (
-                obs,
-                masks,
-                actions,
-                logprobs,
-                values,
-                rewards,
-                dones,
-                next_obs,
-                next_mask,
-                last_done,
-                last_value,
-            ) = _alloc_cpu(True)
-            (
-                aux_opp_param_true,
-                aux_opp_valid,
-                aux_move_dist_tmp,
-                aux_opp_param_tmp,
-                aux_opp_valid_tmp,
-            ) = _alloc_aux_cpu(True) if bool(collect_aux_targets) else (None, None, None, None, None)
+            main_tensors, aux_tensors = _do_alloc(True)
         except RuntimeError:
-            (
-                obs,
-                masks,
-                actions,
-                logprobs,
-                values,
-                rewards,
-                dones,
-                next_obs,
-                next_mask,
-                last_done,
-                last_value,
-            ) = _alloc_cpu(False)
-            (
-                aux_opp_param_true,
-                aux_opp_valid,
-                aux_move_dist_tmp,
-                aux_opp_param_tmp,
-                aux_opp_valid_tmp,
-            ) = _alloc_aux_cpu(False) if bool(collect_aux_targets) else (None, None, None, None, None)
+            main_tensors, aux_tensors = _do_alloc(False)
     else:
-        (
-            obs,
-            masks,
-            actions,
-            logprobs,
-            values,
-            rewards,
-            dones,
-            next_obs,
-            next_mask,
-            last_done,
-            last_value,
-        ) = _alloc_cpu(False)
-        (
-            aux_opp_param_true,
-            aux_opp_valid,
-            aux_move_dist_tmp,
-            aux_opp_param_tmp,
-            aux_opp_valid_tmp,
-        ) = _alloc_aux_cpu(False) if bool(collect_aux_targets) else (None, None, None, None, None)
+        main_tensors, aux_tensors = _do_alloc(False)
+
+    (obs, masks, actions, logprobs, values, rewards, dones, next_obs, next_mask, last_done, last_value) = main_tensors
+    (aux_opp_param_true, aux_opp_valid, aux_move_dist_tmp, aux_opp_param_tmp, aux_opp_valid_tmp) = aux_tensors
 
     board_dev = None
     mask_dev = None

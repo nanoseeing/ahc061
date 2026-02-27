@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Annotated, Any, Optional
 
 import numpy as np
 import torch
+import typer
 
 from ..eval.eval_service import AuxTransition, Transition, run_policy_episodes
 from ..pipeline.model_checkpoint_service import load_agent_checkpoint
@@ -31,87 +32,90 @@ from ..utils.tracking import MetricTracker
 
 logger = get_logger("collect_teacher")
 _DATA_KEYS = ("obs", "action", "reward", "done", "episode", "step", "bayes_params")
+app = typer.Typer(add_completion=False)
+
+_DEFAULTS: dict[str, Any] = {
+    "env_id": "AHC061Local-v0",
+    "feature_id": "submit_v1",
+    "pf_enabled": True,
+    "amp": False,
+    "save_aux_targets": False,
+    "episodes": 200,
+    "max_steps_per_episode": 1000,
+    "seed": 1,
+    "output_npz": None,
+    "policy": "random",
+    "model_path": None,
+    "env_kwargs_json": "{}",
+    "log_interval_episodes": 50,
+    "chunk_episodes": 10,
+    "run_root": None,
+    "run_name": "",
+    "prefer_run_layout": True,
+}
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Collect teacher trajectories for discrete PPO/BC.")
-    p.add_argument("--config-file", type=Path, default=None, help="json/toml/yaml config file")
-    p.add_argument("--config-section", type=str, default="collect_teacher", help="section key in config file")
-    p.add_argument("--set", dest="set", action="append", default=[], help="override key=value (repeatable)")
-
-    p.add_argument("--env-id", type=str, default="AHC061Local-v0")
-    p.add_argument("--feature-id", type=str, default="submit_v1")
-    p.add_argument("--pf-enabled", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument(
-        "--save-aux-targets",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="save auxiliary opponent targets into optional NPZ keys",
-    )
-    p.add_argument("--episodes", type=int, default=200)
-    p.add_argument("--max-steps-per-episode", type=int, default=1000)
-    p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--output-npz", type=Path, default=None)
-    p.add_argument(
-        "--policy",
-        choices=["random", "model_stochastic", "model_greedy"],
-        default="random",
-    )
-    p.add_argument("--model-path", type=Path, default=None)
-    p.add_argument("--env-kwargs-json", type=str, default="{}")
-    p.add_argument("--log-interval-episodes", type=int, default=50, help="progress log interval in episodes (<=0 disables)")
-    p.add_argument(
-        "--chunk-episodes",
-        type=int,
-        default=10,
-        help="flush temporary shard every N episodes to reduce peak memory (<=0 disables chunking)",
-    )
-
-    p.add_argument("--run-root", type=Path, default=None, help="optional run root for managed outputs")
-    p.add_argument("--run-name", type=str, default="")
-    p.add_argument("--prefer-run-layout", action=argparse.BooleanOptionalAction, default=True)
-    return p
+def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**cfg)
 
 
-def _parser_defaults(parser: argparse.ArgumentParser) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for a in parser._actions:
-        if a.dest == "help":
-            continue
-        if a.default is argparse.SUPPRESS:
-            continue
-        out[a.dest] = a.default
-    return out
-
-
-def parse_args() -> argparse.Namespace:
-    parser = build_parser()
-    pre, _unknown = parser.parse_known_args()
-
-    base_defaults = _parser_defaults(parser)
-    for key in ("config_file", "config_section", "set"):
-        base_defaults.pop(key, None)
-
+@app.command()
+def main(
+    config_file: Annotated[Optional[Path], typer.Option("--config-file")] = None,
+    config_section: Annotated[str, typer.Option("--config-section")] = "collect_teacher",
+    set_: Annotated[Optional[list[str]], typer.Option("--set")] = None,
+    env_id: Annotated[Optional[str], typer.Option("--env-id")] = None,
+    feature_id: Annotated[Optional[str], typer.Option("--feature-id")] = None,
+    pf_enabled: Annotated[Optional[bool], typer.Option("--pf-enabled/--no-pf-enabled")] = None,
+    amp: Annotated[Optional[bool], typer.Option("--amp/--no-amp")] = None,
+    save_aux_targets: Annotated[Optional[bool], typer.Option("--save-aux-targets/--no-save-aux-targets")] = None,
+    episodes: Annotated[Optional[int], typer.Option("--episodes")] = None,
+    max_steps_per_episode: Annotated[Optional[int], typer.Option("--max-steps-per-episode")] = None,
+    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
+    output_npz: Annotated[Optional[Path], typer.Option("--output-npz")] = None,
+    policy: Annotated[Optional[str], typer.Option("--policy")] = None,
+    model_path: Annotated[Optional[Path], typer.Option("--model-path")] = None,
+    env_kwargs_json: Annotated[Optional[str], typer.Option("--env-kwargs-json")] = None,
+    log_interval_episodes: Annotated[Optional[int], typer.Option("--log-interval-episodes")] = None,
+    chunk_episodes: Annotated[Optional[int], typer.Option("--chunk-episodes")] = None,
+    run_root: Annotated[Optional[Path], typer.Option("--run-root")] = None,
+    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
+    prefer_run_layout: Annotated[Optional[bool], typer.Option("--prefer-run-layout/--no-prefer-run-layout")] = None,
+) -> None:
     cfg = resolve_config(
-        defaults=base_defaults,
-        config_file=pre.config_file,
-        config_section=pre.config_section,
-        overrides=list(pre.set or []),
+        defaults=_DEFAULTS,
+        config_file=config_file,
+        config_section=config_section,
+        overrides=list(set_ or []),
     )
-    unknown = sorted(k for k in cfg.keys() if k not in base_defaults.keys())
-    if unknown:
-        raise ValueError(f"unknown config keys for collect_teacher: {', '.join(unknown)}")
+    _cli: dict[str, Any] = {
+        "env_id": env_id,
+        "feature_id": feature_id,
+        "pf_enabled": pf_enabled,
+        "amp": amp,
+        "save_aux_targets": save_aux_targets,
+        "episodes": episodes,
+        "max_steps_per_episode": max_steps_per_episode,
+        "seed": seed,
+        "output_npz": output_npz,
+        "policy": policy,
+        "model_path": model_path,
+        "env_kwargs_json": env_kwargs_json,
+        "log_interval_episodes": log_interval_episodes,
+        "chunk_episodes": chunk_episodes,
+        "run_root": run_root,
+        "run_name": run_name,
+        "prefer_run_layout": prefer_run_layout,
+    }
+    cfg.update({k: v for k, v in _cli.items() if v is not None})
+    cfg["output_npz"] = coerce_optional_path(cfg.get("output_npz"), dot_is_none=True)
+    cfg["model_path"] = coerce_optional_path(cfg.get("model_path"), dot_is_none=True)
+    cfg["run_root"] = coerce_optional_path(cfg.get("run_root"))
+    args = _ns(cfg)
+    raise SystemExit(_run(args))
 
-    parser.set_defaults(**cfg)
-    args = parser.parse_args()
-    args.output_npz = coerce_optional_path(args.output_npz, dot_is_none=True)
-    args.model_path = coerce_optional_path(args.model_path, dot_is_none=True)
-    args.run_root = coerce_optional_path(args.run_root)
-    return args
 
-
-def _validate_args(args: argparse.Namespace) -> None:
+def _validate_args(args: SimpleNamespace) -> None:
     if args.output_npz is None and args.run_root is None:
         raise ValueError("--output-npz is required (or set --run-root)")
     if args.policy == "random":
@@ -132,7 +136,7 @@ def parse_env_kwargs(text: str) -> dict[str, Any]:
     return obj
 
 
-def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
+def _prepare_run(args: SimpleNamespace) -> tuple[Any, MetricTracker | None]:
     if args.run_root is None:
         return None, None
 
@@ -144,7 +148,7 @@ def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
     config_snapshot = to_jsonable({"args": vars(args), "layout": layout.as_dict()})
     (layout.config_dir / "collect_teacher.args.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
 
-    tracker = MetricTracker(layout.root, run_name=run_name, enable_tensorboard=False, config=config_snapshot)
+    tracker = MetricTracker(layout.root, run_name=run_name, config=config_snapshot)
     update_manifest(
         layout,
         {
@@ -212,8 +216,7 @@ def _flush_chunk(
     return int(n)
 
 
-def main() -> int:
-    args = parse_args()
+def _run(args: SimpleNamespace) -> int:
     _validate_args(args)
 
     layout = None
@@ -284,6 +287,7 @@ def main() -> int:
                 "cpp batch env ignores --env-kwargs-json keys: %s",
                 ", ".join(sorted(str(k) for k in env_kwargs.keys())),
             )
+
         def _on_env_ready(obs_shape: tuple[int, ...], action_dim: int) -> None:
             nonlocal spec_obs_shape, spec_action_dim
             spec_obs_shape = tuple(obs_shape)
@@ -459,4 +463,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()

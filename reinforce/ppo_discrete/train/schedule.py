@@ -13,66 +13,9 @@ ScheduleFn = Callable[[float], float]
 
 
 def validate_ppo_config(cfg: PPOConfig) -> None:
-    if int(cfg.total_timesteps) <= 0:
-        raise ValueError(f"total_timesteps must be positive: {cfg.total_timesteps}")
-    if int(cfg.num_envs) <= 0:
-        raise ValueError(f"num_envs must be positive: {cfg.num_envs}")
-    if int(cfg.num_steps) <= 0:
-        raise ValueError(f"num_steps must be positive: {cfg.num_steps}")
-    if int(cfg.num_minibatches) <= 0:
-        raise ValueError(f"num_minibatches must be positive: {cfg.num_minibatches}")
-    if int(cfg.update_epochs) <= 0:
-        raise ValueError(f"update_epochs must be positive: {cfg.update_epochs}")
-    if float(cfg.learning_rate) <= 0.0:
-        raise ValueError(f"learning_rate must be positive: {cfg.learning_rate}")
-    if float(cfg.max_grad_norm) <= 0.0:
-        raise ValueError(f"max_grad_norm must be positive: {cfg.max_grad_norm}")
-    if float(cfg.clip_coef) <= 0.0:
-        raise ValueError(f"clip_coef must be positive: {cfg.clip_coef}")
-    if str(cfg.clip_coef_schedule).lower() not in ("constant", "linear", "cosine"):
-        raise ValueError(f"clip_coef_schedule must be one of constant|linear|cosine: {cfg.clip_coef_schedule}")
-    if cfg.clip_coef_final is not None and float(cfg.clip_coef_final) < 0.0:
-        raise ValueError(f"clip_coef_final must be >= 0 when set: {cfg.clip_coef_final}")
-    if cfg.clip_range_vf is not None and float(cfg.clip_range_vf) <= 0.0:
-        raise ValueError(f"clip_range_vf must be positive when set: {cfg.clip_range_vf}")
-    if str(cfg.clip_range_vf_schedule).lower() not in ("constant", "linear", "cosine"):
-        raise ValueError(
-            "clip_range_vf_schedule must be one of constant|linear|cosine: "
-            f"{cfg.clip_range_vf_schedule}"
-        )
-    if cfg.clip_range_vf_final is not None and float(cfg.clip_range_vf_final) < 0.0:
-        raise ValueError(f"clip_range_vf_final must be >= 0 when set: {cfg.clip_range_vf_final}")
-    if float(cfg.ent_coef) < 0.0:
-        raise ValueError(f"ent_coef must be >= 0: {cfg.ent_coef}")
-    if str(cfg.ent_coef_schedule).lower() not in ("constant", "linear", "cosine"):
-        raise ValueError(f"ent_coef_schedule must be one of constant|linear|cosine: {cfg.ent_coef_schedule}")
-    if cfg.ent_coef_final is not None and float(cfg.ent_coef_final) < 0.0:
-        raise ValueError(f"ent_coef_final must be >= 0 when set: {cfg.ent_coef_final}")
-    if cfg.target_kl is not None and float(cfg.target_kl) <= 0.0:
-        raise ValueError(f"target_kl must be positive when set: {cfg.target_kl}")
-    if float(getattr(cfg, "aux_opp_param_loss_coef", 0.0)) < 0.0:
-        raise ValueError(f"aux_opp_param_loss_coef must be >= 0: {cfg.aux_opp_param_loss_coef}")
-
-    batch_size = int(cfg.batch_size)
-    if batch_size <= 1 and bool(cfg.norm_adv):
-        raise ValueError(
-            f"batch_size={batch_size} is too small for advantage normalization; "
-            "increase num_envs*num_steps or set --no-norm-adv"
-        )
-    if batch_size % int(cfg.num_minibatches) != 0:
-        raise ValueError(
-            f"batch_size={batch_size} must be divisible by num_minibatches={cfg.num_minibatches}"
-        )
-    minibatch_size = int(cfg.minibatch_size)
-    if minibatch_size <= 0:
-        raise ValueError(
-            f"invalid minibatch_size={minibatch_size}; check num_envs/num_steps/num_minibatches"
-        )
-    if minibatch_size <= 1 and bool(cfg.norm_adv):
-        raise ValueError(
-            f"minibatch_size={minibatch_size} is too small for advantage normalization; "
-            "reduce num_minibatches or set --no-norm-adv"
-        )
+    # Field-level and batch constraints are now validated by PPOConfig (pydantic BaseModel).
+    # This function is kept for backward compatibility; callers can still call it safely.
+    pass
 
 
 def resolve_vecnorm_gamma(*, vecnorm_gamma: float | None, ppo_gamma: float) -> float:

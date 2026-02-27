@@ -4,7 +4,7 @@ import json
 import os
 import random
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -270,23 +270,23 @@ def _sync_vecnorm_ddp_(vecnorm: VecNormalize | None, *, device: torch.device) ->
     if vecnorm is None or not _dist_ready():
         return
     m, v, c = _sync_rms_ddp_(
-        vecnorm.obs_rms.mean,
-        vecnorm.obs_rms.var,
+        vecnorm.obs_rms.mean.numpy(),
+        vecnorm.obs_rms.var.numpy(),
         vecnorm.obs_rms.count,
         device=device,
     )
-    vecnorm.obs_rms.mean = np.asarray(m, dtype=np.float64)
-    vecnorm.obs_rms.var = np.maximum(np.asarray(v, dtype=np.float64), 1e-12)
+    vecnorm.obs_rms.mean = torch.as_tensor(m, dtype=torch.float64).clone()
+    vecnorm.obs_rms.var = torch.clamp(torch.as_tensor(v, dtype=torch.float64), min=1e-12).clone()
     vecnorm.obs_rms.count = float(c)
 
     m, v, c = _sync_rms_ddp_(
-        vecnorm.ret_rms.mean,
-        vecnorm.ret_rms.var,
+        vecnorm.ret_rms.mean.numpy(),
+        vecnorm.ret_rms.var.numpy(),
         vecnorm.ret_rms.count,
         device=device,
     )
-    vecnorm.ret_rms.mean = np.asarray(m, dtype=np.float64)
-    vecnorm.ret_rms.var = np.maximum(np.asarray(v, dtype=np.float64), 1e-12)
+    vecnorm.ret_rms.mean = torch.as_tensor(m, dtype=torch.float64).clone()
+    vecnorm.ret_rms.var = torch.clamp(torch.as_tensor(v, dtype=torch.float64), min=1e-12).clone()
     vecnorm.ret_rms.count = float(c)
 
 
@@ -553,8 +553,8 @@ def _build_resume_meta_payload(
         "memory_format": ("channels_last" if bool(use_channels_last) else "nchw"),
         "pin_memory": bool(use_pin_memory),
         "rollout_cache_device": str(cache_device),
-        "cfg_global": asdict(cfg_global),
-        "cfg_local": asdict(cfg_local),
+        "cfg_global": cfg_global.model_dump(),
+        "cfg_local": cfg_local.model_dump(),
         "best_metric_name": str(best_metric_name),
         "best_metric_value": float(best_metric_value),
         "best_metric_source": str(best_metric_source),

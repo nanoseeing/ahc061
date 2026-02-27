@@ -461,7 +461,6 @@ def run_pipeline(args: Any) -> int:
     tracker = MetricTracker(
         layout.root,
         run_name=run_name,
-        enable_tensorboard=False,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         mlflow_experiment=args.mlflow_experiment,
         mlflow_run_name=args.mlflow_run_name,

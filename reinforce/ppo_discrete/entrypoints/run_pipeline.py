@@ -1,205 +1,315 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Annotated, Any, Optional
+
+import typer
 
 from ..utils.experiment import coerce_optional_path, resolve_config
 from ..pipeline.pipeline_service import run_pipeline
 
+app = typer.Typer(add_completion=False)
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run skeleton PPO pipeline: collect -> BC -> PPO(val) -> eval")
-    p.add_argument("--config-file", type=Path, default=None, help="json/toml/yaml config file")
-    p.add_argument("--config-section", type=str, default="run_pipeline", help="section key in config file")
-    p.add_argument("--set", dest="set", action="append", default=[], help="override key=value (repeatable)")
-
-    p.add_argument("--env-id", type=str, default="AHC061Local-v0")
-    p.add_argument("--env-kwargs-json", type=str, default="{}")
-    p.add_argument("--run-root", type=Path, default=Path("reinforce/outputs/pipeline_runs"))
-    p.add_argument("--run-name", type=str, default="")
-    p.add_argument(
-        "--resume",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="resume an existing pipeline run (requires --run-name)",
-    )
-    p.add_argument("--seed", type=int, default=1)
-
-    p.add_argument("--collect-episodes", type=int, default=200)
-    p.add_argument(
-        "--collect-policy",
-        choices=["random", "model_stochastic", "model_greedy"],
-        default="random",
-    )
-    p.add_argument("--collect-workers", type=int, default=1)
-    p.add_argument("--collect-feature-id", type=str, default="submit_v1")
-    p.add_argument("--collect-pf-enabled", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--collect-amp", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--collect-save-aux-targets", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--collect-chunk-episodes", type=int, default=10)
-    p.add_argument("--skip-collect", action=argparse.BooleanOptionalAction, default=False)
-
-    p.add_argument("--bc-epochs", type=int, default=20)
-    p.add_argument("--bc-aux-opp-param-loss-coef", type=float, default=0.0)
-    p.add_argument("--bc-aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument(
-        "--bc-use-collect-shards",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="train BC directly from collect worker shards when available to reduce memory usage",
-    )
-    p.add_argument("--skip-bc", action=argparse.BooleanOptionalAction, default=False)
-
-    p.add_argument("--ppo-total-timesteps", type=int, default=200_000)
-    p.add_argument("--ppo-num-envs", type=int, default=8)
-    p.add_argument("--ppo-num-steps", type=int, default=100)
-    p.add_argument("--ppo-learning-rate", type=float, default=2.5e-4)
-    p.add_argument("--ppo-learning-rate-schedule", type=str, default="linear")
-    p.add_argument("--ppo-gamma", type=float, default=0.99)
-    p.add_argument("--ppo-gae-lambda", type=float, default=0.95)
-    p.add_argument("--ppo-num-minibatches", type=int, default=4)
-    p.add_argument("--ppo-update-epochs", type=int, default=4)
-    p.add_argument("--ppo-norm-adv", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--ppo-clip-coef", type=float, default=0.2)
-    p.add_argument("--ppo-clip-range-vf", type=float, default=None)
-    p.add_argument("--ppo-clip-range-vf-schedule", choices=["constant", "linear", "cosine"], default="constant")
-    p.add_argument("--ppo-clip-range-vf-final", type=float, default=None)
-    p.add_argument("--ppo-clip-range-vf-schedule-expr", type=str, default="")
-    p.add_argument("--ppo-clip-vloss", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--ppo-ent-coef", type=float, default=0.01)
-    p.add_argument("--ppo-ent-coef-schedule", choices=["constant", "linear", "cosine"], default="constant")
-    p.add_argument("--ppo-ent-coef-final", type=float, default=None)
-    p.add_argument("--ppo-ent-coef-schedule-expr", type=str, default="")
-    p.add_argument("--ppo-vf-coef", type=float, default=0.5)
-    p.add_argument("--ppo-aux-opp-param-loss-coef", type=float, default=0.0)
-    p.add_argument("--ppo-aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--ppo-max-grad-norm", type=float, default=0.5)
-    p.add_argument("--ppo-target-kl", type=float, default=None)
-    p.add_argument("--ppo-clip-coef-schedule", choices=["constant", "linear", "cosine"], default="constant")
-    p.add_argument("--ppo-clip-coef-final", type=float, default=None)
-    p.add_argument("--ppo-clip-coef-schedule-expr", type=str, default="")
-    p.add_argument("--ppo-checkpoint-interval-steps", type=int, default=0)
-    p.add_argument("--ppo-feature-id", type=str, default="submit_v1")
-    p.add_argument("--ppo-pf-enabled", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--ppo-amp", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--ppo-memory-format", choices=["auto", "nchw", "channels_last"], default="auto")
-    p.add_argument("--ppo-pin-memory", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--ppo-rollout-cache-device", choices=["auto", "cpu", "gpu"], default="auto")
-    p.add_argument("--ppo-distributed", choices=["auto", "off", "on"], default="auto")
-    p.add_argument("--ppo-model-preset", type=str, default="")
-    p.add_argument(
-        "--ppo-val-interval-steps",
-        "--ppo-eval-interval-steps",
-        dest="ppo_eval_interval_steps",
-        type=int,
-        default=0,
-    )
-    p.add_argument("--ppo-val-episodes", "--ppo-eval-episodes", dest="ppo_eval_episodes", type=int, default=100)
-    p.add_argument(
-        "--ppo-val-seed-start",
-        "--ppo-eval-seed-start",
-        dest="ppo_eval_seed_start",
-        type=int,
-        default=2_000_000,
-    )
-    p.add_argument(
-        "--ppo-val-fixed-seeds",
-        "--ppo-eval-fixed-seeds",
-        dest="ppo_eval_fixed_seeds",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    p.add_argument(
-        "--ppo-val-deterministic",
-        "--ppo-eval-deterministic",
-        dest="ppo_eval_deterministic",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    p.add_argument(
-        "--ppo-val-at-start",
-        "--ppo-eval-at-start",
-        dest="ppo_eval_at_start",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    p.add_argument(
-        "--ppo-val-env-kwargs-json",
-        "--ppo-eval-env-kwargs-json",
-        dest="ppo_eval_env_kwargs_json",
-        type=str,
-        default="",
-    )
-    p.add_argument("--ppo-vecnorm", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--ppo-vecnorm-norm-obs", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--ppo-vecnorm-norm-reward", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument(
-        "--ppo-vecnorm-val-norm-reward",
-        "--ppo-vecnorm-eval-norm-reward",
-        dest="ppo_vecnorm_eval_norm_reward",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-    )
-    p.add_argument("--ppo-vecnorm-clip-obs", type=float, default=10.0)
-    p.add_argument("--ppo-vecnorm-clip-reward", type=float, default=10.0)
-    p.add_argument("--ppo-vecnorm-epsilon", type=float, default=1e-8)
-    p.add_argument("--ppo-vecnorm-gamma", type=float, default=None)
-    p.add_argument("--ppo-log-interval-iters", type=int, default=1)
-    p.add_argument("--use-action-mask", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--model-class", type=str, default="")
-    p.add_argument("--model-config-file", type=Path, default=None)
-    p.add_argument("--model-config-json", type=str, default="")
-    p.add_argument(
-        "--ppo-init-model",
-        type=Path,
-        default=None,
-        help="optional PPO init checkpoint path (takes precedence over bc_init.pt)",
-    )
-    p.add_argument("--skip-ppo", action=argparse.BooleanOptionalAction, default=False)
-
-    p.add_argument("--eval-episodes", type=int, default=50)
-    p.add_argument("--eval-env-kwargs-json", type=str, default="")
-    p.add_argument("--skip-last-eval", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--tensorboard", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--mlflow-tracking-uri", type=str, default="")
-    p.add_argument("--mlflow-experiment", type=str, default="ppo_discrete")
-    p.add_argument("--mlflow-run-name", type=str, default="")
-    return p
+_DEFAULTS: dict[str, Any] = {
+    # environment
+    "env_id": "AHC061Local-v0",
+    "env_kwargs_json": "{}",
+    # run management
+    "run_root": Path("reinforce/outputs/pipeline_runs"),
+    "run_name": "",
+    "resume": False,
+    "seed": 1,
+    # collect
+    "collect_episodes": 200,
+    "collect_policy": "random",
+    "collect_workers": 1,
+    "collect_feature_id": "submit_v1",
+    "collect_pf_enabled": True,
+    "collect_amp": False,
+    "collect_save_aux_targets": False,
+    "collect_chunk_episodes": 10,
+    "skip_collect": False,
+    # BC
+    "bc_epochs": 20,
+    "bc_aux_opp_param_loss_coef": 0.0,
+    "bc_aux_opp_param_use_valid_mask": True,
+    "bc_use_collect_shards": True,
+    "skip_bc": False,
+    # PPO core
+    "ppo_total_timesteps": 200_000,
+    "ppo_num_envs": 8,
+    "ppo_num_steps": 100,
+    "ppo_learning_rate": 2.5e-4,
+    "ppo_learning_rate_schedule": "linear",
+    "ppo_gamma": 0.99,
+    "ppo_gae_lambda": 0.95,
+    "ppo_num_minibatches": 4,
+    "ppo_update_epochs": 4,
+    "ppo_norm_adv": True,
+    "ppo_clip_coef": 0.2,
+    "ppo_clip_range_vf": None,
+    "ppo_clip_range_vf_schedule": "constant",
+    "ppo_clip_range_vf_final": None,
+    "ppo_clip_range_vf_schedule_expr": "",
+    "ppo_clip_vloss": True,
+    "ppo_ent_coef": 0.01,
+    "ppo_ent_coef_schedule": "constant",
+    "ppo_ent_coef_final": None,
+    "ppo_ent_coef_schedule_expr": "",
+    "ppo_vf_coef": 0.5,
+    "ppo_aux_opp_param_loss_coef": 0.0,
+    "ppo_aux_opp_param_use_valid_mask": True,
+    "ppo_max_grad_norm": 0.5,
+    "ppo_target_kl": None,
+    "ppo_clip_coef_schedule": "constant",
+    "ppo_clip_coef_final": None,
+    "ppo_clip_coef_schedule_expr": "",
+    "ppo_checkpoint_interval_steps": 0,
+    "ppo_feature_id": "submit_v1",
+    "ppo_pf_enabled": True,
+    "ppo_amp": False,
+    "ppo_memory_format": "auto",
+    "ppo_pin_memory": True,
+    "ppo_rollout_cache_device": "auto",
+    "ppo_distributed": "auto",
+    "ppo_model_preset": "",
+    "ppo_eval_interval_steps": 0,
+    "ppo_eval_episodes": 100,
+    "ppo_eval_seed_start": 2_000_000,
+    "ppo_eval_fixed_seeds": True,
+    "ppo_eval_deterministic": True,
+    "ppo_eval_at_start": True,
+    "ppo_eval_env_kwargs_json": "",
+    "ppo_vecnorm": False,
+    "ppo_vecnorm_norm_obs": True,
+    "ppo_vecnorm_norm_reward": True,
+    "ppo_vecnorm_eval_norm_reward": False,
+    "ppo_vecnorm_clip_obs": 10.0,
+    "ppo_vecnorm_clip_reward": 10.0,
+    "ppo_vecnorm_epsilon": 1e-8,
+    "ppo_vecnorm_gamma": None,
+    "ppo_log_interval_iters": 1,
+    # shared model settings
+    "use_action_mask": False,
+    "model_class": "",
+    "model_config_file": None,
+    "model_config_json": "",
+    "ppo_init_model": None,
+    "skip_ppo": False,
+    # final eval
+    "eval_episodes": 50,
+    "eval_env_kwargs_json": "",
+    "skip_last_eval": False,
+    # tracking
+    "mlflow_tracking_uri": "",
+    "mlflow_experiment": "ppo_discrete",
+    "mlflow_run_name": "",
+}
 
 
-def _default_cli_config(parser: argparse.ArgumentParser) -> dict[str, Any]:
-    defaults = vars(parser.parse_args([])).copy()
-    for key in ("config_file", "config_section", "set"):
-        defaults.pop(key, None)
-    return defaults
+def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**cfg)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = build_parser()
-    pre, _unknown = parser.parse_known_args()
-
-    base_defaults = _default_cli_config(parser)
+@app.command()
+def main(
+    config_file: Annotated[Optional[Path], typer.Option("--config-file")] = None,
+    config_section: Annotated[str, typer.Option("--config-section")] = "run_pipeline",
+    set_: Annotated[Optional[list[str]], typer.Option("--set")] = None,
+    # environment
+    env_id: Annotated[Optional[str], typer.Option("--env-id")] = None,
+    env_kwargs_json: Annotated[Optional[str], typer.Option("--env-kwargs-json")] = None,
+    # run management
+    run_root: Annotated[Optional[Path], typer.Option("--run-root")] = None,
+    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
+    resume: Annotated[Optional[bool], typer.Option("--resume/--no-resume")] = None,
+    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
+    # collect
+    collect_episodes: Annotated[Optional[int], typer.Option("--collect-episodes")] = None,
+    collect_policy: Annotated[Optional[str], typer.Option("--collect-policy")] = None,
+    collect_workers: Annotated[Optional[int], typer.Option("--collect-workers")] = None,
+    collect_feature_id: Annotated[Optional[str], typer.Option("--collect-feature-id")] = None,
+    collect_pf_enabled: Annotated[Optional[bool], typer.Option("--collect-pf-enabled/--no-collect-pf-enabled")] = None,
+    collect_amp: Annotated[Optional[bool], typer.Option("--collect-amp/--no-collect-amp")] = None,
+    collect_save_aux_targets: Annotated[Optional[bool], typer.Option("--collect-save-aux-targets/--no-collect-save-aux-targets")] = None,
+    collect_chunk_episodes: Annotated[Optional[int], typer.Option("--collect-chunk-episodes")] = None,
+    skip_collect: Annotated[Optional[bool], typer.Option("--skip-collect/--no-skip-collect")] = None,
+    # BC
+    bc_epochs: Annotated[Optional[int], typer.Option("--bc-epochs")] = None,
+    bc_aux_opp_param_loss_coef: Annotated[Optional[float], typer.Option("--bc-aux-opp-param-loss-coef")] = None,
+    bc_aux_opp_param_use_valid_mask: Annotated[Optional[bool], typer.Option("--bc-aux-opp-param-use-valid-mask/--no-bc-aux-opp-param-use-valid-mask")] = None,
+    bc_use_collect_shards: Annotated[Optional[bool], typer.Option("--bc-use-collect-shards/--no-bc-use-collect-shards")] = None,
+    skip_bc: Annotated[Optional[bool], typer.Option("--skip-bc/--no-skip-bc")] = None,
+    # PPO core
+    ppo_total_timesteps: Annotated[Optional[int], typer.Option("--ppo-total-timesteps")] = None,
+    ppo_num_envs: Annotated[Optional[int], typer.Option("--ppo-num-envs")] = None,
+    ppo_num_steps: Annotated[Optional[int], typer.Option("--ppo-num-steps")] = None,
+    ppo_learning_rate: Annotated[Optional[float], typer.Option("--ppo-learning-rate")] = None,
+    ppo_learning_rate_schedule: Annotated[Optional[str], typer.Option("--ppo-learning-rate-schedule")] = None,
+    ppo_gamma: Annotated[Optional[float], typer.Option("--ppo-gamma")] = None,
+    ppo_gae_lambda: Annotated[Optional[float], typer.Option("--ppo-gae-lambda")] = None,
+    ppo_num_minibatches: Annotated[Optional[int], typer.Option("--ppo-num-minibatches")] = None,
+    ppo_update_epochs: Annotated[Optional[int], typer.Option("--ppo-update-epochs")] = None,
+    ppo_norm_adv: Annotated[Optional[bool], typer.Option("--ppo-norm-adv/--no-ppo-norm-adv")] = None,
+    ppo_clip_coef: Annotated[Optional[float], typer.Option("--ppo-clip-coef")] = None,
+    ppo_clip_range_vf: Annotated[Optional[float], typer.Option("--ppo-clip-range-vf")] = None,
+    ppo_clip_range_vf_schedule: Annotated[Optional[str], typer.Option("--ppo-clip-range-vf-schedule")] = None,
+    ppo_clip_range_vf_final: Annotated[Optional[float], typer.Option("--ppo-clip-range-vf-final")] = None,
+    ppo_clip_range_vf_schedule_expr: Annotated[Optional[str], typer.Option("--ppo-clip-range-vf-schedule-expr")] = None,
+    ppo_clip_vloss: Annotated[Optional[bool], typer.Option("--ppo-clip-vloss/--no-ppo-clip-vloss")] = None,
+    ppo_ent_coef: Annotated[Optional[float], typer.Option("--ppo-ent-coef")] = None,
+    ppo_ent_coef_schedule: Annotated[Optional[str], typer.Option("--ppo-ent-coef-schedule")] = None,
+    ppo_ent_coef_final: Annotated[Optional[float], typer.Option("--ppo-ent-coef-final")] = None,
+    ppo_ent_coef_schedule_expr: Annotated[Optional[str], typer.Option("--ppo-ent-coef-schedule-expr")] = None,
+    ppo_vf_coef: Annotated[Optional[float], typer.Option("--ppo-vf-coef")] = None,
+    ppo_aux_opp_param_loss_coef: Annotated[Optional[float], typer.Option("--ppo-aux-opp-param-loss-coef")] = None,
+    ppo_aux_opp_param_use_valid_mask: Annotated[Optional[bool], typer.Option("--ppo-aux-opp-param-use-valid-mask/--no-ppo-aux-opp-param-use-valid-mask")] = None,
+    ppo_max_grad_norm: Annotated[Optional[float], typer.Option("--ppo-max-grad-norm")] = None,
+    ppo_target_kl: Annotated[Optional[float], typer.Option("--ppo-target-kl")] = None,
+    ppo_clip_coef_schedule: Annotated[Optional[str], typer.Option("--ppo-clip-coef-schedule")] = None,
+    ppo_clip_coef_final: Annotated[Optional[float], typer.Option("--ppo-clip-coef-final")] = None,
+    ppo_clip_coef_schedule_expr: Annotated[Optional[str], typer.Option("--ppo-clip-coef-schedule-expr")] = None,
+    ppo_checkpoint_interval_steps: Annotated[Optional[int], typer.Option("--ppo-checkpoint-interval-steps")] = None,
+    ppo_feature_id: Annotated[Optional[str], typer.Option("--ppo-feature-id")] = None,
+    ppo_pf_enabled: Annotated[Optional[bool], typer.Option("--ppo-pf-enabled/--no-ppo-pf-enabled")] = None,
+    ppo_amp: Annotated[Optional[bool], typer.Option("--ppo-amp/--no-ppo-amp")] = None,
+    ppo_memory_format: Annotated[Optional[str], typer.Option("--ppo-memory-format")] = None,
+    ppo_pin_memory: Annotated[Optional[bool], typer.Option("--ppo-pin-memory/--no-ppo-pin-memory")] = None,
+    ppo_rollout_cache_device: Annotated[Optional[str], typer.Option("--ppo-rollout-cache-device")] = None,
+    ppo_distributed: Annotated[Optional[str], typer.Option("--ppo-distributed")] = None,
+    ppo_model_preset: Annotated[Optional[str], typer.Option("--ppo-model-preset")] = None,
+    ppo_eval_interval_steps: Annotated[Optional[int], typer.Option("--ppo-eval-interval-steps")] = None,
+    ppo_eval_episodes: Annotated[Optional[int], typer.Option("--ppo-eval-episodes")] = None,
+    ppo_eval_seed_start: Annotated[Optional[int], typer.Option("--ppo-eval-seed-start")] = None,
+    ppo_eval_fixed_seeds: Annotated[Optional[bool], typer.Option("--ppo-eval-fixed-seeds/--no-ppo-eval-fixed-seeds")] = None,
+    ppo_eval_deterministic: Annotated[Optional[bool], typer.Option("--ppo-eval-deterministic/--no-ppo-eval-deterministic")] = None,
+    ppo_eval_at_start: Annotated[Optional[bool], typer.Option("--ppo-eval-at-start/--no-ppo-eval-at-start")] = None,
+    ppo_eval_env_kwargs_json: Annotated[Optional[str], typer.Option("--ppo-eval-env-kwargs-json")] = None,
+    ppo_vecnorm: Annotated[Optional[bool], typer.Option("--ppo-vecnorm/--no-ppo-vecnorm")] = None,
+    ppo_vecnorm_norm_obs: Annotated[Optional[bool], typer.Option("--ppo-vecnorm-norm-obs/--no-ppo-vecnorm-norm-obs")] = None,
+    ppo_vecnorm_norm_reward: Annotated[Optional[bool], typer.Option("--ppo-vecnorm-norm-reward/--no-ppo-vecnorm-norm-reward")] = None,
+    ppo_vecnorm_eval_norm_reward: Annotated[Optional[bool], typer.Option("--ppo-vecnorm-eval-norm-reward/--no-ppo-vecnorm-eval-norm-reward")] = None,
+    ppo_vecnorm_clip_obs: Annotated[Optional[float], typer.Option("--ppo-vecnorm-clip-obs")] = None,
+    ppo_vecnorm_clip_reward: Annotated[Optional[float], typer.Option("--ppo-vecnorm-clip-reward")] = None,
+    ppo_vecnorm_epsilon: Annotated[Optional[float], typer.Option("--ppo-vecnorm-epsilon")] = None,
+    ppo_vecnorm_gamma: Annotated[Optional[float], typer.Option("--ppo-vecnorm-gamma")] = None,
+    ppo_log_interval_iters: Annotated[Optional[int], typer.Option("--ppo-log-interval-iters")] = None,
+    # shared model settings
+    use_action_mask: Annotated[Optional[bool], typer.Option("--use-action-mask/--no-use-action-mask")] = None,
+    model_class: Annotated[Optional[str], typer.Option("--model-class")] = None,
+    model_config_file: Annotated[Optional[Path], typer.Option("--model-config-file")] = None,
+    model_config_json: Annotated[Optional[str], typer.Option("--model-config-json")] = None,
+    ppo_init_model: Annotated[Optional[Path], typer.Option("--ppo-init-model")] = None,
+    skip_ppo: Annotated[Optional[bool], typer.Option("--skip-ppo/--no-skip-ppo")] = None,
+    # final eval
+    eval_episodes: Annotated[Optional[int], typer.Option("--eval-episodes")] = None,
+    eval_env_kwargs_json: Annotated[Optional[str], typer.Option("--eval-env-kwargs-json")] = None,
+    skip_last_eval: Annotated[Optional[bool], typer.Option("--skip-last-eval/--no-skip-last-eval")] = None,
+    # tracking
+    mlflow_tracking_uri: Annotated[Optional[str], typer.Option("--mlflow-tracking-uri")] = None,
+    mlflow_experiment: Annotated[Optional[str], typer.Option("--mlflow-experiment")] = None,
+    mlflow_run_name: Annotated[Optional[str], typer.Option("--mlflow-run-name")] = None,
+) -> None:
     cfg = resolve_config(
-        defaults=base_defaults,
-        config_file=pre.config_file,
-        config_section=pre.config_section,
-        overrides=list(pre.set or []),
+        defaults=_DEFAULTS,
+        config_file=config_file,
+        config_section=config_section,
+        overrides=list(set_ or []),
     )
-    unknown = sorted(k for k in cfg.keys() if k not in base_defaults.keys())
-    if unknown:
-        raise ValueError(f"unknown config keys for run_pipeline: {', '.join(unknown)}")
-
-    parser.set_defaults(**cfg)
-    args = parser.parse_args()
-    args.model_config_file = coerce_optional_path(args.model_config_file, dot_is_none=True)
-    args.ppo_init_model = coerce_optional_path(args.ppo_init_model, dot_is_none=True)
-    return args
-
-
-def main() -> int:
-    return int(run_pipeline(parse_args()))
+    _cli: dict[str, Any] = {
+        "env_id": env_id,
+        "env_kwargs_json": env_kwargs_json,
+        "run_root": run_root,
+        "run_name": run_name,
+        "resume": resume,
+        "seed": seed,
+        "collect_episodes": collect_episodes,
+        "collect_policy": collect_policy,
+        "collect_workers": collect_workers,
+        "collect_feature_id": collect_feature_id,
+        "collect_pf_enabled": collect_pf_enabled,
+        "collect_amp": collect_amp,
+        "collect_save_aux_targets": collect_save_aux_targets,
+        "collect_chunk_episodes": collect_chunk_episodes,
+        "skip_collect": skip_collect,
+        "bc_epochs": bc_epochs,
+        "bc_aux_opp_param_loss_coef": bc_aux_opp_param_loss_coef,
+        "bc_aux_opp_param_use_valid_mask": bc_aux_opp_param_use_valid_mask,
+        "bc_use_collect_shards": bc_use_collect_shards,
+        "skip_bc": skip_bc,
+        "ppo_total_timesteps": ppo_total_timesteps,
+        "ppo_num_envs": ppo_num_envs,
+        "ppo_num_steps": ppo_num_steps,
+        "ppo_learning_rate": ppo_learning_rate,
+        "ppo_learning_rate_schedule": ppo_learning_rate_schedule,
+        "ppo_gamma": ppo_gamma,
+        "ppo_gae_lambda": ppo_gae_lambda,
+        "ppo_num_minibatches": ppo_num_minibatches,
+        "ppo_update_epochs": ppo_update_epochs,
+        "ppo_norm_adv": ppo_norm_adv,
+        "ppo_clip_coef": ppo_clip_coef,
+        "ppo_clip_range_vf": ppo_clip_range_vf,
+        "ppo_clip_range_vf_schedule": ppo_clip_range_vf_schedule,
+        "ppo_clip_range_vf_final": ppo_clip_range_vf_final,
+        "ppo_clip_range_vf_schedule_expr": ppo_clip_range_vf_schedule_expr,
+        "ppo_clip_vloss": ppo_clip_vloss,
+        "ppo_ent_coef": ppo_ent_coef,
+        "ppo_ent_coef_schedule": ppo_ent_coef_schedule,
+        "ppo_ent_coef_final": ppo_ent_coef_final,
+        "ppo_ent_coef_schedule_expr": ppo_ent_coef_schedule_expr,
+        "ppo_vf_coef": ppo_vf_coef,
+        "ppo_aux_opp_param_loss_coef": ppo_aux_opp_param_loss_coef,
+        "ppo_aux_opp_param_use_valid_mask": ppo_aux_opp_param_use_valid_mask,
+        "ppo_max_grad_norm": ppo_max_grad_norm,
+        "ppo_target_kl": ppo_target_kl,
+        "ppo_clip_coef_schedule": ppo_clip_coef_schedule,
+        "ppo_clip_coef_final": ppo_clip_coef_final,
+        "ppo_clip_coef_schedule_expr": ppo_clip_coef_schedule_expr,
+        "ppo_checkpoint_interval_steps": ppo_checkpoint_interval_steps,
+        "ppo_feature_id": ppo_feature_id,
+        "ppo_pf_enabled": ppo_pf_enabled,
+        "ppo_amp": ppo_amp,
+        "ppo_memory_format": ppo_memory_format,
+        "ppo_pin_memory": ppo_pin_memory,
+        "ppo_rollout_cache_device": ppo_rollout_cache_device,
+        "ppo_distributed": ppo_distributed,
+        "ppo_model_preset": ppo_model_preset,
+        "ppo_eval_interval_steps": ppo_eval_interval_steps,
+        "ppo_eval_episodes": ppo_eval_episodes,
+        "ppo_eval_seed_start": ppo_eval_seed_start,
+        "ppo_eval_fixed_seeds": ppo_eval_fixed_seeds,
+        "ppo_eval_deterministic": ppo_eval_deterministic,
+        "ppo_eval_at_start": ppo_eval_at_start,
+        "ppo_eval_env_kwargs_json": ppo_eval_env_kwargs_json,
+        "ppo_vecnorm": ppo_vecnorm,
+        "ppo_vecnorm_norm_obs": ppo_vecnorm_norm_obs,
+        "ppo_vecnorm_norm_reward": ppo_vecnorm_norm_reward,
+        "ppo_vecnorm_eval_norm_reward": ppo_vecnorm_eval_norm_reward,
+        "ppo_vecnorm_clip_obs": ppo_vecnorm_clip_obs,
+        "ppo_vecnorm_clip_reward": ppo_vecnorm_clip_reward,
+        "ppo_vecnorm_epsilon": ppo_vecnorm_epsilon,
+        "ppo_vecnorm_gamma": ppo_vecnorm_gamma,
+        "ppo_log_interval_iters": ppo_log_interval_iters,
+        "use_action_mask": use_action_mask,
+        "model_class": model_class,
+        "model_config_file": model_config_file,
+        "model_config_json": model_config_json,
+        "ppo_init_model": ppo_init_model,
+        "skip_ppo": skip_ppo,
+        "eval_episodes": eval_episodes,
+        "eval_env_kwargs_json": eval_env_kwargs_json,
+        "skip_last_eval": skip_last_eval,
+        "mlflow_tracking_uri": mlflow_tracking_uri,
+        "mlflow_experiment": mlflow_experiment,
+        "mlflow_run_name": mlflow_run_name,
+    }
+    cfg.update({k: v for k, v in _cli.items() if v is not None})
+    cfg["model_config_file"] = coerce_optional_path(cfg.get("model_config_file"), dot_is_none=True)
+    cfg["ppo_init_model"] = coerce_optional_path(cfg.get("ppo_init_model"), dot_is_none=True)
+    args = _ns(cfg)
+    raise SystemExit(int(run_pipeline(args)))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()

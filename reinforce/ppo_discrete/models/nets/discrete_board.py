@@ -18,204 +18,42 @@ def _broadcast_tuple(v: tuple[int, ...], n: int, name: str) -> tuple[int, ...]:
     raise ValueError(f"{name} length mismatch: expected 1 or {n}, got {len(v)}")
 
 
-class DiscreteBoardAgent(nn.Module):
-    """Actor-critic for discrete board-game actions.
+def _build_mlp(in_dim: int, hidden_dims: tuple[int, ...], out_dim: int, *, out_std: float) -> nn.Sequential:
+    layers: list[nn.Module] = []
+    cur = in_dim
+    for h in hidden_dims:
+        if h <= 0:
+            raise ValueError(f"hidden dim must be positive, got: {h}")
+        layers.append(layer_init(nn.Linear(cur, h)))
+        layers.append(nn.Tanh())
+        cur = h
+    layers.append(layer_init(nn.Linear(cur, out_dim), std=out_std))
+    return nn.Sequential(*layers)
 
-    Supported model types:
-    - mlp: flat MLP actor / critic
-    - cnn_fc: board CNN + global FC fusion, actor / critic heads
 
-    Notes:
-    - Uses CleanRL-compatible orthogonal init.
-    - Supports optional action masks.
+class DiscreteBoardAgentBase(nn.Module):
+    """Shared forward interface for all discrete-board actor-critic agents.
+
+    Concrete subclasses must implement `_encode(obs)` and expose:
+      - `action_dim: int`
+      - `actor: nn.Module`
+      - `critic: nn.Module`
+      - `aux_opp_param_head: nn.Module | None`
+      - `use_aux_opp_param_head: bool`
     """
 
-    def __init__(
-        self,
-        obs_shape: tuple[int, ...],
-        action_dim: int,
-        hidden_dim: int = 128,
-        hidden_layers: int = 2,
-        *,
-        model_type: str = "auto",
-        mlp_hidden_dims: tuple[int, ...] | list[int] | str | None = None,
-        board_channels: int = 46,
-        board_size: int = 10,
-        global_dim: int = 0,
-        cnn_channels: tuple[int, ...] | list[int] | str = (32, 64),
-        cnn_kernels: tuple[int, ...] | list[int] | str = (3, 3),
-        cnn_strides: tuple[int, ...] | list[int] | str = (1, 1),
-        cnn_paddings: tuple[int, ...] | list[int] | str = (1, 1),
-        trunk_hidden_dims: tuple[int, ...] | list[int] | str = (256, 128),
-        actor_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
-        critic_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
-        aux_opp_param_head: bool = False,
-        aux_opp_param_hidden_dim: int = 64,
-    ):
-        super().__init__()
-        if action_dim <= 0:
-            raise ValueError("action_dim must be positive")
-
-        obs_dim = int(np.prod(obs_shape))
-        self.obs_shape = obs_shape
-        self.action_dim = int(action_dim)
-
-        self.board_channels = int(board_channels)
-        self.board_size = int(board_size)
-        self.board_dim = int(self.board_channels * self.board_size * self.board_size)
-
-        if mlp_hidden_dims is None:
-            mlp_hidden_dims_t = tuple(int(hidden_dim) for _ in range(int(hidden_layers)))
-        else:
-            mlp_hidden_dims_t = _to_int_tuple(mlp_hidden_dims)
-
-        cnn_channels_t = _to_int_tuple(cnn_channels)
-        cnn_kernels_t = _to_int_tuple(cnn_kernels)
-        cnn_strides_t = _to_int_tuple(cnn_strides)
-        cnn_paddings_t = _to_int_tuple(cnn_paddings)
-        trunk_hidden_dims_t = _to_int_tuple(trunk_hidden_dims)
-        actor_head_hidden_dims_t = _to_int_tuple(actor_head_hidden_dims)
-        critic_head_hidden_dims_t = _to_int_tuple(critic_head_hidden_dims)
-
-        resolved_model_type = model_type
-        if resolved_model_type == "auto":
-            resolved_model_type = "cnn_fc" if obs_dim > self.board_dim else "mlp"
-        if resolved_model_type not in ("mlp", "cnn_fc"):
-            raise ValueError(f"unknown model_type: {resolved_model_type}")
-        self.model_type = resolved_model_type
-
-        def build_mlp(in_dim: int, hidden_dims: tuple[int, ...], out_dim: int, *, out_std: float) -> nn.Sequential:
-            layers: list[nn.Module] = []
-            cur = in_dim
-            for h in hidden_dims:
-                if h <= 0:
-                    raise ValueError(f"hidden dim must be positive, got: {h}")
-                layers.append(layer_init(nn.Linear(cur, h)))
-                layers.append(nn.Tanh())
-                cur = h
-            layers.append(layer_init(nn.Linear(cur, out_dim), std=out_std))
-            return nn.Sequential(*layers)
-
-        self.actor: nn.Module
-        self.critic: nn.Module
-        self.conv: nn.Module | None = None
-        self.trunk: nn.Module | None = None
-        self.aux_opp_param_head: nn.Module | None = None
-        self.use_aux_opp_param_head = bool(aux_opp_param_head)
-        self.aux_opp_param_hidden_dim = int(max(1, aux_opp_param_hidden_dim))
-        self.global_dim = 0
-        self._encoded_dim = 0
-
-        if self.model_type == "mlp":
-            self.actor = build_mlp(obs_dim, mlp_hidden_dims_t, self.action_dim, out_std=0.01)
-            self.critic = build_mlp(obs_dim, mlp_hidden_dims_t, 1, out_std=1.0)
-            self._encoded_dim = int(obs_dim)
-            self.model_config: dict[str, Any] = {
-                "type": "DiscreteBoardAgent",
-                "kwargs": {
-                    "model_type": "mlp",
-                    "mlp_hidden_dims": list(mlp_hidden_dims_t),
-                    "aux_opp_param_head": bool(self.use_aux_opp_param_head),
-                    "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
-                },
-            }
-        else:
-            if obs_dim < self.board_dim:
-                raise ValueError(
-                    f"obs_dim too small for cnn_fc: obs_dim={obs_dim}, board_dim={self.board_dim}"
-                )
-
-            if int(global_dim) <= 0:
-                self.global_dim = int(obs_dim - self.board_dim)
-            else:
-                self.global_dim = int(global_dim)
-            if self.global_dim < 0 or self.board_dim + self.global_dim != obs_dim:
-                raise ValueError(
-                    f"invalid global_dim={self.global_dim} for obs_dim={obs_dim}, board_dim={self.board_dim}"
-                )
-
-            if len(cnn_channels_t) == 0:
-                raise ValueError("cnn_channels must not be empty for model_type=cnn_fc")
-            n_conv = len(cnn_channels_t)
-            kernels = _broadcast_tuple(cnn_kernels_t, n_conv, "cnn_kernels")
-            strides = _broadcast_tuple(cnn_strides_t, n_conv, "cnn_strides")
-            paddings = _broadcast_tuple(cnn_paddings_t, n_conv, "cnn_paddings")
-
-            conv_layers: list[nn.Module] = []
-            in_ch = self.board_channels
-            for out_ch, k, s, p in zip(cnn_channels_t, kernels, strides, paddings):
-                conv_layers.append(layer_init(nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=s, padding=p)))
-                conv_layers.append(nn.Tanh())
-                in_ch = out_ch
-            self.conv = nn.Sequential(*conv_layers)
-
-            with torch.no_grad():
-                dummy = torch.zeros((1, self.board_channels, self.board_size, self.board_size), dtype=torch.float32)
-                conv_out = self.conv(dummy)
-                conv_flat_dim = int(conv_out.reshape(1, -1).shape[1])
-
-            trunk_in = conv_flat_dim + self.global_dim
-            if len(trunk_hidden_dims_t) > 0:
-                self.trunk = build_mlp(trunk_in, trunk_hidden_dims_t[:-1], trunk_hidden_dims_t[-1], out_std=1.0)
-                trunk_out = int(trunk_hidden_dims_t[-1])
-            else:
-                self.trunk = nn.Identity()
-                trunk_out = trunk_in
-            self._encoded_dim = int(trunk_out)
-
-            self.actor = build_mlp(trunk_out, actor_head_hidden_dims_t, self.action_dim, out_std=0.01)
-            self.critic = build_mlp(trunk_out, critic_head_hidden_dims_t, 1, out_std=1.0)
-
-            self.model_config = {
-                "type": "DiscreteBoardAgent",
-                "kwargs": {
-                    "model_type": "cnn_fc",
-                    "board_channels": int(self.board_channels),
-                    "board_size": int(self.board_size),
-                    "global_dim": int(self.global_dim),
-                    "cnn_channels": list(cnn_channels_t),
-                    "cnn_kernels": list(kernels),
-                    "cnn_strides": list(strides),
-                    "cnn_paddings": list(paddings),
-                    "trunk_hidden_dims": list(trunk_hidden_dims_t),
-                    "actor_head_hidden_dims": list(actor_head_hidden_dims_t),
-                    "critic_head_hidden_dims": list(critic_head_hidden_dims_t),
-                    "aux_opp_param_head": bool(self.use_aux_opp_param_head),
-                    "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
-                },
-            }
-        if self.use_aux_opp_param_head:
-            self.aux_opp_param_head = nn.Sequential(
-                layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
-                nn.Tanh(),
-                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
-            )
+    action_dim: int
+    actor: nn.Module
+    critic: nn.Module
+    aux_opp_param_head: nn.Module | None
+    use_aux_opp_param_head: bool
 
     def _flatten_obs(self, obs: torch.Tensor) -> torch.Tensor:
         # reshape handles non-standard strides (e.g., channels_last) safely.
         return obs.reshape(obs.shape[0], -1)
 
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
-        x = self._flatten_obs(obs)
-        if self.model_type == "mlp":
-            return x
-
-        assert self.conv is not None
-        if x.shape[1] < self.board_dim:
-            raise ValueError(f"obs width too small: {x.shape[1]} < board_dim={self.board_dim}")
-
-        board = x[:, : self.board_dim].view(x.shape[0], self.board_channels, self.board_size, self.board_size)
-        board_feat = self.conv(board).reshape(x.shape[0], -1)
-
-        if self.global_dim > 0:
-            global_feat = x[:, self.board_dim : self.board_dim + self.global_dim]
-            feat = torch.cat([board_feat, global_feat], dim=1)
-        else:
-            feat = board_feat
-
-        if self.trunk is not None:
-            feat = self.trunk(feat)
-        return feat
+        raise NotImplementedError
 
     def get_logits(self, obs: torch.Tensor) -> torch.Tensor:
         feat = self._encode(obs)
@@ -290,3 +128,379 @@ class DiscreteBoardAgent(nn.Module):
             return torch.argmax(logits, dim=-1)
         dist = Categorical(logits=logits)
         return dist.sample()
+
+
+class DiscreteBoardMLPAgent(DiscreteBoardAgentBase):
+    """Flat MLP actor-critic for discrete board-game actions."""
+
+    model_type: str = "mlp"
+
+    def __init__(
+        self,
+        obs_shape: tuple[int, ...],
+        action_dim: int,
+        hidden_dim: int = 128,
+        hidden_layers: int = 2,
+        *,
+        mlp_hidden_dims: tuple[int, ...] | list[int] | str | None = None,
+        aux_opp_param_head: bool = False,
+        aux_opp_param_hidden_dim: int = 64,
+    ):
+        super().__init__()
+        if action_dim <= 0:
+            raise ValueError("action_dim must be positive")
+
+        obs_dim = int(np.prod(obs_shape))
+        self.obs_shape = obs_shape
+        self.action_dim = int(action_dim)
+        self.use_aux_opp_param_head = bool(aux_opp_param_head)
+        self.aux_opp_param_hidden_dim = int(max(1, aux_opp_param_hidden_dim))
+
+        if mlp_hidden_dims is None:
+            mlp_hidden_dims_t = tuple(int(hidden_dim) for _ in range(int(hidden_layers)))
+        else:
+            mlp_hidden_dims_t = _to_int_tuple(mlp_hidden_dims)
+
+        self.actor = _build_mlp(obs_dim, mlp_hidden_dims_t, self.action_dim, out_std=0.01)
+        self.critic = _build_mlp(obs_dim, mlp_hidden_dims_t, 1, out_std=1.0)
+        self._encoded_dim = int(obs_dim)
+        self.aux_opp_param_head: nn.Module | None = None
+
+        if self.use_aux_opp_param_head:
+            self.aux_opp_param_head = nn.Sequential(
+                layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
+                nn.Tanh(),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+            )
+
+        self.model_config: dict[str, Any] = {
+            "type": "DiscreteBoardMLPAgent",
+            "kwargs": {
+                "model_type": "mlp",
+                "mlp_hidden_dims": list(mlp_hidden_dims_t),
+                "aux_opp_param_head": bool(self.use_aux_opp_param_head),
+                "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
+            },
+        }
+
+    def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        return self._flatten_obs(obs)
+
+
+class DiscreteBoardCNNFCAgent(DiscreteBoardAgentBase):
+    """Board CNN + global FC fusion actor-critic for discrete board-game actions."""
+
+    model_type: str = "cnn_fc"
+
+    def __init__(
+        self,
+        obs_shape: tuple[int, ...],
+        action_dim: int,
+        *,
+        board_channels: int = 46,
+        board_size: int = 10,
+        global_dim: int = 0,
+        cnn_channels: tuple[int, ...] | list[int] | str = (32, 64),
+        cnn_kernels: tuple[int, ...] | list[int] | str = (3, 3),
+        cnn_strides: tuple[int, ...] | list[int] | str = (1, 1),
+        cnn_paddings: tuple[int, ...] | list[int] | str = (1, 1),
+        trunk_hidden_dims: tuple[int, ...] | list[int] | str = (256, 128),
+        actor_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
+        critic_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
+        aux_opp_param_head: bool = False,
+        aux_opp_param_hidden_dim: int = 64,
+    ):
+        super().__init__()
+        if action_dim <= 0:
+            raise ValueError("action_dim must be positive")
+
+        obs_dim = int(np.prod(obs_shape))
+        self.obs_shape = obs_shape
+        self.action_dim = int(action_dim)
+        self.use_aux_opp_param_head = bool(aux_opp_param_head)
+        self.aux_opp_param_hidden_dim = int(max(1, aux_opp_param_hidden_dim))
+
+        self.board_channels = int(board_channels)
+        self.board_size = int(board_size)
+        self.board_dim = int(self.board_channels * self.board_size * self.board_size)
+
+        cnn_channels_t = _to_int_tuple(cnn_channels)
+        cnn_kernels_t = _to_int_tuple(cnn_kernels)
+        cnn_strides_t = _to_int_tuple(cnn_strides)
+        cnn_paddings_t = _to_int_tuple(cnn_paddings)
+        trunk_hidden_dims_t = _to_int_tuple(trunk_hidden_dims)
+        actor_head_hidden_dims_t = _to_int_tuple(actor_head_hidden_dims)
+        critic_head_hidden_dims_t = _to_int_tuple(critic_head_hidden_dims)
+
+        if obs_dim < self.board_dim:
+            raise ValueError(f"obs_dim too small for cnn_fc: obs_dim={obs_dim}, board_dim={self.board_dim}")
+
+        if int(global_dim) <= 0:
+            self.global_dim = int(obs_dim - self.board_dim)
+        else:
+            self.global_dim = int(global_dim)
+        if self.global_dim < 0 or self.board_dim + self.global_dim != obs_dim:
+            raise ValueError(
+                f"invalid global_dim={self.global_dim} for obs_dim={obs_dim}, board_dim={self.board_dim}"
+            )
+
+        if len(cnn_channels_t) == 0:
+            raise ValueError("cnn_channels must not be empty for model_type=cnn_fc")
+        n_conv = len(cnn_channels_t)
+        kernels = _broadcast_tuple(cnn_kernels_t, n_conv, "cnn_kernels")
+        strides = _broadcast_tuple(cnn_strides_t, n_conv, "cnn_strides")
+        paddings = _broadcast_tuple(cnn_paddings_t, n_conv, "cnn_paddings")
+
+        conv_layers: list[nn.Module] = []
+        in_ch = self.board_channels
+        for out_ch, k, s, p in zip(cnn_channels_t, kernels, strides, paddings):
+            conv_layers.append(layer_init(nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=s, padding=p)))
+            conv_layers.append(nn.Tanh())
+            in_ch = out_ch
+        self.conv = nn.Sequential(*conv_layers)
+
+        with torch.no_grad():
+            dummy = torch.zeros((1, self.board_channels, self.board_size, self.board_size), dtype=torch.float32)
+            conv_out = self.conv(dummy)
+            conv_flat_dim = int(conv_out.reshape(1, -1).shape[1])
+
+        trunk_in = conv_flat_dim + self.global_dim
+        if len(trunk_hidden_dims_t) > 0:
+            self.trunk: nn.Module = _build_mlp(trunk_in, trunk_hidden_dims_t[:-1], trunk_hidden_dims_t[-1], out_std=1.0)
+            trunk_out = int(trunk_hidden_dims_t[-1])
+        else:
+            self.trunk = nn.Identity()
+            trunk_out = trunk_in
+        self._encoded_dim = int(trunk_out)
+
+        self.actor = _build_mlp(trunk_out, actor_head_hidden_dims_t, self.action_dim, out_std=0.01)
+        self.critic = _build_mlp(trunk_out, critic_head_hidden_dims_t, 1, out_std=1.0)
+        self.aux_opp_param_head: nn.Module | None = None
+
+        if self.use_aux_opp_param_head:
+            self.aux_opp_param_head = nn.Sequential(
+                layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
+                nn.Tanh(),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+            )
+
+        self.model_config: dict[str, Any] = {
+            "type": "DiscreteBoardCNNFCAgent",
+            "kwargs": {
+                "model_type": "cnn_fc",
+                "board_channels": int(self.board_channels),
+                "board_size": int(self.board_size),
+                "global_dim": int(self.global_dim),
+                "cnn_channels": list(cnn_channels_t),
+                "cnn_kernels": list(kernels),
+                "cnn_strides": list(strides),
+                "cnn_paddings": list(paddings),
+                "trunk_hidden_dims": list(trunk_hidden_dims_t),
+                "actor_head_hidden_dims": list(actor_head_hidden_dims_t),
+                "critic_head_hidden_dims": list(critic_head_hidden_dims_t),
+                "aux_opp_param_head": bool(self.use_aux_opp_param_head),
+                "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
+            },
+        }
+
+    def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        x = self._flatten_obs(obs)
+        if x.shape[1] < self.board_dim:
+            raise ValueError(f"obs width too small: {x.shape[1]} < board_dim={self.board_dim}")
+
+        board = x[:, : self.board_dim].view(x.shape[0], self.board_channels, self.board_size, self.board_size)
+        board_feat = self.conv(board).reshape(x.shape[0], -1)
+
+        if self.global_dim > 0:
+            global_feat = x[:, self.board_dim : self.board_dim + self.global_dim]
+            feat = torch.cat([board_feat, global_feat], dim=1)
+        else:
+            feat = board_feat
+
+        return self.trunk(feat)
+
+
+class DiscreteBoardAgent(DiscreteBoardAgentBase):
+    """Auto-selecting actor-critic for discrete board-game actions.
+
+    Dispatches to MLP or CNN+FC based on `model_type`. Use
+    `DiscreteBoardMLPAgent` or `DiscreteBoardCNNFCAgent` directly for new code.
+
+    Supported model_type values:
+    - "auto": selects "cnn_fc" when obs_dim > board_dim, else "mlp"
+    - "mlp": flat MLP actor / critic
+    - "cnn_fc": board CNN + global FC fusion, actor / critic heads
+    """
+
+    def __init__(
+        self,
+        obs_shape: tuple[int, ...],
+        action_dim: int,
+        hidden_dim: int = 128,
+        hidden_layers: int = 2,
+        *,
+        model_type: str = "auto",
+        mlp_hidden_dims: tuple[int, ...] | list[int] | str | None = None,
+        board_channels: int = 46,
+        board_size: int = 10,
+        global_dim: int = 0,
+        cnn_channels: tuple[int, ...] | list[int] | str = (32, 64),
+        cnn_kernels: tuple[int, ...] | list[int] | str = (3, 3),
+        cnn_strides: tuple[int, ...] | list[int] | str = (1, 1),
+        cnn_paddings: tuple[int, ...] | list[int] | str = (1, 1),
+        trunk_hidden_dims: tuple[int, ...] | list[int] | str = (256, 128),
+        actor_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
+        critic_head_hidden_dims: tuple[int, ...] | list[int] | str = (),
+        aux_opp_param_head: bool = False,
+        aux_opp_param_hidden_dim: int = 64,
+    ):
+        super().__init__()
+        if action_dim <= 0:
+            raise ValueError("action_dim must be positive")
+
+        obs_dim = int(np.prod(obs_shape))
+        self.obs_shape = obs_shape
+        self.action_dim = int(action_dim)
+
+        self.board_channels = int(board_channels)
+        self.board_size = int(board_size)
+        self.board_dim = int(self.board_channels * self.board_size * self.board_size)
+
+        if mlp_hidden_dims is None:
+            mlp_hidden_dims_t = tuple(int(hidden_dim) for _ in range(int(hidden_layers)))
+        else:
+            mlp_hidden_dims_t = _to_int_tuple(mlp_hidden_dims)
+
+        cnn_channels_t = _to_int_tuple(cnn_channels)
+        cnn_kernels_t = _to_int_tuple(cnn_kernels)
+        cnn_strides_t = _to_int_tuple(cnn_strides)
+        cnn_paddings_t = _to_int_tuple(cnn_paddings)
+        trunk_hidden_dims_t = _to_int_tuple(trunk_hidden_dims)
+        actor_head_hidden_dims_t = _to_int_tuple(actor_head_hidden_dims)
+        critic_head_hidden_dims_t = _to_int_tuple(critic_head_hidden_dims)
+
+        resolved_model_type = model_type
+        if resolved_model_type == "auto":
+            resolved_model_type = "cnn_fc" if obs_dim > self.board_dim else "mlp"
+        if resolved_model_type not in ("mlp", "cnn_fc"):
+            raise ValueError(f"unknown model_type: {resolved_model_type}")
+        self.model_type = resolved_model_type
+
+        self.use_aux_opp_param_head = bool(aux_opp_param_head)
+        self.aux_opp_param_hidden_dim = int(max(1, aux_opp_param_hidden_dim))
+        self.global_dim = 0
+        self._encoded_dim = 0
+
+        self.actor: nn.Module
+        self.critic: nn.Module
+        self.conv: nn.Module | None = None
+        self.trunk: nn.Module | None = None
+        self.aux_opp_param_head: nn.Module | None = None
+
+        if self.model_type == "mlp":
+            self.actor = _build_mlp(obs_dim, mlp_hidden_dims_t, self.action_dim, out_std=0.01)
+            self.critic = _build_mlp(obs_dim, mlp_hidden_dims_t, 1, out_std=1.0)
+            self._encoded_dim = int(obs_dim)
+            self.model_config: dict[str, Any] = {
+                "type": "DiscreteBoardAgent",
+                "kwargs": {
+                    "model_type": "mlp",
+                    "mlp_hidden_dims": list(mlp_hidden_dims_t),
+                    "aux_opp_param_head": bool(self.use_aux_opp_param_head),
+                    "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
+                },
+            }
+        else:
+            if obs_dim < self.board_dim:
+                raise ValueError(
+                    f"obs_dim too small for cnn_fc: obs_dim={obs_dim}, board_dim={self.board_dim}"
+                )
+
+            if int(global_dim) <= 0:
+                self.global_dim = int(obs_dim - self.board_dim)
+            else:
+                self.global_dim = int(global_dim)
+            if self.global_dim < 0 or self.board_dim + self.global_dim != obs_dim:
+                raise ValueError(
+                    f"invalid global_dim={self.global_dim} for obs_dim={obs_dim}, board_dim={self.board_dim}"
+                )
+
+            if len(cnn_channels_t) == 0:
+                raise ValueError("cnn_channels must not be empty for model_type=cnn_fc")
+            n_conv = len(cnn_channels_t)
+            kernels = _broadcast_tuple(cnn_kernels_t, n_conv, "cnn_kernels")
+            strides = _broadcast_tuple(cnn_strides_t, n_conv, "cnn_strides")
+            paddings = _broadcast_tuple(cnn_paddings_t, n_conv, "cnn_paddings")
+
+            conv_layers: list[nn.Module] = []
+            in_ch = self.board_channels
+            for out_ch, k, s, p in zip(cnn_channels_t, kernels, strides, paddings):
+                conv_layers.append(layer_init(nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=s, padding=p)))
+                conv_layers.append(nn.Tanh())
+                in_ch = out_ch
+            self.conv = nn.Sequential(*conv_layers)
+
+            with torch.no_grad():
+                dummy = torch.zeros((1, self.board_channels, self.board_size, self.board_size), dtype=torch.float32)
+                conv_out = self.conv(dummy)
+                conv_flat_dim = int(conv_out.reshape(1, -1).shape[1])
+
+            trunk_in = conv_flat_dim + self.global_dim
+            if len(trunk_hidden_dims_t) > 0:
+                self.trunk = _build_mlp(trunk_in, trunk_hidden_dims_t[:-1], trunk_hidden_dims_t[-1], out_std=1.0)
+                trunk_out = int(trunk_hidden_dims_t[-1])
+            else:
+                self.trunk = nn.Identity()
+                trunk_out = trunk_in
+            self._encoded_dim = int(trunk_out)
+
+            self.actor = _build_mlp(trunk_out, actor_head_hidden_dims_t, self.action_dim, out_std=0.01)
+            self.critic = _build_mlp(trunk_out, critic_head_hidden_dims_t, 1, out_std=1.0)
+
+            self.model_config = {
+                "type": "DiscreteBoardAgent",
+                "kwargs": {
+                    "model_type": "cnn_fc",
+                    "board_channels": int(self.board_channels),
+                    "board_size": int(self.board_size),
+                    "global_dim": int(self.global_dim),
+                    "cnn_channels": list(cnn_channels_t),
+                    "cnn_kernels": list(kernels),
+                    "cnn_strides": list(strides),
+                    "cnn_paddings": list(paddings),
+                    "trunk_hidden_dims": list(trunk_hidden_dims_t),
+                    "actor_head_hidden_dims": list(actor_head_hidden_dims_t),
+                    "critic_head_hidden_dims": list(critic_head_hidden_dims_t),
+                    "aux_opp_param_head": bool(self.use_aux_opp_param_head),
+                    "aux_opp_param_hidden_dim": int(self.aux_opp_param_hidden_dim),
+                },
+            }
+
+        if self.use_aux_opp_param_head:
+            self.aux_opp_param_head = nn.Sequential(
+                layer_init(nn.Linear(self._encoded_dim, self.aux_opp_param_hidden_dim)),
+                nn.Tanh(),
+                layer_init(nn.Linear(self.aux_opp_param_hidden_dim, 7 * 5), std=0.01),
+            )
+
+    def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        x = self._flatten_obs(obs)
+        if self.model_type == "mlp":
+            return x
+
+        assert self.conv is not None
+        if x.shape[1] < self.board_dim:
+            raise ValueError(f"obs width too small: {x.shape[1]} < board_dim={self.board_dim}")
+
+        board = x[:, : self.board_dim].view(x.shape[0], self.board_channels, self.board_size, self.board_size)
+        board_feat = self.conv(board).reshape(x.shape[0], -1)
+
+        if self.global_dim > 0:
+            global_feat = x[:, self.board_dim : self.board_dim + self.global_dim]
+            feat = torch.cat([board_feat, global_feat], dim=1)
+        else:
+            feat = board_feat
+
+        if self.trunk is not None:
+            feat = self.trunk(feat)
+        return feat

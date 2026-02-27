@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-import argparse
 import glob
 import json
 import random
 import time
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Annotated, Any, Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+import typer
 
 from ..models import build_agent, load_model_config_from_sources, normalize_model_config
 from ..pipeline.model_checkpoint_service import save_agent_checkpoint
@@ -21,83 +22,98 @@ from ..data.teacher_dataset import DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_V
 from ..utils.tracking import MetricTracker
 
 logger = get_logger("train_bc")
+app = typer.Typer(add_completion=False)
+
+_DEFAULTS: dict[str, Any] = {
+    "dataset_npz": None,
+    "dataset_shards_glob": "",
+    "output_model": None,
+    "metrics_jsonl": None,
+    "seed": 1,
+    "epochs": 20,
+    "batch_size": 2048,
+    "learning_rate": 1e-3,
+    "weight_decay": 0.0,
+    "valid_ratio": 0.1,
+    "model_class": "",
+    "model_config_file": None,
+    "model_config_json": "",
+    "device": "auto",
+    "aux_opp_param_loss_coef": 0.0,
+    "aux_opp_param_use_valid_mask": True,
+    "run_root": None,
+    "run_name": "",
+    "prefer_run_layout": True,
+}
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Train behavior-cloning model for discrete board PPO warm-start.")
-    p.add_argument("--config-file", type=Path, default=None, help="json/toml/yaml config file")
-    p.add_argument("--config-section", type=str, default="train_bc", help="section key in config file")
-    p.add_argument("--set", dest="set", action="append", default=[], help="override key=value (repeatable)")
-
-    p.add_argument("--dataset-npz", type=Path, default=None)
-    p.add_argument(
-        "--dataset-shards-glob",
-        type=str,
-        default="",
-        help="optional glob for shard npz files; when set, BC streams shards instead of loading one big npz",
-    )
-    p.add_argument("--output-model", type=Path, default=None)
-    p.add_argument("--metrics-jsonl", type=Path, default=None)
-
-    p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--epochs", type=int, default=20)
-    p.add_argument("--batch-size", type=int, default=2048)
-    p.add_argument("--learning-rate", type=float, default=1e-3)
-    p.add_argument("--weight-decay", type=float, default=0.0)
-    p.add_argument("--valid-ratio", type=float, default=0.1)
-    p.add_argument("--model-class", type=str, default="", help="registered model name or import path")
-    p.add_argument("--model-config-file", type=Path, default=None, help="optional model config (json/toml/yaml)")
-    p.add_argument("--model-config-json", type=str, default="", help="optional model config JSON override")
-    p.add_argument("--device", type=str, default="auto")
-    p.add_argument("--aux-opp-param-loss-coef", type=float, default=0.0)
-    p.add_argument("--aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
-
-    p.add_argument("--run-root", type=Path, default=None, help="optional run root for managed outputs")
-    p.add_argument("--run-name", type=str, default="")
-    p.add_argument("--prefer-run-layout", action=argparse.BooleanOptionalAction, default=True)
-    return p
+def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**cfg)
 
 
-def _parser_defaults(parser: argparse.ArgumentParser) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for a in parser._actions:
-        if a.dest == "help":
-            continue
-        if a.default is argparse.SUPPRESS:
-            continue
-        out[a.dest] = a.default
-    return out
-
-
-def parse_args() -> argparse.Namespace:
-    parser = build_parser()
-    pre, _unknown = parser.parse_known_args()
-
-    base_defaults = _parser_defaults(parser)
-    for key in ("config_file", "config_section", "set"):
-        base_defaults.pop(key, None)
-
+@app.command()
+def main(
+    config_file: Annotated[Optional[Path], typer.Option("--config-file")] = None,
+    config_section: Annotated[str, typer.Option("--config-section")] = "train_bc",
+    set_: Annotated[Optional[list[str]], typer.Option("--set")] = None,
+    dataset_npz: Annotated[Optional[Path], typer.Option("--dataset-npz")] = None,
+    dataset_shards_glob: Annotated[Optional[str], typer.Option("--dataset-shards-glob")] = None,
+    output_model: Annotated[Optional[Path], typer.Option("--output-model")] = None,
+    metrics_jsonl: Annotated[Optional[Path], typer.Option("--metrics-jsonl")] = None,
+    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
+    epochs: Annotated[Optional[int], typer.Option("--epochs")] = None,
+    batch_size: Annotated[Optional[int], typer.Option("--batch-size")] = None,
+    learning_rate: Annotated[Optional[float], typer.Option("--learning-rate")] = None,
+    weight_decay: Annotated[Optional[float], typer.Option("--weight-decay")] = None,
+    valid_ratio: Annotated[Optional[float], typer.Option("--valid-ratio")] = None,
+    model_class: Annotated[Optional[str], typer.Option("--model-class")] = None,
+    model_config_file: Annotated[Optional[Path], typer.Option("--model-config-file")] = None,
+    model_config_json: Annotated[Optional[str], typer.Option("--model-config-json")] = None,
+    device: Annotated[Optional[str], typer.Option("--device")] = None,
+    aux_opp_param_loss_coef: Annotated[Optional[float], typer.Option("--aux-opp-param-loss-coef")] = None,
+    aux_opp_param_use_valid_mask: Annotated[Optional[bool], typer.Option("--aux-opp-param-use-valid-mask/--no-aux-opp-param-use-valid-mask")] = None,
+    run_root: Annotated[Optional[Path], typer.Option("--run-root")] = None,
+    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
+    prefer_run_layout: Annotated[Optional[bool], typer.Option("--prefer-run-layout/--no-prefer-run-layout")] = None,
+) -> None:
     cfg = resolve_config(
-        defaults=base_defaults,
-        config_file=pre.config_file,
-        config_section=pre.config_section,
-        overrides=list(pre.set or []),
+        defaults=_DEFAULTS,
+        config_file=config_file,
+        config_section=config_section,
+        overrides=list(set_ or []),
     )
-    unknown = sorted(k for k in cfg.keys() if k not in base_defaults.keys())
-    if unknown:
-        raise ValueError(f"unknown config keys for train_bc: {', '.join(unknown)}")
+    _cli: dict[str, Any] = {
+        "dataset_npz": dataset_npz,
+        "dataset_shards_glob": dataset_shards_glob,
+        "output_model": output_model,
+        "metrics_jsonl": metrics_jsonl,
+        "seed": seed,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+        "valid_ratio": valid_ratio,
+        "model_class": model_class,
+        "model_config_file": model_config_file,
+        "model_config_json": model_config_json,
+        "device": device,
+        "aux_opp_param_loss_coef": aux_opp_param_loss_coef,
+        "aux_opp_param_use_valid_mask": aux_opp_param_use_valid_mask,
+        "run_root": run_root,
+        "run_name": run_name,
+        "prefer_run_layout": prefer_run_layout,
+    }
+    cfg.update({k: v for k, v in _cli.items() if v is not None})
+    cfg["dataset_npz"] = coerce_optional_path(cfg.get("dataset_npz"), dot_is_none=True)
+    cfg["output_model"] = coerce_optional_path(cfg.get("output_model"), dot_is_none=True)
+    cfg["metrics_jsonl"] = coerce_optional_path(cfg.get("metrics_jsonl"), dot_is_none=True)
+    cfg["model_config_file"] = coerce_optional_path(cfg.get("model_config_file"), dot_is_none=True)
+    cfg["run_root"] = coerce_optional_path(cfg.get("run_root"))
+    args = _ns(cfg)
+    raise SystemExit(_run(args))
 
-    parser.set_defaults(**cfg)
-    args = parser.parse_args()
-    args.dataset_npz = coerce_optional_path(args.dataset_npz, dot_is_none=True)
-    args.output_model = coerce_optional_path(args.output_model, dot_is_none=True)
-    args.metrics_jsonl = coerce_optional_path(args.metrics_jsonl, dot_is_none=True)
-    args.model_config_file = coerce_optional_path(args.model_config_file, dot_is_none=True)
-    args.run_root = coerce_optional_path(args.run_root)
-    return args
 
-
-def _validate_args(args: argparse.Namespace) -> None:
+def _validate_args(args: SimpleNamespace) -> None:
     shards_glob = str(args.dataset_shards_glob).strip()
     if args.dataset_npz is None and not shards_glob:
         raise ValueError("--dataset-npz or --dataset-shards-glob is required")
@@ -111,7 +127,7 @@ def _choose_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def _resolve_model_config(args: argparse.Namespace) -> dict[str, Any]:
+def _resolve_model_config(args: SimpleNamespace) -> dict[str, Any]:
     explicit_cfg = load_model_config_from_sources(
         model_config_file=args.model_config_file,
         model_config_json=args.model_config_json,
@@ -132,7 +148,7 @@ def _batch_iter(indices: np.ndarray, batch_size: int):
         yield indices[start:end]
 
 
-def _resolve_dataset_paths(args: argparse.Namespace) -> list[Path]:
+def _resolve_dataset_paths(args: SimpleNamespace) -> list[Path]:
     shards_glob = str(args.dataset_shards_glob).strip()
     if shards_glob:
         paths = sorted(Path(p) for p in glob.glob(shards_glob))
@@ -218,7 +234,7 @@ def _aux_opp_param_mse(
     return F.mse_loss(pred, target)
 
 
-def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
+def _prepare_run(args: SimpleNamespace) -> tuple[Any, MetricTracker | None]:
     if args.run_root is None:
         return None, None
 
@@ -233,7 +249,7 @@ def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
     config_snapshot = to_jsonable({"args": vars(args), "layout": layout.as_dict()})
     (layout.config_dir / "train_bc.args.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
 
-    tracker = MetricTracker(layout.root, run_name=run_name, enable_tensorboard=False, config=config_snapshot)
+    tracker = MetricTracker(layout.root, run_name=run_name, config=config_snapshot)
     update_manifest(
         layout,
         {
@@ -248,8 +264,7 @@ def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
     return layout, tracker
 
 
-def main() -> int:
-    args = parse_args()
+def _run(args: SimpleNamespace) -> int:
     _validate_args(args)
 
     layout = None
@@ -553,4 +568,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()

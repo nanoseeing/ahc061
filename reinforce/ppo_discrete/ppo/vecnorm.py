@@ -7,53 +7,53 @@ import torch
 
 
 class RunningMeanStd:
-    """Online running mean/variance using stable parallel update."""
+    """Online running mean/variance using stable parallel update (Torch native)."""
 
     def __init__(self, *, epsilon: float = 1e-4, shape: tuple[int, ...] = ()) -> None:
-        self.mean = np.zeros(shape, dtype=np.float64)
-        self.var = np.ones(shape, dtype=np.float64)
+        self.mean = torch.zeros(shape, dtype=torch.float64)
+        self.var = torch.ones(shape, dtype=torch.float64)
         self.count = float(epsilon)
 
-    def update(self, x: np.ndarray) -> None:
-        arr = np.asarray(x, dtype=np.float64)
-        if arr.size == 0:
+    def update(self, x: torch.Tensor) -> None:
+        """Update statistics from a batch tensor of shape (N, *shape)."""
+        if x.numel() == 0:
             return
-        batch_mean = np.mean(arr, axis=0)
-        batch_var = np.var(arr, axis=0)
-        batch_count = float(arr.shape[0])
-        self.update_from_moments(batch_mean, batch_var, batch_count)
+        xd = x.to(torch.float64)
+        batch_mean = xd.mean(dim=0)
+        batch_var = xd.var(dim=0, unbiased=False) if xd.shape[0] > 1 else torch.zeros_like(batch_mean)
+        batch_count = float(xd.shape[0])
+        self._update_from_moments(batch_mean, batch_var, batch_count)
 
-    def update_from_moments(self, batch_mean: np.ndarray, batch_var: np.ndarray, batch_count: float) -> None:
+    def _update_from_moments(self, batch_mean: torch.Tensor, batch_var: torch.Tensor, batch_count: float) -> None:
         if batch_count <= 0:
             return
         delta = batch_mean - self.mean
         total = self.count + batch_count
 
-        new_mean = self.mean + delta * batch_count / total
+        self.mean = self.mean + delta * (batch_count / total)
         m_a = self.var * self.count
         m_b = batch_var * batch_count
-        m2 = m_a + m_b + np.square(delta) * self.count * batch_count / total
-        new_var = m2 / total
-
-        self.mean = np.asarray(new_mean, dtype=np.float64)
-        self.var = np.maximum(np.asarray(new_var, dtype=np.float64), 1e-12)
+        m2 = m_a + m_b + delta.pow(2) * (self.count * batch_count / total)
+        self.var = torch.clamp(m2 / total, min=1e-12)
         self.count = float(total)
 
     def state_dict(self) -> dict[str, Any]:
         return {
-            "mean": np.asarray(self.mean, dtype=np.float64).copy(),
-            "var": np.asarray(self.var, dtype=np.float64).copy(),
+            "mean": self.mean.numpy().copy(),
+            "var": self.var.numpy().copy(),
             "count": float(self.count),
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
-        self.mean = np.asarray(state.get("mean", self.mean), dtype=np.float64).copy()
-        self.var = np.maximum(np.asarray(state.get("var", self.var), dtype=np.float64), 1e-12).copy()
+        self.mean = torch.as_tensor(np.asarray(state.get("mean", self.mean), dtype=np.float64)).clone()
+        self.var = torch.clamp(
+            torch.as_tensor(np.asarray(state.get("var", self.var), dtype=np.float64)), min=1e-12
+        ).clone()
         self.count = float(state.get("count", self.count))
 
 
 class VecNormalize:
-    """Gym-free VecNormalize equivalent for cpp BatchEnv rollouts."""
+    """Gym-free VecNormalize equivalent for cpp BatchEnv rollouts (Torch native)."""
 
     def __init__(
         self,
@@ -79,52 +79,47 @@ class VecNormalize:
         self.obs_shape = tuple(int(x) for x in obs_shape)
         self.obs_rms = RunningMeanStd(shape=self.obs_shape)
         self.ret_rms = RunningMeanStd(shape=())
-        self.returns = np.zeros((int(num_envs),), dtype=np.float64)
+        self.returns = torch.zeros(int(num_envs), dtype=torch.float64)
 
     def set_training(self, mode: bool) -> None:
         self.training = bool(mode)
 
-    def _obs_view(self, obs: torch.Tensor) -> np.ndarray:
+    def normalize_obs_inplace(self, obs: torch.Tensor) -> None:
+        """Normalize observations in-place (CPU tensor only)."""
         if obs.device.type != "cpu":
             raise ValueError("VecNormalize expects CPU observation tensor")
-        arr = obs.numpy()
-        if arr.shape == self.obs_shape:
-            return arr.reshape((1,) + self.obs_shape)
-        if len(arr.shape) < len(self.obs_shape):
-            raise ValueError(f"obs shape mismatch: got={arr.shape}, expected suffix={self.obs_shape}")
-        if tuple(arr.shape[-len(self.obs_shape) :]) != self.obs_shape:
-            raise ValueError(f"obs shape mismatch: got={arr.shape}, expected suffix={self.obs_shape}")
-        return arr.reshape((-1,) + self.obs_shape)
 
-    def _reward_done_view(self, reward: torch.Tensor, done: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-        if reward.device.type != "cpu" or done.device.type != "cpu":
-            raise ValueError("VecNormalize expects CPU reward/done tensors")
-        r = reward.numpy().reshape(-1).astype(np.float32, copy=False)
-        d = np.asarray(done.numpy().reshape(-1), dtype=np.bool_)
-        if self.returns.shape[0] != r.shape[0]:
-            self.returns = np.zeros((int(r.shape[0]),), dtype=np.float64)
-        return r, d
-
-    def normalize_obs_inplace(self, obs: torch.Tensor) -> None:
-        view = self._obs_view(obs)
+        view = obs.reshape(-1, *self.obs_shape).to(torch.float64)
         if self.training and self.norm_obs:
             self.obs_rms.update(view)
         if not self.norm_obs:
             return
-        denom = np.sqrt(self.obs_rms.var + self.epsilon)
-        view -= self.obs_rms.mean
-        view /= denom
-        np.clip(view, -self.clip_obs, self.clip_obs, out=view)
+
+        denom = torch.sqrt(self.obs_rms.var + self.epsilon)
+        normalized = ((view - self.obs_rms.mean) / denom).clamp(-self.clip_obs, self.clip_obs)
+        obs.copy_(normalized.to(obs.dtype).reshape_as(obs))
 
     def normalize_reward_inplace(self, reward: torch.Tensor, done: torch.Tensor) -> None:
-        r, d = self._reward_done_view(reward, done)
+        """Update return statistics and normalize reward in-place (CPU tensors only)."""
+        if reward.device.type != "cpu" or done.device.type != "cpu":
+            raise ValueError("VecNormalize expects CPU reward/done tensors")
+
+        r = reward.reshape(-1).to(torch.float64)
+        d = done.reshape(-1).bool()
+        n = r.shape[0]
+
+        if self.returns.shape[0] != n:
+            self.returns = torch.zeros(n, dtype=torch.float64)
+
         if self.training and self.norm_reward:
-            self.returns = self.returns * self.gamma + np.asarray(r, dtype=np.float64)
+            self.returns = self.returns * self.gamma + r
             self.ret_rms.update(self.returns)
+
         if self.norm_reward:
-            scale = np.sqrt(float(self.ret_rms.var) + self.epsilon)
-            r /= float(scale)
-            np.clip(r, -self.clip_reward, self.clip_reward, out=r)
+            scale = torch.sqrt(self.ret_rms.var + self.epsilon)
+            normalized = (r / scale).clamp(-self.clip_reward, self.clip_reward)
+            reward.copy_(normalized.to(reward.dtype).reshape_as(reward))
+
         self.returns[d] = 0.0
 
     def state_dict(self) -> dict[str, Any]:
@@ -138,7 +133,7 @@ class VecNormalize:
             "training": bool(self.training),
             "obs_rms": self.obs_rms.state_dict(),
             "ret_rms": self.ret_rms.state_dict(),
-            "returns": np.asarray(self.returns, dtype=np.float64).copy(),
+            "returns": self.returns.numpy().copy(),
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
@@ -159,10 +154,12 @@ class VecNormalize:
         if isinstance(ret_rms, dict):
             self.ret_rms.load_state_dict(ret_rms)
 
-        returns = np.asarray(state.get("returns", self.returns), dtype=np.float64).reshape(-1)
-        if returns.size == self.returns.size:
-            self.returns = returns.copy()
-        elif returns.size == 1:
-            self.returns.fill(float(returns[0]))
-        else:
-            self.returns.fill(0.0)
+        stored = state.get("returns")
+        if stored is not None:
+            returns = torch.as_tensor(np.asarray(stored, dtype=np.float64)).reshape(-1)
+            if returns.numel() == self.returns.numel():
+                self.returns = returns.clone()
+            elif returns.numel() == 1:
+                self.returns.fill_(float(returns[0]))
+            else:
+                self.returns.zero_()

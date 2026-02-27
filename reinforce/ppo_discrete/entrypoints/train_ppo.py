@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Annotated, Any, Optional
 
 import torch
+import typer
 
 from ..ppo.config import PPOConfig
 from ..train.schedule import (
-    resolve_vecnorm_gamma,
     validate_ppo_config,
     validate_schedule_args,
     validate_vecnorm_config,
@@ -18,200 +18,265 @@ from ..utils.experiment import coerce_optional_path, resolve_config
 from ..utils.log_utils import get_logger
 
 logger = get_logger("train_ppo")
+app = typer.Typer(add_completion=False)
+
+_DEFAULTS: dict[str, Any] = {
+    # environment
+    "env_id": "AHC061Local-v0",
+    "env_kwargs_json": "{}",
+    # run management
+    "run_dir": Path("reinforce/outputs/ppo_runs"),
+    "run_name": "",
+    "seed": 1,
+    "device": "auto",
+    "init_model": None,
+    "resume": False,
+    "resume_from": None,
+    # feature / architecture
+    "feature_id": "submit_v1",
+    "pf_enabled": True,
+    "amp": False,
+    "memory_format": "auto",
+    "pin_memory": True,
+    "rollout_cache_device": "auto",
+    "distributed": "auto",
+    "model_preset": "",
+    # PPO core
+    "total_timesteps": 500_000,
+    "num_envs": 8,
+    "num_steps": 100,
+    "learning_rate": 2.5e-4,
+    "learning_rate_schedule": "linear",
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "num_minibatches": 4,
+    "update_epochs": 4,
+    "norm_adv": True,
+    "clip_coef": 0.2,
+    "clip_range_vf": None,
+    "clip_range_vf_schedule": "constant",
+    "clip_range_vf_final": None,
+    "clip_range_vf_schedule_expr": "",
+    "clip_vloss": True,
+    "ent_coef": 0.01,
+    "ent_coef_schedule": "constant",
+    "ent_coef_final": None,
+    "ent_coef_schedule_expr": "",
+    "vf_coef": 0.5,
+    "aux_opp_param_loss_coef": 0.0,
+    "aux_opp_param_use_valid_mask": True,
+    "max_grad_norm": 0.5,
+    "target_kl": None,
+    "clip_coef_schedule": "constant",
+    "clip_coef_final": None,
+    "clip_coef_schedule_expr": "",
+    # model
+    "model_class": "",
+    "model_config_file": None,
+    "model_config_json": "",
+    "use_action_mask": False,
+    # checkpointing / eval
+    "save_interval": 10,
+    "checkpoint_interval_steps": 0,
+    "eval_interval_steps": 0,
+    "eval_episodes": 100,
+    "eval_seed_start": 2_000_000,
+    "eval_fixed_seeds": True,
+    "eval_deterministic": True,
+    "eval_at_start": True,
+    "eval_env_kwargs_json": "",
+    # vecnorm
+    "vecnorm": False,
+    "vecnorm_norm_obs": True,
+    "vecnorm_norm_reward": True,
+    "vecnorm_eval_norm_reward": False,
+    "vecnorm_clip_obs": 10.0,
+    "vecnorm_clip_reward": 10.0,
+    "vecnorm_epsilon": 1e-8,
+    "vecnorm_gamma": None,
+    # logging / tracking
+    "log_interval_iters": 1,
+    "mlflow_tracking_uri": "",
+    "mlflow_experiment": "ppo_discrete",
+    "mlflow_run_name": "",
+}
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Train discrete-board policy with PPO.")
-    p.add_argument("--config-file", type=Path, default=None, help="json/toml/yaml config file")
-    p.add_argument("--config-section", type=str, default="train_ppo", help="section key in config file")
-    p.add_argument("--set", dest="set", action="append", default=[], help="override key=value (repeatable)")
-
-    p.add_argument("--env-id", type=str, default="AHC061Local-v0")
-    p.add_argument("--env-kwargs-json", type=str, default="{}")
-    p.add_argument("--run-dir", type=Path, default=Path("reinforce/outputs/ppo_runs"))
-    p.add_argument("--run-name", type=str, default="")
-    p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--device", type=str, default="auto")
-    p.add_argument("--init-model", type=Path, default=None)
-    p.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--resume-from", type=Path, default=None, help="checkpoint path to resume from (defaults to <run>/models/last.pt when --resume)")
-    p.add_argument("--feature-id", type=str, default="submit_v1")
-    p.add_argument("--pf-enabled", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--memory-format", choices=["auto", "nchw", "channels_last"], default="auto")
-    p.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--rollout-cache-device", choices=["auto", "cpu", "gpu"], default="auto")
-    p.add_argument("--distributed", choices=["auto", "off", "on"], default="auto")
-    p.add_argument("--model-preset", type=str, default="")
-
-    p.add_argument("--total-timesteps", type=int, default=500_000)
-    p.add_argument("--num-envs", type=int, default=8)
-    p.add_argument("--num-steps", type=int, default=100)
-    p.add_argument("--learning-rate", type=float, default=2.5e-4)
-    p.add_argument(
-        "--learning-rate-schedule",
-        type=str,
-        default="linear",
-        help=(
-            "optional LR schedule expression, e.g. "
-            "'constant(3e-4)', 'linear(3e-4,1e-5)', "
-            "'cosine(3e-4,1e-5)', 'exp(3e-4,1e-5)', "
-            "'piecewise(0:3e-4,0.5:1.5e-4,1:5e-5)'. "
-            "If empty, linear(learning_rate, 0.0) is used."
-        ),
-    )
-    p.add_argument("--gamma", type=float, default=0.99)
-    p.add_argument("--gae-lambda", type=float, default=0.95)
-    p.add_argument("--num-minibatches", type=int, default=4)
-    p.add_argument("--update-epochs", type=int, default=4)
-    p.add_argument("--norm-adv", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--clip-coef", type=float, default=0.2)
-    p.add_argument("--clip-range-vf", type=float, default=None, help="optional value-function clip range; if unset, value clipping is disabled")
-    p.add_argument("--clip-range-vf-schedule", choices=["constant", "linear", "cosine"], default="constant")
-    p.add_argument("--clip-range-vf-final", type=float, default=None, help="final value clip range for schedule")
-    p.add_argument(
-        "--clip-range-vf-schedule-expr",
-        type=str,
-        default="",
-        help=(
-            "optional value-clip schedule expression; overrides clip-range-vf-schedule/final "
-            "(same expression format as --learning-rate-schedule)"
-        ),
-    )
-    p.add_argument("--clip-vloss", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--ent-coef", type=float, default=0.01)
-    p.add_argument("--ent-coef-schedule", choices=["constant", "linear", "cosine"], default="constant")
-    p.add_argument("--ent-coef-final", type=float, default=None, help="final entropy coefficient for schedule")
-    p.add_argument(
-        "--ent-coef-schedule-expr",
-        type=str,
-        default="",
-        help=(
-            "optional entropy schedule expression; overrides ent-coef-schedule/ent-coef-final "
-            "(same expression format as --learning-rate-schedule)"
-        ),
-    )
-    p.add_argument("--vf-coef", type=float, default=0.5)
-    p.add_argument("--aux-opp-param-loss-coef", type=float, default=0.0)
-    p.add_argument("--aux-opp-param-use-valid-mask", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--max-grad-norm", type=float, default=0.5)
-    p.add_argument("--target-kl", type=float, default=None, help="SB3 semantics: early stop when approx_kl > 1.5 * target_kl")
-    p.add_argument("--clip-coef-schedule", choices=["constant", "linear", "cosine"], default="constant")
-    p.add_argument("--clip-coef-final", type=float, default=None, help="final clip coefficient for schedule")
-    p.add_argument(
-        "--clip-coef-schedule-expr",
-        type=str,
-        default="",
-        help=(
-            "optional clip-coef schedule expression; overrides clip-coef-schedule/clip-coef-final "
-            "(same expression format as --learning-rate-schedule)"
-        ),
-    )
-
-    p.add_argument("--model-class", type=str, default="", help="registered model name or import path")
-    p.add_argument("--model-config-file", type=Path, default=None, help="optional model config (json/toml/yaml)")
-    p.add_argument("--model-config-json", type=str, default="", help="optional model config JSON override")
-    p.add_argument("--use-action-mask", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--save-interval", type=int, default=10)
-    p.add_argument("--checkpoint-interval-steps", type=int, default=0, help="save step_*.pt snapshots every N global steps (0 disables)")
-    p.add_argument(
-        "--val-interval-steps",
-        "--eval-interval-steps",
-        dest="eval_interval_steps",
-        type=int,
-        default=0,
-        help="0 disables periodic val during PPO training",
-    )
-    p.add_argument("--val-episodes", "--eval-episodes", dest="eval_episodes", type=int, default=100)
-    p.add_argument("--val-seed-start", "--eval-seed-start", dest="eval_seed_start", type=int, default=2_000_000)
-    p.add_argument("--val-fixed-seeds", "--eval-fixed-seeds", dest="eval_fixed_seeds", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument(
-        "--val-deterministic",
-        "--eval-deterministic",
-        dest="eval_deterministic",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    p.add_argument("--val-at-start", "--eval-at-start", dest="eval_at_start", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument(
-        "--val-env-kwargs-json",
-        "--eval-env-kwargs-json",
-        dest="eval_env_kwargs_json",
-        type=str,
-        default="",
-        help="if empty, training env kwargs are reused",
-    )
-    p.add_argument("--vecnorm", action=argparse.BooleanOptionalAction, default=False, help="enable VecNormalize-style obs/reward normalization")
-    p.add_argument("--vecnorm-norm-obs", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--vecnorm-norm-reward", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument(
-        "--vecnorm-val-norm-reward",
-        "--vecnorm-eval-norm-reward",
-        dest="vecnorm_eval_norm_reward",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-    )
-    p.add_argument("--vecnorm-clip-obs", type=float, default=10.0)
-    p.add_argument("--vecnorm-clip-reward", type=float, default=10.0)
-    p.add_argument("--vecnorm-epsilon", type=float, default=1e-8)
-    p.add_argument("--vecnorm-gamma", type=float, default=None, help="if unset, PPO gamma is used")
-    p.add_argument(
-        "--log-interval-iters",
-        type=int,
-        default=1,
-        help="stdout logging interval in PPO iterations (1 logs every iteration)",
-    )
-
-    p.add_argument("--tensorboard", action=argparse.BooleanOptionalAction, default=True, help="enable TensorBoard logging")
-    p.add_argument("--mlflow-tracking-uri", type=str, default="")
-    p.add_argument("--mlflow-experiment", type=str, default="ppo_discrete")
-    p.add_argument("--mlflow-run-name", type=str, default="")
-    return p
+def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**cfg)
 
 
-def _default_cli_config(parser: argparse.ArgumentParser) -> dict[str, Any]:
-    defaults = vars(parser.parse_args([])).copy()
-    for key in ("config_file", "config_section", "set"):
-        defaults.pop(key, None)
-    return defaults
-
-
-def parse_args() -> argparse.Namespace:
-    parser = build_parser()
-    pre, _unknown = parser.parse_known_args()
-
+@app.command()
+def main(
+    config_file: Annotated[Optional[Path], typer.Option("--config-file")] = None,
+    config_section: Annotated[str, typer.Option("--config-section")] = "train_ppo",
+    set_: Annotated[Optional[list[str]], typer.Option("--set")] = None,
+    # environment
+    env_id: Annotated[Optional[str], typer.Option("--env-id")] = None,
+    env_kwargs_json: Annotated[Optional[str], typer.Option("--env-kwargs-json")] = None,
+    # run management
+    run_dir: Annotated[Optional[Path], typer.Option("--run-dir")] = None,
+    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
+    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
+    device: Annotated[Optional[str], typer.Option("--device")] = None,
+    init_model: Annotated[Optional[Path], typer.Option("--init-model")] = None,
+    resume: Annotated[Optional[bool], typer.Option("--resume/--no-resume")] = None,
+    resume_from: Annotated[Optional[Path], typer.Option("--resume-from")] = None,
+    # feature / architecture
+    feature_id: Annotated[Optional[str], typer.Option("--feature-id")] = None,
+    pf_enabled: Annotated[Optional[bool], typer.Option("--pf-enabled/--no-pf-enabled")] = None,
+    amp: Annotated[Optional[bool], typer.Option("--amp/--no-amp")] = None,
+    memory_format: Annotated[Optional[str], typer.Option("--memory-format")] = None,
+    pin_memory: Annotated[Optional[bool], typer.Option("--pin-memory/--no-pin-memory")] = None,
+    rollout_cache_device: Annotated[Optional[str], typer.Option("--rollout-cache-device")] = None,
+    distributed: Annotated[Optional[str], typer.Option("--distributed")] = None,
+    model_preset: Annotated[Optional[str], typer.Option("--model-preset")] = None,
+    # PPO core
+    total_timesteps: Annotated[Optional[int], typer.Option("--total-timesteps")] = None,
+    num_envs: Annotated[Optional[int], typer.Option("--num-envs")] = None,
+    num_steps: Annotated[Optional[int], typer.Option("--num-steps")] = None,
+    learning_rate: Annotated[Optional[float], typer.Option("--learning-rate")] = None,
+    learning_rate_schedule: Annotated[Optional[str], typer.Option("--learning-rate-schedule")] = None,
+    gamma: Annotated[Optional[float], typer.Option("--gamma")] = None,
+    gae_lambda: Annotated[Optional[float], typer.Option("--gae-lambda")] = None,
+    num_minibatches: Annotated[Optional[int], typer.Option("--num-minibatches")] = None,
+    update_epochs: Annotated[Optional[int], typer.Option("--update-epochs")] = None,
+    norm_adv: Annotated[Optional[bool], typer.Option("--norm-adv/--no-norm-adv")] = None,
+    clip_coef: Annotated[Optional[float], typer.Option("--clip-coef")] = None,
+    clip_range_vf: Annotated[Optional[float], typer.Option("--clip-range-vf")] = None,
+    clip_range_vf_schedule: Annotated[Optional[str], typer.Option("--clip-range-vf-schedule")] = None,
+    clip_range_vf_final: Annotated[Optional[float], typer.Option("--clip-range-vf-final")] = None,
+    clip_range_vf_schedule_expr: Annotated[Optional[str], typer.Option("--clip-range-vf-schedule-expr")] = None,
+    clip_vloss: Annotated[Optional[bool], typer.Option("--clip-vloss/--no-clip-vloss")] = None,
+    ent_coef: Annotated[Optional[float], typer.Option("--ent-coef")] = None,
+    ent_coef_schedule: Annotated[Optional[str], typer.Option("--ent-coef-schedule")] = None,
+    ent_coef_final: Annotated[Optional[float], typer.Option("--ent-coef-final")] = None,
+    ent_coef_schedule_expr: Annotated[Optional[str], typer.Option("--ent-coef-schedule-expr")] = None,
+    vf_coef: Annotated[Optional[float], typer.Option("--vf-coef")] = None,
+    aux_opp_param_loss_coef: Annotated[Optional[float], typer.Option("--aux-opp-param-loss-coef")] = None,
+    aux_opp_param_use_valid_mask: Annotated[Optional[bool], typer.Option("--aux-opp-param-use-valid-mask/--no-aux-opp-param-use-valid-mask")] = None,
+    max_grad_norm: Annotated[Optional[float], typer.Option("--max-grad-norm")] = None,
+    target_kl: Annotated[Optional[float], typer.Option("--target-kl")] = None,
+    clip_coef_schedule: Annotated[Optional[str], typer.Option("--clip-coef-schedule")] = None,
+    clip_coef_final: Annotated[Optional[float], typer.Option("--clip-coef-final")] = None,
+    clip_coef_schedule_expr: Annotated[Optional[str], typer.Option("--clip-coef-schedule-expr")] = None,
+    # model
+    model_class: Annotated[Optional[str], typer.Option("--model-class")] = None,
+    model_config_file: Annotated[Optional[Path], typer.Option("--model-config-file")] = None,
+    model_config_json: Annotated[Optional[str], typer.Option("--model-config-json")] = None,
+    use_action_mask: Annotated[Optional[bool], typer.Option("--use-action-mask/--no-use-action-mask")] = None,
+    # checkpointing / eval
+    save_interval: Annotated[Optional[int], typer.Option("--save-interval")] = None,
+    checkpoint_interval_steps: Annotated[Optional[int], typer.Option("--checkpoint-interval-steps")] = None,
+    eval_interval_steps: Annotated[Optional[int], typer.Option("--eval-interval-steps")] = None,
+    eval_episodes: Annotated[Optional[int], typer.Option("--eval-episodes")] = None,
+    eval_seed_start: Annotated[Optional[int], typer.Option("--eval-seed-start")] = None,
+    eval_fixed_seeds: Annotated[Optional[bool], typer.Option("--eval-fixed-seeds/--no-eval-fixed-seeds")] = None,
+    eval_deterministic: Annotated[Optional[bool], typer.Option("--eval-deterministic/--no-eval-deterministic")] = None,
+    eval_at_start: Annotated[Optional[bool], typer.Option("--eval-at-start/--no-eval-at-start")] = None,
+    eval_env_kwargs_json: Annotated[Optional[str], typer.Option("--eval-env-kwargs-json")] = None,
+    # vecnorm
+    vecnorm: Annotated[Optional[bool], typer.Option("--vecnorm/--no-vecnorm")] = None,
+    vecnorm_norm_obs: Annotated[Optional[bool], typer.Option("--vecnorm-norm-obs/--no-vecnorm-norm-obs")] = None,
+    vecnorm_norm_reward: Annotated[Optional[bool], typer.Option("--vecnorm-norm-reward/--no-vecnorm-norm-reward")] = None,
+    vecnorm_eval_norm_reward: Annotated[Optional[bool], typer.Option("--vecnorm-eval-norm-reward/--no-vecnorm-eval-norm-reward")] = None,
+    vecnorm_clip_obs: Annotated[Optional[float], typer.Option("--vecnorm-clip-obs")] = None,
+    vecnorm_clip_reward: Annotated[Optional[float], typer.Option("--vecnorm-clip-reward")] = None,
+    vecnorm_epsilon: Annotated[Optional[float], typer.Option("--vecnorm-epsilon")] = None,
+    vecnorm_gamma: Annotated[Optional[float], typer.Option("--vecnorm-gamma")] = None,
+    # logging / tracking
+    log_interval_iters: Annotated[Optional[int], typer.Option("--log-interval-iters")] = None,
+    mlflow_tracking_uri: Annotated[Optional[str], typer.Option("--mlflow-tracking-uri")] = None,
+    mlflow_experiment: Annotated[Optional[str], typer.Option("--mlflow-experiment")] = None,
+    mlflow_run_name: Annotated[Optional[str], typer.Option("--mlflow-run-name")] = None,
+) -> None:
     cfg = resolve_config(
-        defaults=_default_cli_config(parser),
-        config_file=pre.config_file,
-        config_section=pre.config_section,
-        overrides=list(pre.set or []),
+        defaults=_DEFAULTS,
+        config_file=config_file,
+        config_section=config_section,
+        overrides=list(set_ or []),
     )
-    unknown = sorted(k for k in cfg.keys() if k not in _default_cli_config(parser).keys())
-    if unknown:
-        raise ValueError(f"unknown config keys for train_ppo: {', '.join(unknown)}")
+    _cli: dict[str, Any] = {
+        "env_id": env_id,
+        "env_kwargs_json": env_kwargs_json,
+        "run_dir": run_dir,
+        "run_name": run_name,
+        "seed": seed,
+        "device": device,
+        "init_model": init_model,
+        "resume": resume,
+        "resume_from": resume_from,
+        "feature_id": feature_id,
+        "pf_enabled": pf_enabled,
+        "amp": amp,
+        "memory_format": memory_format,
+        "pin_memory": pin_memory,
+        "rollout_cache_device": rollout_cache_device,
+        "distributed": distributed,
+        "model_preset": model_preset,
+        "total_timesteps": total_timesteps,
+        "num_envs": num_envs,
+        "num_steps": num_steps,
+        "learning_rate": learning_rate,
+        "learning_rate_schedule": learning_rate_schedule,
+        "gamma": gamma,
+        "gae_lambda": gae_lambda,
+        "num_minibatches": num_minibatches,
+        "update_epochs": update_epochs,
+        "norm_adv": norm_adv,
+        "clip_coef": clip_coef,
+        "clip_range_vf": clip_range_vf,
+        "clip_range_vf_schedule": clip_range_vf_schedule,
+        "clip_range_vf_final": clip_range_vf_final,
+        "clip_range_vf_schedule_expr": clip_range_vf_schedule_expr,
+        "clip_vloss": clip_vloss,
+        "ent_coef": ent_coef,
+        "ent_coef_schedule": ent_coef_schedule,
+        "ent_coef_final": ent_coef_final,
+        "ent_coef_schedule_expr": ent_coef_schedule_expr,
+        "vf_coef": vf_coef,
+        "aux_opp_param_loss_coef": aux_opp_param_loss_coef,
+        "aux_opp_param_use_valid_mask": aux_opp_param_use_valid_mask,
+        "max_grad_norm": max_grad_norm,
+        "target_kl": target_kl,
+        "clip_coef_schedule": clip_coef_schedule,
+        "clip_coef_final": clip_coef_final,
+        "clip_coef_schedule_expr": clip_coef_schedule_expr,
+        "model_class": model_class,
+        "model_config_file": model_config_file,
+        "model_config_json": model_config_json,
+        "use_action_mask": use_action_mask,
+        "save_interval": save_interval,
+        "checkpoint_interval_steps": checkpoint_interval_steps,
+        "eval_interval_steps": eval_interval_steps,
+        "eval_episodes": eval_episodes,
+        "eval_seed_start": eval_seed_start,
+        "eval_fixed_seeds": eval_fixed_seeds,
+        "eval_deterministic": eval_deterministic,
+        "eval_at_start": eval_at_start,
+        "eval_env_kwargs_json": eval_env_kwargs_json,
+        "vecnorm": vecnorm,
+        "vecnorm_norm_obs": vecnorm_norm_obs,
+        "vecnorm_norm_reward": vecnorm_norm_reward,
+        "vecnorm_eval_norm_reward": vecnorm_eval_norm_reward,
+        "vecnorm_clip_obs": vecnorm_clip_obs,
+        "vecnorm_clip_reward": vecnorm_clip_reward,
+        "vecnorm_epsilon": vecnorm_epsilon,
+        "vecnorm_gamma": vecnorm_gamma,
+        "log_interval_iters": log_interval_iters,
+        "mlflow_tracking_uri": mlflow_tracking_uri,
+        "mlflow_experiment": mlflow_experiment,
+        "mlflow_run_name": mlflow_run_name,
+    }
+    cfg.update({k: v for k, v in _cli.items() if v is not None})
+    cfg["init_model"] = coerce_optional_path(cfg.get("init_model"), dot_is_none=True)
+    cfg["resume_from"] = coerce_optional_path(cfg.get("resume_from"), dot_is_none=True)
+    cfg["model_config_file"] = coerce_optional_path(cfg.get("model_config_file"), dot_is_none=True)
+    args = _ns(cfg)
+    raise SystemExit(_run(args))
 
-    parser.set_defaults(**cfg)
-    args = parser.parse_args()
-    args.init_model = coerce_optional_path(args.init_model, dot_is_none=True)
-    args.resume_from = coerce_optional_path(args.resume_from, dot_is_none=True)
-    args.model_config_file = coerce_optional_path(args.model_config_file, dot_is_none=True)
-    return args
 
-
-def choose_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
-
-
-def parse_env_kwargs(text: str) -> dict[str, Any]:
-    obj = json.loads(text)
-    if not isinstance(obj, dict):
-        raise ValueError("--env-kwargs-json must be a JSON object")
-    return obj
-
-
-def args_to_cfg(args: argparse.Namespace) -> PPOConfig:
+def _ns_to_ppo_cfg(args: SimpleNamespace) -> PPOConfig:
     return PPOConfig(
         seed=args.seed,
         total_timesteps=args.total_timesteps,
@@ -246,14 +311,23 @@ def args_to_cfg(args: argparse.Namespace) -> PPOConfig:
     )
 
 
-def _resolve_vecnorm_gamma(args: argparse.Namespace, cfg: PPOConfig) -> float:
-    return resolve_vecnorm_gamma(
-        vecnorm_gamma=args.vecnorm_gamma,
-        ppo_gamma=float(cfg.gamma),
-    )
+def choose_device(name: str) -> torch.device:
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(name)
 
 
-def _validate_vecnorm_args(args: argparse.Namespace, cfg: PPOConfig) -> None:
+def parse_env_kwargs(text: str) -> dict[str, Any]:
+    obj = json.loads(text)
+    if not isinstance(obj, dict):
+        raise ValueError("--env-kwargs-json must be a JSON object")
+    return obj
+
+
+def _run(args: SimpleNamespace) -> int:
+    cfg = _ns_to_ppo_cfg(args)
+    validate_ppo_config(cfg)
+    validate_schedule_args(cfg)
     validate_vecnorm_config(
         enabled=bool(args.vecnorm),
         clip_obs=float(args.vecnorm_clip_obs),
@@ -263,12 +337,15 @@ def _validate_vecnorm_args(args: argparse.Namespace, cfg: PPOConfig) -> None:
         ppo_gamma=float(cfg.gamma),
     )
 
+    env_id = str(args.env_id).strip()
+    if env_id != "AHC061Local-v0":
+        raise ValueError("train_ppo supports only --env-id AHC061Local-v0")
 
-_validate_ppo_cfg = validate_ppo_config
-_validate_schedule_args = validate_schedule_args
+    device = choose_device(args.device)
+    return _run_backend(args=args, cfg=cfg, device=device)
 
 
-def _run_backend_from_train_ppo(*, args: argparse.Namespace, cfg: PPOConfig, device: torch.device) -> int:
+def _run_backend(*, args: SimpleNamespace, cfg: PPOConfig, device: torch.device) -> int:
     from ..train.ppo_service import TrainPPORequest, run_ppo_from_train_request
 
     env_kwargs = parse_env_kwargs(args.env_kwargs_json)
@@ -318,20 +395,5 @@ def _run_backend_from_train_ppo(*, args: argparse.Namespace, cfg: PPOConfig, dev
     )
 
 
-def main() -> int:
-    args = parse_args()
-    cfg = args_to_cfg(args)
-    _validate_ppo_cfg(cfg)
-    _validate_schedule_args(cfg)
-    _validate_vecnorm_args(args, cfg)
-
-    env_id = str(args.env_id).strip()
-    if env_id != "AHC061Local-v0":
-        raise ValueError("train_ppo supports only --env-id AHC061Local-v0")
-
-    device = choose_device(args.device)
-    return _run_backend_from_train_ppo(args=args, cfg=cfg, device=device)
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()

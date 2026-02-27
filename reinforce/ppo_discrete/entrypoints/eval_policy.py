@@ -1,114 +1,67 @@
 from __future__ import annotations
 
-import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Annotated, Any, Optional
 
 import torch
+import typer
 
 from ..eval.eval_service import run_policy_episodes
 from ..pipeline.model_checkpoint_service import load_agent_checkpoint
-from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
+from ..utils.experiment import (
+    coerce_optional_path,
+    create_run_layout,
+    make_run_name,
+    resolve_config,
+    to_jsonable,
+    update_manifest,
+)
 from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize
 from ..utils.tracking import MetricTracker
 
 logger = get_logger("eval_policy")
+app = typer.Typer(add_completion=False)
+
+_DEFAULTS: dict[str, Any] = {
+    "env_id": "AHC061Local-v0",
+    "feature_id": "submit_v1",
+    "pf_enabled": True,
+    "amp": False,
+    "episodes": 50,
+    "seed": 1,
+    "device": "auto",
+    "deterministic": False,
+    "use_action_mask": False,
+    "vecnorm_mode": "auto",
+    "vecnorm_norm_obs": True,
+    "vecnorm_norm_reward": False,
+    "vecnorm_clip_obs": 10.0,
+    "vecnorm_clip_reward": 10.0,
+    "vecnorm_epsilon": 1e-8,
+    "vecnorm_gamma": 0.99,
+    "output_json": None,
+    "env_kwargs_json": "{}",
+    "run_root": None,
+    "run_name": "",
+    "prefer_run_layout": True,
+}
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Evaluate a saved discrete PPO/BC policy.")
-    p.add_argument("--config-file", type=Path, default=None, help="json/toml/yaml config file")
-    p.add_argument("--config-section", type=str, default="evaluate_policy", help="section key in config file")
-    p.add_argument("--set", dest="set", action="append", default=[], help="override key=value (repeatable)")
-
-    p.add_argument("--env-id", type=str, default="AHC061Local-v0")
-    p.add_argument("--feature-id", type=str, default="submit_v1")
-    p.add_argument("--pf-enabled", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--model-path", type=Path, default=None)
-    p.add_argument("--episodes", type=int, default=50)
-    p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--device", type=str, default="auto")
-    p.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--use-action-mask", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--vecnorm-mode", choices=["auto", "on", "off"], default="auto")
-    p.add_argument("--vecnorm-norm-obs", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--vecnorm-norm-reward", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--vecnorm-clip-obs", type=float, default=10.0)
-    p.add_argument("--vecnorm-clip-reward", type=float, default=10.0)
-    p.add_argument("--vecnorm-epsilon", type=float, default=1e-8)
-    p.add_argument("--vecnorm-gamma", type=float, default=0.99)
-    p.add_argument("--output-json", type=Path, default=None)
-    p.add_argument("--env-kwargs-json", type=str, default="{}")
-
-    p.add_argument("--run-root", type=Path, default=None, help="optional run root for managed outputs")
-    p.add_argument("--run-name", type=str, default="")
-    p.add_argument("--prefer-run-layout", action=argparse.BooleanOptionalAction, default=True)
-    return p
+def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**cfg)
 
 
-def _parser_defaults(parser: argparse.ArgumentParser) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for a in parser._actions:
-        if a.dest == "help":
-            continue
-        if a.default is argparse.SUPPRESS:
-            continue
-        out[a.dest] = a.default
-    return out
-
-
-def parse_args() -> argparse.Namespace:
-    parser = build_parser()
-    pre, _unknown = parser.parse_known_args()
-
-    base_defaults = _parser_defaults(parser)
-    for key in ("config_file", "config_section", "set"):
-        base_defaults.pop(key, None)
-
-    cfg = resolve_config(
-        defaults=base_defaults,
-        config_file=pre.config_file,
-        config_section=pre.config_section,
-        overrides=list(pre.set or []),
-    )
-    unknown = sorted(k for k in cfg.keys() if k not in base_defaults.keys())
-    if unknown:
-        raise ValueError(f"unknown config keys for evaluate_policy: {', '.join(unknown)}")
-
-    parser.set_defaults(**cfg)
-    args = parser.parse_args()
-    args.model_path = coerce_optional_path(args.model_path, dot_is_none=True)
-    args.output_json = coerce_optional_path(args.output_json, dot_is_none=True)
-    args.run_root = coerce_optional_path(args.run_root)
-    return args
-
-
-def _validate_args(args: argparse.Namespace) -> None:
-    if args.model_path is None:
-        raise ValueError("--model-path is required")
-    env_id = str(args.env_id).strip()
-    if env_id != "AHC061Local-v0":
-        raise ValueError("evaluate_policy supports only --env-id AHC061Local-v0")
-
-
-def choose_device(name: str) -> torch.device:
+def _choose_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(name)
 
 
-def parse_env_kwargs(text: str) -> dict[str, Any]:
-    obj = json.loads(text)
-    if not isinstance(obj, dict):
-        raise ValueError("--env-kwargs-json must be a JSON object")
-    return obj
-
-
-def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
+def _prepare_run(args: SimpleNamespace) -> tuple[Any, MetricTracker | None]:
     if args.run_root is None:
         return None, None
 
@@ -120,7 +73,7 @@ def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
     config_snapshot = to_jsonable({"args": vars(args), "layout": layout.as_dict()})
     (layout.config_dir / "evaluate_policy.args.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
 
-    tracker = MetricTracker(layout.root, run_name=run_name, enable_tensorboard=False, config=config_snapshot)
+    tracker = MetricTracker(layout.root, run_name=run_name, config=config_snapshot)
     update_manifest(
         layout,
         {
@@ -137,7 +90,7 @@ def _prepare_run(args: argparse.Namespace) -> tuple[Any, MetricTracker | None]:
 
 def _build_summary(
     *,
-    args: argparse.Namespace,
+    args: SimpleNamespace,
     env_kwargs: dict[str, Any],
     model_meta: dict[str, Any] | Any,
     episode_returns: list[float],
@@ -173,7 +126,7 @@ def _build_summary(
 
 def _run_eval(
     *,
-    args: argparse.Namespace,
+    args: SimpleNamespace,
     agent: torch.nn.Module,
     model_meta: dict[str, Any] | Any,
     device: torch.device,
@@ -181,10 +134,7 @@ def _run_eval(
 ) -> dict[str, Any]:
     ignored_kwargs = sorted(str(k) for k in env_kwargs.keys())
     if ignored_kwargs:
-        logger.warning(
-            "cpp batch env ignores --env-kwargs-json keys: %s",
-            ", ".join(ignored_kwargs),
-        )
+        logger.warning("cpp batch env ignores --env-kwargs-json keys: %s", ", ".join(ignored_kwargs))
 
     vec_state = model_meta.get("vecnormalize_state") if isinstance(model_meta, dict) else None
     vecnorm_mode = str(args.vecnorm_mode).lower().strip()
@@ -231,26 +181,90 @@ def _run_eval(
     )
 
 
-def main() -> int:
-    args = parse_args()
-    _validate_args(args)
+@app.command()
+def main(
+    config_file: Annotated[Optional[Path], typer.Option("--config-file", help="json/toml/yaml config file")] = None,
+    config_section: Annotated[str, typer.Option("--config-section")] = "evaluate_policy",
+    set_: Annotated[Optional[list[str]], typer.Option("--set", help="override key=value (repeatable)")] = None,
+    model_path: Annotated[Optional[Path], typer.Option("--model-path")] = None,
+    env_id: Annotated[Optional[str], typer.Option("--env-id")] = None,
+    feature_id: Annotated[Optional[str], typer.Option("--feature-id")] = None,
+    pf_enabled: Annotated[Optional[bool], typer.Option("--pf-enabled/--no-pf-enabled")] = None,
+    amp: Annotated[Optional[bool], typer.Option("--amp/--no-amp")] = None,
+    episodes: Annotated[Optional[int], typer.Option("--episodes")] = None,
+    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
+    device: Annotated[Optional[str], typer.Option("--device")] = None,
+    deterministic: Annotated[Optional[bool], typer.Option("--deterministic/--no-deterministic")] = None,
+    use_action_mask: Annotated[Optional[bool], typer.Option("--use-action-mask/--no-use-action-mask")] = None,
+    vecnorm_mode: Annotated[Optional[str], typer.Option("--vecnorm-mode")] = None,
+    vecnorm_norm_obs: Annotated[Optional[bool], typer.Option("--vecnorm-norm-obs/--no-vecnorm-norm-obs")] = None,
+    vecnorm_norm_reward: Annotated[Optional[bool], typer.Option("--vecnorm-norm-reward/--no-vecnorm-norm-reward")] = None,
+    vecnorm_clip_obs: Annotated[Optional[float], typer.Option("--vecnorm-clip-obs")] = None,
+    vecnorm_clip_reward: Annotated[Optional[float], typer.Option("--vecnorm-clip-reward")] = None,
+    vecnorm_epsilon: Annotated[Optional[float], typer.Option("--vecnorm-epsilon")] = None,
+    vecnorm_gamma: Annotated[Optional[float], typer.Option("--vecnorm-gamma")] = None,
+    output_json: Annotated[Optional[Path], typer.Option("--output-json")] = None,
+    env_kwargs_json: Annotated[Optional[str], typer.Option("--env-kwargs-json")] = None,
+    run_root: Annotated[Optional[Path], typer.Option("--run-root")] = None,
+    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
+    prefer_run_layout: Annotated[Optional[bool], typer.Option("--prefer-run-layout/--no-prefer-run-layout")] = None,
+) -> None:
+    """Evaluate a saved discrete PPO/BC policy."""
+    cfg = resolve_config(
+        defaults=_DEFAULTS,
+        config_file=config_file,
+        config_section=config_section,
+        overrides=list(set_ or []),
+    )
+    # CLI args (non-None) override config file values
+    _cli: dict[str, Any] = {
+        "model_path": model_path,
+        "env_id": env_id,
+        "feature_id": feature_id,
+        "pf_enabled": pf_enabled,
+        "amp": amp,
+        "episodes": episodes,
+        "seed": seed,
+        "device": device,
+        "deterministic": deterministic,
+        "use_action_mask": use_action_mask,
+        "vecnorm_mode": vecnorm_mode,
+        "vecnorm_norm_obs": vecnorm_norm_obs,
+        "vecnorm_norm_reward": vecnorm_norm_reward,
+        "vecnorm_clip_obs": vecnorm_clip_obs,
+        "vecnorm_clip_reward": vecnorm_clip_reward,
+        "vecnorm_epsilon": vecnorm_epsilon,
+        "vecnorm_gamma": vecnorm_gamma,
+        "output_json": output_json,
+        "env_kwargs_json": env_kwargs_json,
+        "run_root": run_root,
+        "run_name": run_name,
+        "prefer_run_layout": prefer_run_layout,
+    }
+    cfg.update({k: v for k, v in _cli.items() if v is not None})
+    cfg["model_path"] = coerce_optional_path(cfg.get("model_path"), dot_is_none=True)
+    cfg["output_json"] = coerce_optional_path(cfg.get("output_json"), dot_is_none=True)
+    cfg["run_root"] = coerce_optional_path(cfg.get("run_root"))
 
+    if cfg["model_path"] is None:
+        typer.echo("Error: --model-path is required", err=True)
+        raise typer.Exit(1)
+    if str(cfg["env_id"]).strip() != "AHC061Local-v0":
+        typer.echo(f"Error: evaluate_policy supports only --env-id AHC061Local-v0 (got {cfg['env_id']!r})", err=True)
+        raise typer.Exit(1)
+
+    args = _ns(cfg)
     layout = None
     tracker: MetricTracker | None = None
     try:
         layout, tracker = _prepare_run(args)
-        device = choose_device(args.device)
-        env_kwargs = parse_env_kwargs(args.env_kwargs_json)
-        agent, meta = load_agent_checkpoint(args.model_path, device=device)
+        device_obj = _choose_device(str(args.device))
+        env_kwargs_dict = json.loads(str(args.env_kwargs_json))
+        if not isinstance(env_kwargs_dict, dict):
+            raise ValueError("--env-kwargs-json must be a JSON object")
+        agent, meta = load_agent_checkpoint(args.model_path, device=device_obj)
 
-        summary = _run_eval(
-            args=args,
-            agent=agent,
-            model_meta=meta,
-            device=device,
-            env_kwargs=env_kwargs,
-        )
-
+        summary = _run_eval(args=args, agent=agent, model_meta=meta, device=device_obj, env_kwargs=env_kwargs_dict)
         logger.info("%s", json.dumps(summary, ensure_ascii=True, indent=2))
 
         if args.output_json is not None:
@@ -278,8 +292,6 @@ def main() -> int:
                 },
             )
             tracker.log_event("evaluate_complete", {"mean_return": summary["return"]["mean"]})
-
-        return 0
     except Exception as e:
         if tracker is not None and layout is not None:
             update_manifest(layout, {"status": "failed", "error": str(e), "timestamps": {"failed_at": time.time()}})
@@ -291,4 +303,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()
