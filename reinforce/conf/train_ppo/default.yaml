@@ -1,0 +1,85 @@
+# @package _global_
+# environment
+env_id: AHC061Local-v0
+env_kwargs_json: "{}"
+# run management
+run_dir: reinforce/outputs/ppo_runs
+run_name: ""
+seed: 1
+device: auto
+init_model: null
+resume: false
+resume_from: null
+# feature / architecture
+feature_id: submit_v1
+pf_enabled: true
+amp: false
+memory_format: auto
+pin_memory: true
+rollout_cache_device: auto
+distributed: auto
+model_preset: ""
+# PPO core
+total_timesteps: 500000
+num_envs: 8
+num_steps: 100
+learning_rate: 2.5e-4
+learning_rate_schedule: linear
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+norm_adv: true
+clip_coef: 0.2
+clip_range_vf: null
+clip_range_vf_schedule: constant
+clip_range_vf_final: null
+clip_range_vf_schedule_expr: ""
+clip_vloss: true
+ent_coef: 0.01
+ent_coef_schedule: constant
+ent_coef_final: null
+ent_coef_schedule_expr: ""
+vf_coef: 0.5
+aux_opp_param_loss_coef: 0.0
+aux_opp_param_use_valid_mask: true
+max_grad_norm: 0.5
+target_kl: null
+clip_coef_schedule: constant
+clip_coef_final: null
+clip_coef_schedule_expr: ""
+# model
+model_class: ""
+model_config_file: null
+model_config_json: ""
+use_action_mask: false
+# checkpointing / eval
+save_interval: 10
+checkpoint_interval_steps: 0
+eval_interval_steps: 0
+eval_episodes: 100
+eval_seed_start: 2000000
+eval_fixed_seeds: true
+eval_deterministic: true
+eval_at_start: true
+eval_env_kwargs_json: ""
+# vecnorm
+vecnorm: false
+vecnorm_norm_obs: true
+vecnorm_norm_reward: true
+vecnorm_eval_norm_reward: false
+vecnorm_clip_obs: 10.0
+vecnorm_clip_reward: 10.0
+vecnorm_epsilon: 1.0e-8
+vecnorm_gamma: null
+# logging / tracking
+log_interval_iters: 1
+mlflow_tracking_uri: ""
+mlflow_experiment: ppo_discrete
+mlflow_run_name: ""
+tensorboard: false
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

@@ -6,112 +6,41 @@ import random
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Any, Optional
+from typing import Any
 
+import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-import typer
+from omegaconf import DictConfig, OmegaConf
 
 from ..models import build_agent, load_model_config_from_sources, normalize_model_config
 from ..pipeline.model_checkpoint_service import save_agent_checkpoint
 from ..ppo.trainer import aux_opp_param_mse
-from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
+from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, to_jsonable, update_manifest
 from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize
 from ..data.teacher_dataset import DATASET_KEY_OPP_PARAM_TRUE, DATASET_KEY_OPP_VALID
 from ..utils.tracking import MetricTracker
 
 logger = get_logger("train_bc")
-app = typer.Typer(add_completion=False)
-
-_DEFAULTS: dict[str, Any] = {
-    "dataset_npz": None,
-    "dataset_shards_glob": "",
-    "output_model": None,
-    "metrics_jsonl": None,
-    "seed": 1,
-    "epochs": 20,
-    "batch_size": 2048,
-    "learning_rate": 1e-3,
-    "weight_decay": 0.0,
-    "valid_ratio": 0.1,
-    "model_class": "",
-    "model_config_file": None,
-    "model_config_json": "",
-    "device": "auto",
-    "aux_opp_param_loss_coef": 0.0,
-    "aux_opp_param_use_valid_mask": True,
-    "run_root": None,
-    "run_name": "",
-    "prefer_run_layout": True,
-}
+_CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
 
-def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(**cfg)
-
-
-@app.command()
-def main(
-    config_file: Annotated[Optional[Path], typer.Option("--config-file")] = None,
-    config_section: Annotated[str, typer.Option("--config-section")] = "train_bc",
-    set_: Annotated[Optional[list[str]], typer.Option("--set")] = None,
-    dataset_npz: Annotated[Optional[Path], typer.Option("--dataset-npz")] = None,
-    dataset_shards_glob: Annotated[Optional[str], typer.Option("--dataset-shards-glob")] = None,
-    output_model: Annotated[Optional[Path], typer.Option("--output-model")] = None,
-    metrics_jsonl: Annotated[Optional[Path], typer.Option("--metrics-jsonl")] = None,
-    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
-    epochs: Annotated[Optional[int], typer.Option("--epochs")] = None,
-    batch_size: Annotated[Optional[int], typer.Option("--batch-size")] = None,
-    learning_rate: Annotated[Optional[float], typer.Option("--learning-rate")] = None,
-    weight_decay: Annotated[Optional[float], typer.Option("--weight-decay")] = None,
-    valid_ratio: Annotated[Optional[float], typer.Option("--valid-ratio")] = None,
-    model_class: Annotated[Optional[str], typer.Option("--model-class")] = None,
-    model_config_file: Annotated[Optional[Path], typer.Option("--model-config-file")] = None,
-    model_config_json: Annotated[Optional[str], typer.Option("--model-config-json")] = None,
-    device: Annotated[Optional[str], typer.Option("--device")] = None,
-    aux_opp_param_loss_coef: Annotated[Optional[float], typer.Option("--aux-opp-param-loss-coef")] = None,
-    aux_opp_param_use_valid_mask: Annotated[Optional[bool], typer.Option("--aux-opp-param-use-valid-mask/--no-aux-opp-param-use-valid-mask")] = None,
-    run_root: Annotated[Optional[Path], typer.Option("--run-root")] = None,
-    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
-    prefer_run_layout: Annotated[Optional[bool], typer.Option("--prefer-run-layout/--no-prefer-run-layout")] = None,
-) -> None:
-    cfg = resolve_config(
-        defaults=_DEFAULTS,
-        config_file=config_file,
-        config_section=config_section,
-        overrides=list(set_ or []),
-    )
-    _cli: dict[str, Any] = {
-        "dataset_npz": dataset_npz,
-        "dataset_shards_glob": dataset_shards_glob,
-        "output_model": output_model,
-        "metrics_jsonl": metrics_jsonl,
-        "seed": seed,
-        "epochs": epochs,
-        "batch_size": batch_size,
-        "learning_rate": learning_rate,
-        "weight_decay": weight_decay,
-        "valid_ratio": valid_ratio,
-        "model_class": model_class,
-        "model_config_file": model_config_file,
-        "model_config_json": model_config_json,
-        "device": device,
-        "aux_opp_param_loss_coef": aux_opp_param_loss_coef,
-        "aux_opp_param_use_valid_mask": aux_opp_param_use_valid_mask,
-        "run_root": run_root,
-        "run_name": run_name,
-        "prefer_run_layout": prefer_run_layout,
-    }
-    cfg.update({k: v for k, v in _cli.items() if v is not None})
-    cfg["dataset_npz"] = coerce_optional_path(cfg.get("dataset_npz"), dot_is_none=True)
-    cfg["output_model"] = coerce_optional_path(cfg.get("output_model"), dot_is_none=True)
-    cfg["metrics_jsonl"] = coerce_optional_path(cfg.get("metrics_jsonl"), dot_is_none=True)
-    cfg["model_config_file"] = coerce_optional_path(cfg.get("model_config_file"), dot_is_none=True)
-    cfg["run_root"] = coerce_optional_path(cfg.get("run_root"))
-    args = _ns(cfg)
+@hydra.main(version_base="1.3", config_path=_CONF_DIR, config_name="train_bc/default")
+def main(cfg: DictConfig) -> None:
+    args = _cfg_to_ns(cfg)
     raise SystemExit(_run(args))
+
+
+def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
+    d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
+    d["dataset_npz"] = coerce_optional_path(d.get("dataset_npz"), dot_is_none=True)
+    d["output_model"] = coerce_optional_path(d.get("output_model"), dot_is_none=True)
+    d["metrics_jsonl"] = coerce_optional_path(d.get("metrics_jsonl"), dot_is_none=True)
+    d["model_config_file"] = coerce_optional_path(d.get("model_config_file"), dot_is_none=True)
+    d["run_root"] = coerce_optional_path(d.get("run_root"))
+    return SimpleNamespace(**d)
 
 
 def _validate_args(args: SimpleNamespace) -> None:
@@ -616,4 +545,4 @@ def _run(args: SimpleNamespace) -> int:
 
 
 if __name__ == "__main__":
-    app()
+    main()

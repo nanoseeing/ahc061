@@ -10,7 +10,6 @@ from reinforce.ppo_discrete.utils.experiment import (
     coerce_optional_path,
     create_run_layout,
     make_run_name,
-    resolve_config,
     update_manifest,
 )
 
@@ -32,31 +31,6 @@ class TestExperimentManagement:
             assert m2["status"] == "completed"
             assert m2["result"]["ok"] is True
             assert m2["config"]["x"] == 1
-
-    def test_resolve_config_merge_and_overrides(self) -> None:
-        defaults = {"epochs": 5, "optim": {"lr": 0.01, "wd": 0.1}}
-        with tempfile.TemporaryDirectory() as td:
-            cfg_path = Path(td) / "cfg.toml"
-            cfg_path.write_text(
-                """
-[train_bc]
-epochs = 10
-
-[train_bc.optim]
-lr = 0.001
-""".strip()
-                + "\n",
-                encoding="utf-8",
-            )
-            cfg = resolve_config(
-                defaults=defaults,
-                config_file=cfg_path,
-                config_section="train_bc",
-                overrides=["optim.lr=0.005", "optim.wd=0.0"],
-            )
-        assert cfg["epochs"] == 10
-        assert cfg["optim"]["lr"] == pytest.approx(0.005, abs=1e-12)
-        assert cfg["optim"]["wd"] == pytest.approx(0.0, abs=1e-12)
 
     def test_coerce_optional_path_for_run_root_resolution(self) -> None:
         assert coerce_optional_path("") is None

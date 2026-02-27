@@ -4,15 +4,16 @@ import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Any, Optional
+from typing import Any
 
+import hydra
 import numpy as np
 import torch
-import typer
+from omegaconf import DictConfig, OmegaConf
 
 from ..eval.eval_service import AuxTransition, Transition, run_policy_episodes
 from ..pipeline.model_checkpoint_service import load_agent_checkpoint
-from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, resolve_config, to_jsonable, update_manifest
+from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, to_jsonable, update_manifest
 from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize
 from ..data.teacher_dataset_merge import merge_teacher_shards
@@ -30,87 +31,21 @@ from ..utils.tracking import MetricTracker
 
 logger = get_logger("collect_teacher")
 _DATA_KEYS = ("obs", "action", "reward", "done", "episode", "step", "bayes_params")
-app = typer.Typer(add_completion=False)
-
-_DEFAULTS: dict[str, Any] = {
-    "env_id": "AHC061Local-v0",
-    "feature_id": "submit_v1",
-    "pf_enabled": True,
-    "amp": False,
-    "save_aux_targets": False,
-    "episodes": 200,
-    "max_steps_per_episode": 1000,
-    "seed": 1,
-    "output_npz": None,
-    "policy": "random",
-    "model_path": None,
-    "env_kwargs_json": "{}",
-    "log_interval_episodes": 50,
-    "chunk_episodes": 10,
-    "run_root": None,
-    "run_name": "",
-    "prefer_run_layout": True,
-}
+_CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
 
-def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(**cfg)
-
-
-@app.command()
-def main(
-    config_file: Annotated[Optional[Path], typer.Option("--config-file")] = None,
-    config_section: Annotated[str, typer.Option("--config-section")] = "collect_teacher",
-    set_: Annotated[Optional[list[str]], typer.Option("--set")] = None,
-    env_id: Annotated[Optional[str], typer.Option("--env-id")] = None,
-    feature_id: Annotated[Optional[str], typer.Option("--feature-id")] = None,
-    pf_enabled: Annotated[Optional[bool], typer.Option("--pf-enabled/--no-pf-enabled")] = None,
-    amp: Annotated[Optional[bool], typer.Option("--amp/--no-amp")] = None,
-    save_aux_targets: Annotated[Optional[bool], typer.Option("--save-aux-targets/--no-save-aux-targets")] = None,
-    episodes: Annotated[Optional[int], typer.Option("--episodes")] = None,
-    max_steps_per_episode: Annotated[Optional[int], typer.Option("--max-steps-per-episode")] = None,
-    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
-    output_npz: Annotated[Optional[Path], typer.Option("--output-npz")] = None,
-    policy: Annotated[Optional[str], typer.Option("--policy")] = None,
-    model_path: Annotated[Optional[Path], typer.Option("--model-path")] = None,
-    env_kwargs_json: Annotated[Optional[str], typer.Option("--env-kwargs-json")] = None,
-    log_interval_episodes: Annotated[Optional[int], typer.Option("--log-interval-episodes")] = None,
-    chunk_episodes: Annotated[Optional[int], typer.Option("--chunk-episodes")] = None,
-    run_root: Annotated[Optional[Path], typer.Option("--run-root")] = None,
-    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
-    prefer_run_layout: Annotated[Optional[bool], typer.Option("--prefer-run-layout/--no-prefer-run-layout")] = None,
-) -> None:
-    cfg = resolve_config(
-        defaults=_DEFAULTS,
-        config_file=config_file,
-        config_section=config_section,
-        overrides=list(set_ or []),
-    )
-    _cli: dict[str, Any] = {
-        "env_id": env_id,
-        "feature_id": feature_id,
-        "pf_enabled": pf_enabled,
-        "amp": amp,
-        "save_aux_targets": save_aux_targets,
-        "episodes": episodes,
-        "max_steps_per_episode": max_steps_per_episode,
-        "seed": seed,
-        "output_npz": output_npz,
-        "policy": policy,
-        "model_path": model_path,
-        "env_kwargs_json": env_kwargs_json,
-        "log_interval_episodes": log_interval_episodes,
-        "chunk_episodes": chunk_episodes,
-        "run_root": run_root,
-        "run_name": run_name,
-        "prefer_run_layout": prefer_run_layout,
-    }
-    cfg.update({k: v for k, v in _cli.items() if v is not None})
-    cfg["output_npz"] = coerce_optional_path(cfg.get("output_npz"), dot_is_none=True)
-    cfg["model_path"] = coerce_optional_path(cfg.get("model_path"), dot_is_none=True)
-    cfg["run_root"] = coerce_optional_path(cfg.get("run_root"))
-    args = _ns(cfg)
+@hydra.main(version_base="1.3", config_path=_CONF_DIR, config_name="collect_teacher/default")
+def main(cfg: DictConfig) -> None:
+    args = _cfg_to_ns(cfg)
     raise SystemExit(_run(args))
+
+
+def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
+    d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
+    d["output_npz"] = coerce_optional_path(d.get("output_npz"), dot_is_none=True)
+    d["model_path"] = coerce_optional_path(d.get("model_path"), dot_is_none=True)
+    d["run_root"] = coerce_optional_path(d.get("run_root"))
+    return SimpleNamespace(**d)
 
 
 def _validate_args(args: SimpleNamespace) -> None:
@@ -461,4 +396,4 @@ def _run(args: SimpleNamespace) -> int:
 
 
 if __name__ == "__main__":
-    app()
+    main()

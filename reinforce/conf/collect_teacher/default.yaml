@@ -1,0 +1,23 @@
+# @package _global_
+env_id: AHC061Local-v0
+feature_id: submit_v1
+pf_enabled: true
+amp: false
+save_aux_targets: false
+episodes: 200
+max_steps_per_episode: 1000
+seed: 1
+output_npz: null
+policy: random
+model_path: null
+env_kwargs_json: "{}"
+log_interval_episodes: 50
+chunk_episodes: 10
+run_root: null
+run_name: ""
+prefer_run_layout: true
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

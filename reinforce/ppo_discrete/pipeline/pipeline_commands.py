@@ -115,7 +115,13 @@ class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
 
 
 def append_bool_flag(cmd: list[str], name: str, value: bool) -> None:
-    cmd.append(f"--{name}" if bool(value) else f"--no-{name}")
+    """Append a Hydra boolean override: name=true or name=false.
+
+    ``name`` may use either hyphens or underscores; hyphens are converted to
+    underscores to match Hydra config key names.
+    """
+    key = name.replace("-", "_")
+    cmd.append(f"{key}={'true' if bool(value) else 'false'}")
 
 
 def append_model_args(cmd: list[str], args: ModelArgs) -> None:
@@ -124,11 +130,12 @@ def append_model_args(cmd: list[str], args: ModelArgs) -> None:
     model_config_json = str(args.model_config_json).strip()
 
     if model_class:
-        cmd += ["--model-class", model_class]
+        cmd.append(f"model_class={model_class}")
     if model_config_file:
-        cmd += ["--model-config-file", model_config_file]
+        cmd.append(f"model_config_file={model_config_file}")
     if model_config_json:
-        cmd += ["--model-config-json", model_config_json]
+        # Wrap in OmegaConf single-quote string to prevent dict-syntax parsing
+        cmd.append(f"model_config_json='{model_config_json}'")
 
 
 def build_collect_teacher_cmd(
@@ -150,26 +157,18 @@ def build_collect_teacher_cmd(
         py,
         "-m",
         "reinforce.ppo_discrete.entrypoints.collect_teacher",
-        "--env-id",
-        str(env_id),
-        "--episodes",
-        str(int(episodes)),
-        "--seed",
-        str(int(seed)),
-        "--policy",
-        str(collect_policy),
-        "--chunk-episodes",
-        str(int(chunk_episodes)),
-        "--output-npz",
-        str(output_npz),
-        "--env-kwargs-json",
-        json.dumps(env_kwargs),
-        "--feature-id",
-        str(feature_id),
+        f"env_id={env_id}",
+        f"episodes={int(episodes)}",
+        f"seed={int(seed)}",
+        f"policy={collect_policy}",
+        f"chunk_episodes={int(chunk_episodes)}",
+        f"output_npz={output_npz}",
+        f"env_kwargs_json='{json.dumps(env_kwargs)}'",
+        f"feature_id={feature_id}",
     ]
-    append_bool_flag(cmd, "pf-enabled", bool(pf_enabled))
+    append_bool_flag(cmd, "pf_enabled", bool(pf_enabled))
     append_bool_flag(cmd, "amp", bool(amp))
-    append_bool_flag(cmd, "save-aux-targets", bool(save_aux_targets))
+    append_bool_flag(cmd, "save_aux_targets", bool(save_aux_targets))
     return cmd
 
 
@@ -185,20 +184,16 @@ def build_train_bc_cmd(
         py,
         "-m",
         "reinforce.ppo_discrete.entrypoints.train_bc",
-        "--output-model",
-        str(output_model),
-        "--seed",
-        str(int(args.seed)),
-        "--epochs",
-        str(int(args.bc_epochs)),
-        "--aux-opp-param-loss-coef",
-        str(float(args.bc_aux_opp_param_loss_coef)),
+        f"output_model={output_model}",
+        f"seed={int(args.seed)}",
+        f"epochs={int(args.bc_epochs)}",
+        f"aux_opp_param_loss_coef={float(args.bc_aux_opp_param_loss_coef)}",
     ]
-    append_bool_flag(cmd, "aux-opp-param-use-valid-mask", bool(args.bc_aux_opp_param_use_valid_mask))
+    append_bool_flag(cmd, "aux_opp_param_use_valid_mask", bool(args.bc_aux_opp_param_use_valid_mask))
     if dataset_shards_glob:
-        cmd += ["--dataset-shards-glob", str(dataset_shards_glob)]
+        cmd.append(f"dataset_shards_glob='{dataset_shards_glob}'")
     elif dataset_npz is not None:
-        cmd += ["--dataset-npz", str(dataset_npz)]
+        cmd.append(f"dataset_npz={dataset_npz}")
     append_model_args(cmd, args)
     return cmd
 
@@ -218,126 +213,95 @@ def build_train_ppo_cmd(
         py,
         "-m",
         "reinforce.ppo_discrete.entrypoints.train_ppo",
-        "--env-id",
-        str(args.env_id),
-        "--run-dir",
-        str(run_dir),
-        "--seed",
-        str(int(args.seed)),
-        "--total-timesteps",
-        str(int(args.ppo_total_timesteps)),
-        "--num-envs",
-        str(int(args.ppo_num_envs)),
-        "--num-steps",
-        str(int(args.ppo_num_steps)),
-        "--learning-rate",
-        str(float(args.ppo_learning_rate)),
-        "--gamma",
-        str(float(args.ppo_gamma)),
-        "--gae-lambda",
-        str(float(args.ppo_gae_lambda)),
-        "--num-minibatches",
-        str(int(args.ppo_num_minibatches)),
-        "--update-epochs",
-        str(int(args.ppo_update_epochs)),
-        "--clip-coef",
-        str(float(args.ppo_clip_coef)),
-        "--clip-coef-schedule",
-        str(args.ppo_clip_coef_schedule),
-        "--ent-coef",
-        str(float(args.ppo_ent_coef)),
-        "--ent-coef-schedule",
-        str(args.ppo_ent_coef_schedule),
-        "--vf-coef",
-        str(float(args.ppo_vf_coef)),
-        "--aux-opp-param-loss-coef",
-        str(float(args.ppo_aux_opp_param_loss_coef)),
-        "--max-grad-norm",
-        str(float(args.ppo_max_grad_norm)),
-        "--checkpoint-interval-steps",
-        str(int(args.ppo_checkpoint_interval_steps)),
-        "--val-interval-steps",
-        str(int(args.ppo_eval_interval_steps)),
-        "--val-episodes",
-        str(int(args.ppo_eval_episodes)),
-        "--val-seed-start",
-        str(int(args.ppo_eval_seed_start)),
-        "--log-interval-iters",
-        str(int(args.ppo_log_interval_iters)),
-        "--vecnorm-clip-obs",
-        str(float(args.ppo_vecnorm_clip_obs)),
-        "--vecnorm-clip-reward",
-        str(float(args.ppo_vecnorm_clip_reward)),
-        "--vecnorm-epsilon",
-        str(float(args.ppo_vecnorm_epsilon)),
-        "--env-kwargs-json",
-        json.dumps(env_kwargs),
-        "--feature-id",
-        str(args.ppo_feature_id),
+        f"env_id={args.env_id}",
+        f"run_dir={run_dir}",
+        f"seed={int(args.seed)}",
+        f"total_timesteps={int(args.ppo_total_timesteps)}",
+        f"num_envs={int(args.ppo_num_envs)}",
+        f"num_steps={int(args.ppo_num_steps)}",
+        f"learning_rate={float(args.ppo_learning_rate)}",
+        f"gamma={float(args.ppo_gamma)}",
+        f"gae_lambda={float(args.ppo_gae_lambda)}",
+        f"num_minibatches={int(args.ppo_num_minibatches)}",
+        f"update_epochs={int(args.ppo_update_epochs)}",
+        f"clip_coef={float(args.ppo_clip_coef)}",
+        f"clip_coef_schedule={args.ppo_clip_coef_schedule}",
+        f"ent_coef={float(args.ppo_ent_coef)}",
+        f"ent_coef_schedule={args.ppo_ent_coef_schedule}",
+        f"vf_coef={float(args.ppo_vf_coef)}",
+        f"aux_opp_param_loss_coef={float(args.ppo_aux_opp_param_loss_coef)}",
+        f"max_grad_norm={float(args.ppo_max_grad_norm)}",
+        f"checkpoint_interval_steps={int(args.ppo_checkpoint_interval_steps)}",
+        f"eval_interval_steps={int(args.ppo_eval_interval_steps)}",
+        f"eval_episodes={int(args.ppo_eval_episodes)}",
+        f"eval_seed_start={int(args.ppo_eval_seed_start)}",
+        f"log_interval_iters={int(args.ppo_log_interval_iters)}",
+        f"vecnorm_clip_obs={float(args.ppo_vecnorm_clip_obs)}",
+        f"vecnorm_clip_reward={float(args.ppo_vecnorm_clip_reward)}",
+        f"vecnorm_epsilon={float(args.ppo_vecnorm_epsilon)}",
+        f"env_kwargs_json='{json.dumps(env_kwargs)}'",
+        f"feature_id={args.ppo_feature_id}",
+        f"memory_format={args.ppo_memory_format}",
+        f"rollout_cache_device={args.ppo_rollout_cache_device}",
+        f"distributed={args.ppo_distributed}",
     ]
     append_model_args(cmd, args)
-    append_bool_flag(cmd, "norm-adv", bool(args.ppo_norm_adv))
-    append_bool_flag(cmd, "clip-vloss", bool(args.ppo_clip_vloss))
-    append_bool_flag(cmd, "val-at-start", bool(args.ppo_eval_at_start))
-    append_bool_flag(cmd, "use-action-mask", bool(args.use_action_mask))
-    append_bool_flag(cmd, "val-fixed-seeds", bool(args.ppo_eval_fixed_seeds))
-    append_bool_flag(cmd, "val-deterministic", bool(args.ppo_eval_deterministic))
+    append_bool_flag(cmd, "norm_adv", bool(args.ppo_norm_adv))
+    append_bool_flag(cmd, "clip_vloss", bool(args.ppo_clip_vloss))
+    append_bool_flag(cmd, "eval_at_start", bool(args.ppo_eval_at_start))
+    append_bool_flag(cmd, "use_action_mask", bool(args.use_action_mask))
+    append_bool_flag(cmd, "eval_fixed_seeds", bool(args.ppo_eval_fixed_seeds))
+    append_bool_flag(cmd, "eval_deterministic", bool(args.ppo_eval_deterministic))
     append_bool_flag(cmd, "vecnorm", bool(args.ppo_vecnorm))
-    append_bool_flag(cmd, "vecnorm-norm-obs", bool(args.ppo_vecnorm_norm_obs))
-    append_bool_flag(cmd, "vecnorm-norm-reward", bool(args.ppo_vecnorm_norm_reward))
-    append_bool_flag(cmd, "vecnorm-val-norm-reward", bool(args.ppo_vecnorm_eval_norm_reward))
-    append_bool_flag(cmd, "aux-opp-param-use-valid-mask", bool(args.ppo_aux_opp_param_use_valid_mask))
-    append_bool_flag(cmd, "pf-enabled", bool(args.ppo_pf_enabled))
+    append_bool_flag(cmd, "vecnorm_norm_obs", bool(args.ppo_vecnorm_norm_obs))
+    append_bool_flag(cmd, "vecnorm_norm_reward", bool(args.ppo_vecnorm_norm_reward))
+    append_bool_flag(cmd, "vecnorm_eval_norm_reward", bool(args.ppo_vecnorm_eval_norm_reward))
+    append_bool_flag(cmd, "aux_opp_param_use_valid_mask", bool(args.ppo_aux_opp_param_use_valid_mask))
+    append_bool_flag(cmd, "pf_enabled", bool(args.ppo_pf_enabled))
     append_bool_flag(cmd, "amp", bool(args.ppo_amp))
-    cmd += ["--memory-format", str(args.ppo_memory_format)]
-    append_bool_flag(cmd, "pin-memory", bool(args.ppo_pin_memory))
-    cmd += ["--rollout-cache-device", str(args.ppo_rollout_cache_device)]
-    cmd += ["--distributed", str(args.ppo_distributed)]
+    append_bool_flag(cmd, "pin_memory", bool(args.ppo_pin_memory))
+    append_bool_flag(cmd, "tensorboard", bool(args.tensorboard))
     if str(args.ppo_model_preset).strip():
-        cmd += ["--model-preset", str(args.ppo_model_preset).strip()]
+        cmd.append(f"model_preset={args.ppo_model_preset.strip()}")
     if str(args.ppo_learning_rate_schedule).strip():
-        cmd += ["--learning-rate-schedule", str(args.ppo_learning_rate_schedule)]
+        cmd.append(f"learning_rate_schedule={args.ppo_learning_rate_schedule}")
     if args.ppo_clip_range_vf is not None:
-        cmd += ["--clip-range-vf", str(float(args.ppo_clip_range_vf))]
+        cmd.append(f"clip_range_vf={float(args.ppo_clip_range_vf)}")
     if str(args.ppo_clip_range_vf_schedule).strip():
-        cmd += ["--clip-range-vf-schedule", str(args.ppo_clip_range_vf_schedule)]
+        cmd.append(f"clip_range_vf_schedule={args.ppo_clip_range_vf_schedule}")
     if args.ppo_clip_range_vf_final is not None:
-        cmd += ["--clip-range-vf-final", str(float(args.ppo_clip_range_vf_final))]
+        cmd.append(f"clip_range_vf_final={float(args.ppo_clip_range_vf_final)}")
     if str(args.ppo_clip_range_vf_schedule_expr).strip():
-        cmd += ["--clip-range-vf-schedule-expr", str(args.ppo_clip_range_vf_schedule_expr)]
+        cmd.append(f"clip_range_vf_schedule_expr={args.ppo_clip_range_vf_schedule_expr}")
     if args.ppo_clip_coef_final is not None:
-        cmd += ["--clip-coef-final", str(float(args.ppo_clip_coef_final))]
+        cmd.append(f"clip_coef_final={float(args.ppo_clip_coef_final)}")
     if str(args.ppo_clip_coef_schedule_expr).strip():
-        cmd += ["--clip-coef-schedule-expr", str(args.ppo_clip_coef_schedule_expr)]
+        cmd.append(f"clip_coef_schedule_expr={args.ppo_clip_coef_schedule_expr}")
     if args.ppo_ent_coef_final is not None:
-        cmd += ["--ent-coef-final", str(float(args.ppo_ent_coef_final))]
+        cmd.append(f"ent_coef_final={float(args.ppo_ent_coef_final)}")
     if str(args.ppo_ent_coef_schedule_expr).strip():
-        cmd += ["--ent-coef-schedule-expr", str(args.ppo_ent_coef_schedule_expr)]
+        cmd.append(f"ent_coef_schedule_expr={args.ppo_ent_coef_schedule_expr}")
     if args.ppo_target_kl is not None:
-        cmd += ["--target-kl", str(float(args.ppo_target_kl))]
+        cmd.append(f"target_kl={float(args.ppo_target_kl)}")
     if args.ppo_vecnorm_gamma is not None:
-        cmd += ["--vecnorm-gamma", str(float(args.ppo_vecnorm_gamma))]
+        cmd.append(f"vecnorm_gamma={float(args.ppo_vecnorm_gamma)}")
     if str(ppo_val_env_kwargs_json).strip():
-        cmd += ["--val-env-kwargs-json", str(ppo_val_env_kwargs_json)]
-    if not bool(args.tensorboard):
-        cmd.append("--no-tensorboard")
+        cmd.append(f"eval_env_kwargs_json='{ppo_val_env_kwargs_json}'")
     if str(args.mlflow_tracking_uri).strip():
-        cmd += ["--mlflow-tracking-uri", str(args.mlflow_tracking_uri)]
+        cmd.append(f"mlflow_tracking_uri={args.mlflow_tracking_uri}")
         if str(args.mlflow_experiment).strip():
-            cmd += ["--mlflow-experiment", str(args.mlflow_experiment)]
+            cmd.append(f"mlflow_experiment={args.mlflow_experiment}")
         if str(args.mlflow_run_name).strip():
-            cmd += ["--mlflow-run-name", str(args.mlflow_run_name)]
+            cmd.append(f"mlflow_run_name={args.mlflow_run_name}")
 
     if resume_from is not None and str(resume_run_name).strip():
         cmd += [
-            "--run-name",
-            str(resume_run_name).strip(),
-            "--resume",
-            "--resume-from",
-            str(resume_from),
+            f"run_name={resume_run_name.strip()}",
+            "resume=true",
+            f"resume_from={resume_from}",
         ]
     elif init_model is not None:
-        cmd += ["--init-model", str(init_model)]
+        cmd.append(f"init_model={init_model}")
     return cmd
 
 
@@ -353,22 +317,15 @@ def build_eval_policy_cmd(
         py,
         "-m",
         "reinforce.ppo_discrete.entrypoints.eval_policy",
-        "--env-id",
-        str(args.env_id),
-        "--model-path",
-        str(model_path),
-        "--episodes",
-        str(int(args.eval_episodes)),
-        "--seed",
-        str(int(args.seed)),
-        "--output-json",
-        str(output_json),
-        "--deterministic",
-        "--env-kwargs-json",
-        json.dumps(env_kwargs),
-        "--feature-id",
-        str(args.ppo_feature_id),
+        f"env_id={args.env_id}",
+        f"model_path={model_path}",
+        f"episodes={int(args.eval_episodes)}",
+        f"seed={int(args.seed)}",
+        f"output_json={output_json}",
+        "deterministic=true",
+        f"env_kwargs_json='{json.dumps(env_kwargs)}'",
+        f"feature_id={args.ppo_feature_id}",
     ]
-    append_bool_flag(cmd, "pf-enabled", bool(args.ppo_pf_enabled))
-    append_bool_flag(cmd, "use-action-mask", bool(args.use_action_mask))
+    append_bool_flag(cmd, "pf_enabled", bool(args.ppo_pf_enabled))
+    append_bool_flag(cmd, "use_action_mask", bool(args.use_action_mask))
     return cmd

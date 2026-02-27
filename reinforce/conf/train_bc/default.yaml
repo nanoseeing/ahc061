@@ -1,0 +1,25 @@
+# @package _global_
+dataset_npz: null
+dataset_shards_glob: ""
+output_model: null
+metrics_jsonl: null
+seed: 1
+epochs: 20
+batch_size: 2048
+learning_rate: 1.0e-3
+weight_decay: 0.0
+valid_ratio: 0.1
+model_class: ""
+model_config_file: null
+model_config_json: ""
+device: auto
+aux_opp_param_loss_coef: 0.0
+aux_opp_param_use_valid_mask: true
+run_root: null
+run_name: ""
+prefer_run_layout: true
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

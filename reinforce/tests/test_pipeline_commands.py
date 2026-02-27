@@ -23,14 +23,21 @@ from reinforce.ppo_discrete.pipeline.pipeline_commands import (
 
 def test_append_bool_flag_true() -> None:
     cmd: list[str] = []
-    append_bool_flag(cmd, "pf-enabled", True)
-    assert cmd == ["--pf-enabled"]
+    append_bool_flag(cmd, "pf_enabled", True)
+    assert cmd == ["pf_enabled=true"]
 
 
 def test_append_bool_flag_false() -> None:
     cmd: list[str] = []
-    append_bool_flag(cmd, "pf-enabled", False)
-    assert cmd == ["--no-pf-enabled"]
+    append_bool_flag(cmd, "pf_enabled", False)
+    assert cmd == ["pf_enabled=false"]
+
+
+def test_append_bool_flag_hyphen_converted() -> None:
+    """Hyphens in name are converted to underscores."""
+    cmd: list[str] = []
+    append_bool_flag(cmd, "pf-enabled", True)
+    assert cmd == ["pf_enabled=true"]
 
 
 # ---------------------------------------------------------------------------
@@ -55,26 +62,21 @@ def test_build_collect_teacher_cmd_basic(tmp_path: Path) -> None:
         save_aux_targets=True,
     )
     assert cmd[0] == "python"
-    assert "--env-id" in cmd
-    assert "AHC061Local-v0" in cmd
-    assert "--episodes" in cmd
-    assert "10" in cmd
-    assert "--seed" in cmd
-    assert "42" in cmd
-    assert "--policy" in cmd
-    assert "greedy" in cmd
-    assert "--chunk-episodes" in cmd
-    assert "5" in cmd
-    assert "--output-npz" in cmd
-    assert str(out) in cmd
-    assert "--feature-id" in cmd
-    assert "v1" in cmd
-    assert "--no-pf-enabled" in cmd
-    assert "--no-amp" in cmd
-    assert "--save-aux-targets" in cmd
-    # env_kwargs should be JSON-encoded
-    ek_idx = cmd.index("--env-kwargs-json") + 1
-    assert json.loads(cmd[ek_idx]) == {"x": 1}
+    assert "env_id=AHC061Local-v0" in cmd
+    assert "episodes=10" in cmd
+    assert "seed=42" in cmd
+    assert "policy=greedy" in cmd
+    assert "chunk_episodes=5" in cmd
+    assert f"output_npz={out}" in cmd
+    assert "feature_id=v1" in cmd
+    assert "pf_enabled=false" in cmd
+    assert "amp=false" in cmd
+    assert "save_aux_targets=true" in cmd
+    # env_kwargs should be JSON-encoded inside OmegaConf single-quote wrapper
+    ek_elem = next(e for e in cmd if e.startswith("env_kwargs_json="))
+    inner = ek_elem[len("env_kwargs_json="):]
+    assert inner.startswith("'") and inner.endswith("'")
+    assert json.loads(inner[1:-1]) == {"x": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -102,16 +104,12 @@ def test_build_train_bc_cmd_with_npz(tmp_path: Path) -> None:
     dataset = tmp_path / "data.npz"
     cmd = build_train_bc_cmd(py="python", args=args, output_model=out, dataset_npz=dataset)
     assert cmd[0] == "python"
-    assert "--output-model" in cmd
-    assert str(out) in cmd
-    assert "--dataset-npz" in cmd
-    assert str(dataset) in cmd
-    assert "--seed" in cmd
-    assert "7" in cmd
-    assert "--epochs" in cmd
-    assert "5" in cmd
+    assert f"output_model={out}" in cmd
+    assert f"dataset_npz={dataset}" in cmd
+    assert "seed=7" in cmd
+    assert "epochs=5" in cmd
     # no shards glob when npz is given
-    assert "--dataset-shards-glob" not in cmd
+    assert not any(e.startswith("dataset_shards_glob=") for e in cmd)
 
 
 def test_build_train_bc_cmd_with_shards_glob(tmp_path: Path) -> None:
@@ -123,9 +121,10 @@ def test_build_train_bc_cmd_with_shards_glob(tmp_path: Path) -> None:
         output_model=out,
         dataset_shards_glob="/tmp/shards/*.npz",
     )
-    assert "--dataset-shards-glob" in cmd
-    assert "/tmp/shards/*.npz" in cmd
-    assert "--dataset-npz" not in cmd
+    assert any(e.startswith("dataset_shards_glob=") for e in cmd)
+    shards_elem = next(e for e in cmd if e.startswith("dataset_shards_glob="))
+    assert "/tmp/shards/*.npz" in shards_elem
+    assert not any(e.startswith("dataset_npz=") for e in cmd)
 
 
 def test_build_train_bc_cmd_aux_mask_flag() -> None:
@@ -136,7 +135,7 @@ def test_build_train_bc_cmd_aux_mask_flag() -> None:
         output_model=Path("/tmp/out.pt"),
         dataset_npz=Path("/tmp/data.npz"),
     )
-    assert "--no-aux-opp-param-use-valid-mask" in cmd
+    assert "aux_opp_param_use_valid_mask=false" in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -225,18 +224,15 @@ def test_build_train_ppo_cmd_basic(tmp_path: Path) -> None:
         ppo_val_env_kwargs_json="",
     )
     assert cmd[0] == "python"
-    assert "--env-id" in cmd
-    assert "AHC061Local-v0" in cmd
-    assert "--total-timesteps" in cmd
-    assert "1000" in cmd
-    assert "--num-envs" in cmd
-    assert "4" in cmd
-    assert "--feature-id" in cmd
-    assert "v1" in cmd
-    assert "--use-action-mask" in cmd
-    assert "--no-tensorboard" in cmd
-    ek_idx = cmd.index("--env-kwargs-json") + 1
-    assert json.loads(cmd[ek_idx]) == {"a": 2}
+    assert "env_id=AHC061Local-v0" in cmd
+    assert "total_timesteps=1000" in cmd
+    assert "num_envs=4" in cmd
+    assert "feature_id=v1" in cmd
+    assert "use_action_mask=true" in cmd
+    assert "tensorboard=false" in cmd
+    ek_elem = next(e for e in cmd if e.startswith("env_kwargs_json="))
+    inner = ek_elem[len("env_kwargs_json="):]
+    assert json.loads(inner[1:-1]) == {"a": 2}
 
 
 def test_build_train_ppo_cmd_with_target_kl(tmp_path: Path) -> None:
@@ -248,8 +244,7 @@ def test_build_train_ppo_cmd_with_target_kl(tmp_path: Path) -> None:
         env_kwargs={},
         ppo_val_env_kwargs_json="",
     )
-    assert "--target-kl" in cmd
-    assert "0.02" in cmd
+    assert "target_kl=0.02" in cmd
 
 
 def test_build_train_ppo_cmd_with_init_model(tmp_path: Path) -> None:
@@ -263,9 +258,8 @@ def test_build_train_ppo_cmd_with_init_model(tmp_path: Path) -> None:
         ppo_val_env_kwargs_json="",
         init_model=init,
     )
-    assert "--init-model" in cmd
-    assert str(init) in cmd
-    assert "--resume" not in cmd
+    assert f"init_model={init}" in cmd
+    assert "resume=true" not in cmd
 
 
 def test_build_train_ppo_cmd_with_resume(tmp_path: Path) -> None:
@@ -280,11 +274,9 @@ def test_build_train_ppo_cmd_with_resume(tmp_path: Path) -> None:
         resume_run_name="my_run",
         resume_from=resume_path,
     )
-    assert "--resume" in cmd
-    assert "--resume-from" in cmd
-    assert str(resume_path) in cmd
-    assert "--run-name" in cmd
-    assert "my_run" in cmd
+    assert "resume=true" in cmd
+    assert f"resume_from={resume_path}" in cmd
+    assert "run_name=my_run" in cmd
 
 
 def test_build_train_ppo_cmd_no_resume_without_run_name(tmp_path: Path) -> None:
@@ -300,7 +292,7 @@ def test_build_train_ppo_cmd_no_resume_without_run_name(tmp_path: Path) -> None:
         resume_from=resume_path,
         resume_run_name="",
     )
-    assert "--resume" not in cmd
+    assert "resume=true" not in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -333,16 +325,11 @@ def test_build_eval_policy_cmd_basic(tmp_path: Path) -> None:
         env_kwargs={"k": "v"},
     )
     assert cmd[0] == "python"
-    assert "--env-id" in cmd
-    assert "AHC061Local-v0" in cmd
-    assert "--model-path" in cmd
-    assert str(model) in cmd
-    assert "--episodes" in cmd
-    assert "20" in cmd
-    assert "--output-json" in cmd
-    assert str(out_json) in cmd
-    assert "--deterministic" in cmd
-    assert "--feature-id" in cmd
-    assert "v1" in cmd
-    assert "--use-action-mask" in cmd
-    assert "--no-pf-enabled" in cmd
+    assert "env_id=AHC061Local-v0" in cmd
+    assert f"model_path={model}" in cmd
+    assert "episodes=20" in cmd
+    assert f"output_json={out_json}" in cmd
+    assert "deterministic=true" in cmd
+    assert "feature_id=v1" in cmd
+    assert "use_action_mask=true" in cmd
+    assert "pf_enabled=false" in cmd

@@ -4,10 +4,11 @@ import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Any, Optional
+from typing import Any
 
+import hydra
 import torch
-import typer
+from omegaconf import DictConfig, OmegaConf
 
 from ..eval.eval_service import run_policy_episodes
 from ..pipeline.model_checkpoint_service import load_agent_checkpoint
@@ -15,7 +16,6 @@ from ..utils.experiment import (
     coerce_optional_path,
     create_run_layout,
     make_run_name,
-    resolve_config,
     to_jsonable,
     update_manifest,
 )
@@ -24,35 +24,21 @@ from ..utils.metrics import summarize
 from ..utils.tracking import MetricTracker
 
 logger = get_logger("eval_policy")
-app = typer.Typer(add_completion=False)
-
-_DEFAULTS: dict[str, Any] = {
-    "env_id": "AHC061Local-v0",
-    "feature_id": "submit_v1",
-    "pf_enabled": True,
-    "amp": False,
-    "episodes": 50,
-    "seed": 1,
-    "device": "auto",
-    "deterministic": False,
-    "use_action_mask": False,
-    "vecnorm_mode": "auto",
-    "vecnorm_norm_obs": True,
-    "vecnorm_norm_reward": False,
-    "vecnorm_clip_obs": 10.0,
-    "vecnorm_clip_reward": 10.0,
-    "vecnorm_epsilon": 1e-8,
-    "vecnorm_gamma": 0.99,
-    "output_json": None,
-    "env_kwargs_json": "{}",
-    "run_root": None,
-    "run_name": "",
-    "prefer_run_layout": True,
-}
+_CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
 
-def _ns(cfg: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(**cfg)
+@hydra.main(version_base="1.3", config_path=_CONF_DIR, config_name="eval_policy/default")
+def main(cfg: DictConfig) -> None:
+    args = _cfg_to_ns(cfg)
+    raise SystemExit(_run(args))
+
+
+def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
+    d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
+    d["model_path"] = coerce_optional_path(d.get("model_path"), dot_is_none=True)
+    d["output_json"] = coerce_optional_path(d.get("output_json"), dot_is_none=True)
+    d["run_root"] = coerce_optional_path(d.get("run_root"))
+    return SimpleNamespace(**d)
 
 
 def _choose_device(name: str) -> torch.device:
@@ -134,7 +120,7 @@ def _run_eval(
 ) -> dict[str, Any]:
     ignored_kwargs = sorted(str(k) for k in env_kwargs.keys())
     if ignored_kwargs:
-        logger.warning("cpp batch env ignores --env-kwargs-json keys: %s", ", ".join(ignored_kwargs))
+        logger.warning("cpp batch env ignores env_kwargs_json keys: %s", ", ".join(ignored_kwargs))
 
     vec_state = model_meta.get("vecnormalize_state") if isinstance(model_meta, dict) else None
     vecnorm_mode = str(args.vecnorm_mode).lower().strip()
@@ -144,7 +130,7 @@ def _run_eval(
     elif vecnorm_mode == "auto":
         use_vecnorm = isinstance(vec_state, dict)
     if use_vecnorm and not isinstance(vec_state, dict) and vecnorm_mode == "on":
-        logger.warning("vecnorm-mode=on but checkpoint has no vecnormalize_state; using fresh statistics")
+        logger.warning("vecnorm_mode=on but checkpoint has no vecnormalize_state; using fresh statistics")
 
     stats = run_policy_episodes(
         env_id=str(args.env_id),
@@ -181,79 +167,14 @@ def _run_eval(
     )
 
 
-@app.command()
-def main(
-    config_file: Annotated[Optional[Path], typer.Option("--config-file", help="json/toml/yaml config file")] = None,
-    config_section: Annotated[str, typer.Option("--config-section")] = "evaluate_policy",
-    set_: Annotated[Optional[list[str]], typer.Option("--set", help="override key=value (repeatable)")] = None,
-    model_path: Annotated[Optional[Path], typer.Option("--model-path")] = None,
-    env_id: Annotated[Optional[str], typer.Option("--env-id")] = None,
-    feature_id: Annotated[Optional[str], typer.Option("--feature-id")] = None,
-    pf_enabled: Annotated[Optional[bool], typer.Option("--pf-enabled/--no-pf-enabled")] = None,
-    amp: Annotated[Optional[bool], typer.Option("--amp/--no-amp")] = None,
-    episodes: Annotated[Optional[int], typer.Option("--episodes")] = None,
-    seed: Annotated[Optional[int], typer.Option("--seed")] = None,
-    device: Annotated[Optional[str], typer.Option("--device")] = None,
-    deterministic: Annotated[Optional[bool], typer.Option("--deterministic/--no-deterministic")] = None,
-    use_action_mask: Annotated[Optional[bool], typer.Option("--use-action-mask/--no-use-action-mask")] = None,
-    vecnorm_mode: Annotated[Optional[str], typer.Option("--vecnorm-mode")] = None,
-    vecnorm_norm_obs: Annotated[Optional[bool], typer.Option("--vecnorm-norm-obs/--no-vecnorm-norm-obs")] = None,
-    vecnorm_norm_reward: Annotated[Optional[bool], typer.Option("--vecnorm-norm-reward/--no-vecnorm-norm-reward")] = None,
-    vecnorm_clip_obs: Annotated[Optional[float], typer.Option("--vecnorm-clip-obs")] = None,
-    vecnorm_clip_reward: Annotated[Optional[float], typer.Option("--vecnorm-clip-reward")] = None,
-    vecnorm_epsilon: Annotated[Optional[float], typer.Option("--vecnorm-epsilon")] = None,
-    vecnorm_gamma: Annotated[Optional[float], typer.Option("--vecnorm-gamma")] = None,
-    output_json: Annotated[Optional[Path], typer.Option("--output-json")] = None,
-    env_kwargs_json: Annotated[Optional[str], typer.Option("--env-kwargs-json")] = None,
-    run_root: Annotated[Optional[Path], typer.Option("--run-root")] = None,
-    run_name: Annotated[Optional[str], typer.Option("--run-name")] = None,
-    prefer_run_layout: Annotated[Optional[bool], typer.Option("--prefer-run-layout/--no-prefer-run-layout")] = None,
-) -> None:
-    """Evaluate a saved discrete PPO/BC policy."""
-    cfg = resolve_config(
-        defaults=_DEFAULTS,
-        config_file=config_file,
-        config_section=config_section,
-        overrides=list(set_ or []),
-    )
-    # CLI args (non-None) override config file values
-    _cli: dict[str, Any] = {
-        "model_path": model_path,
-        "env_id": env_id,
-        "feature_id": feature_id,
-        "pf_enabled": pf_enabled,
-        "amp": amp,
-        "episodes": episodes,
-        "seed": seed,
-        "device": device,
-        "deterministic": deterministic,
-        "use_action_mask": use_action_mask,
-        "vecnorm_mode": vecnorm_mode,
-        "vecnorm_norm_obs": vecnorm_norm_obs,
-        "vecnorm_norm_reward": vecnorm_norm_reward,
-        "vecnorm_clip_obs": vecnorm_clip_obs,
-        "vecnorm_clip_reward": vecnorm_clip_reward,
-        "vecnorm_epsilon": vecnorm_epsilon,
-        "vecnorm_gamma": vecnorm_gamma,
-        "output_json": output_json,
-        "env_kwargs_json": env_kwargs_json,
-        "run_root": run_root,
-        "run_name": run_name,
-        "prefer_run_layout": prefer_run_layout,
-    }
-    cfg.update({k: v for k, v in _cli.items() if v is not None})
-    cfg["model_path"] = coerce_optional_path(cfg.get("model_path"), dot_is_none=True)
-    cfg["output_json"] = coerce_optional_path(cfg.get("output_json"), dot_is_none=True)
-    cfg["run_root"] = coerce_optional_path(cfg.get("run_root"))
+def _run(args: SimpleNamespace) -> int:
+    if args.model_path is None:
+        raise ValueError("model_path is required")
+    if str(args.env_id).strip() != "AHC061Local-v0":
+        raise ValueError(
+            f"evaluate_policy supports only env_id=AHC061Local-v0 (got {args.env_id!r})"
+        )
 
-    if cfg["model_path"] is None:
-        typer.echo("Error: --model-path is required", err=True)
-        raise typer.Exit(1)
-    if str(cfg["env_id"]).strip() != "AHC061Local-v0":
-        typer.echo(f"Error: evaluate_policy supports only --env-id AHC061Local-v0 (got {cfg['env_id']!r})", err=True)
-        raise typer.Exit(1)
-
-    args = _ns(cfg)
     layout = None
     tracker: MetricTracker | None = None
     try:
@@ -261,7 +182,7 @@ def main(
         device_obj = _choose_device(str(args.device))
         env_kwargs_dict = json.loads(str(args.env_kwargs_json))
         if not isinstance(env_kwargs_dict, dict):
-            raise ValueError("--env-kwargs-json must be a JSON object")
+            raise ValueError("env_kwargs_json must be a JSON object")
         agent, meta = load_agent_checkpoint(args.model_path, device=device_obj)
 
         summary = _run_eval(args=args, agent=agent, model_meta=meta, device=device_obj, env_kwargs=env_kwargs_dict)
@@ -300,7 +221,8 @@ def main(
     finally:
         if tracker is not None:
             tracker.close()
+    return 0
 
 
 if __name__ == "__main__":
-    app()
+    main()

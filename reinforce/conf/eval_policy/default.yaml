@@ -1,0 +1,28 @@
+# @package _global_
+env_id: AHC061Local-v0
+feature_id: submit_v1
+pf_enabled: true
+amp: false
+episodes: 50
+seed: 1
+device: auto
+deterministic: false
+use_action_mask: false
+model_path: null
+vecnorm_mode: auto
+vecnorm_norm_obs: true
+vecnorm_norm_reward: false
+vecnorm_clip_obs: 10.0
+vecnorm_clip_reward: 10.0
+vecnorm_epsilon: 1.0e-8
+vecnorm_gamma: 0.99
+output_json: null
+env_kwargs_json: "{}"
+run_root: null
+run_name: ""
+prefer_run_layout: true
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

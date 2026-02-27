@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from .config_utils import apply_overrides, deep_merge, load_config_file, save_json
+from .config_utils import deep_merge, load_config_file, save_json
 
 _RUN_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -78,32 +78,6 @@ def update_manifest(layout: RunLayout, patch: dict[str, Any]) -> dict[str, Any]:
     merged = deep_merge(cur, to_jsonable(patch))
     save_json(path, merged)
     return merged
-
-
-def resolve_config(
-    *,
-    defaults: dict[str, Any],
-    config_file: str | Path | None,
-    config_section: str | None,
-    overrides: list[str],
-) -> dict[str, Any]:
-    cfg = defaults
-    if config_file:
-        loaded = load_config_file(config_file)
-        sectioned = loaded
-        if config_section:
-            obj = loaded.get(config_section)
-            if obj is None:
-                raise ValueError(f"config section not found: {config_section}")
-            if not isinstance(obj, dict):
-                raise ValueError(f"config section must be an object: {config_section}")
-            sectioned = obj
-        if not isinstance(sectioned, dict):
-            raise ValueError("config must be an object")
-        cfg = deep_merge(cfg, sectioned)
-    if overrides:
-        cfg = apply_overrides(cfg, overrides)
-    return cfg
 
 
 def to_jsonable(x: Any) -> Any:

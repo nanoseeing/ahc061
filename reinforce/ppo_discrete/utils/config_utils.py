@@ -15,45 +15,6 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-def _decode_scalar(raw: str) -> Any:
-    low = raw.lower()
-    if low == "true":
-        return True
-    if low == "false":
-        return False
-    if low == "null":
-        return None
-    try:
-        if "." in raw or "e" in low:
-            return float(raw)
-        return int(raw)
-    except Exception:
-        pass
-    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
-        return raw[1:-1]
-    return raw
-
-
-def set_by_dotted_key(obj: dict[str, Any], dotted_key: str, value: Any) -> None:
-    cur = obj
-    parts = dotted_key.split(".")
-    for k in parts[:-1]:
-        if k not in cur or not isinstance(cur[k], dict):
-            cur[k] = {}
-        cur = cur[k]
-    cur[parts[-1]] = value
-
-
-def apply_overrides(cfg: dict[str, Any], overrides: list[str]) -> dict[str, Any]:
-    out = json.loads(json.dumps(cfg))
-    for ov in overrides:
-        if "=" not in ov:
-            raise ValueError(f"override must be key=value, got: {ov}")
-        k, raw = ov.split("=", 1)
-        set_by_dotted_key(out, k.strip(), _decode_scalar(raw.strip()))
-    return out
-
-
 def load_config_file(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
