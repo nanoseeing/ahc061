@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from reinforce.ppo_discrete.runtime.experiment import (
+from reinforce.ppo_discrete.infra.experiment import (
     coerce_optional_path,
     create_run_layout,
     make_run_name,

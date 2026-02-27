@@ -5,12 +5,12 @@ It intentionally mirrors CleanRL's PPO decomposition while separating environmen
 specific logic from generic algorithm code.
 """
 
-from .algorithms.ppo.config import PPOConfig
-from .algorithms.ppo.rollout_buffer import RolloutBuffer
-from .algorithms.ppo.trainer import PPOTrainer
-from .models.student_m import StudentMBoardAgent, TeacherP0V1BoardAgent
-from .models.discrete_board import DiscreteBoardAgent
-from .models import (
+from .core.ppo.config import PPOConfig
+from .core.ppo.rollout_buffer import RolloutBuffer
+from .core.ppo.trainer import PPOTrainer
+from .agents.student_m import StudentMBoardAgent, TeacherP0V1BoardAgent
+from .agents.discrete_board import DiscreteBoardAgent
+from .agents import (
     build_agent,
     get_model_config_from_preset,
     get_model_preset,
@@ -19,8 +19,8 @@ from .models import (
     list_registered_models,
     normalize_model_config,
 )
-from .runtime.experiment import RunLayout, create_run_layout, make_run_name, update_manifest
-from .runtime.tracking import MetricTracker
+from .infra.experiment import RunLayout, create_run_layout, make_run_name, update_manifest
+from .infra.tracking import MetricTracker
 
 __all__ = [
     "PPOConfig",

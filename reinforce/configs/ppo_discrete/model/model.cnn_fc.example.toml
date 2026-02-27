@@ -3,7 +3,7 @@ type = "DiscreteBoardAgent"
 
 [model.kwargs]
 model_type = "cnn_fc"
-board_channels = 7
+board_channels = 46
 board_size = 10
 global_dim = 0
 cnn_channels = [64, 64, 128]

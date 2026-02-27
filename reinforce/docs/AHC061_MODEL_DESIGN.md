@@ -160,7 +160,7 @@
 
 実装対応（2026-02-25）:
 
-- 環境特徴量: `AHC061LocalEnv(obs_mode="teacher_p0_v1_88ch")`
+- 環境特徴量: native BatchEnv 側 `teacher_p0_v1_88ch` 仕様
 - モデル設定: `reinforce/configs/ppo_discrete/model/model.ahc061_teacher_p0_v1.toml`
 - パイプライン設定:
   - `reinforce/configs/ppo_discrete/pipeline/run_pipeline.ahc061_teacher_p0_v1_light.toml`

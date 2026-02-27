@@ -4,28 +4,14 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import pytest
 import torch
 
-from reinforce.ppo_discrete.runtime.checkpoint import load_agent_checkpoint, save_agent_checkpoint
-from reinforce.ppo_discrete.env.api import extract_action_mask
-from reinforce.ppo_discrete.models.discrete_board import DiscreteBoardAgent
-from reinforce.ppo_discrete.models import StudentMBoardAgent, TeacherP0V1BoardAgent, build_agent
+from reinforce.ppo_discrete.usecases.model_checkpoint_service import load_agent_checkpoint, save_agent_checkpoint
+from reinforce.ppo_discrete.agents.discrete_board import DiscreteBoardAgent
+from reinforce.ppo_discrete.agents import StudentMBoardAgent, TeacherP0V1BoardAgent, build_agent
 
 
 class TestPPOCoreModelAndCheckpoint:
-    def test_extract_action_mask_priority_and_validation(self) -> None:
-        info_mask = np.asarray([[True, False, True]], dtype=np.bool_)
-        obs_mask = np.asarray([[False, True, False]], dtype=np.bool_)
-        got = extract_action_mask({"action_mask": obs_mask}, {"action_mask": info_mask}, expected_action_dim=3)
-        np.testing.assert_array_equal(got, info_mask)
-
-        got2 = extract_action_mask({"action_mask": obs_mask}, {}, expected_action_dim=3)
-        np.testing.assert_array_equal(got2, obs_mask)
-
-        with pytest.raises(ValueError):
-            extract_action_mask({}, {"action_mask": np.asarray([True, False], dtype=np.bool_)}, expected_action_dim=3)
-
     def test_discrete_agent_deterministic_action_with_mask(self) -> None:
         agent = DiscreteBoardAgent(
             obs_shape=(4,),

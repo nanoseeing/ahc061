@@ -4,8 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from reinforce.ppo_discrete.cli.collect_teacher import _merge_npz_shards_streaming
-from reinforce.ppo_discrete.cli.run_pipeline import _merge_teacher_shards
+from reinforce.ppo_discrete.usecases.teacher_dataset_merge import merge_teacher_shards
 
 
 def _write_teacher_shard(
@@ -43,7 +42,7 @@ def test_collect_teacher_internal_merge_keeps_episode_ids(tmp_path: Path) -> Non
     _write_teacher_shard(s1, episodes=np.asarray([0, 0, 1, 1], dtype=np.int32))
     _write_teacher_shard(s2, episodes=np.asarray([2, 2, 3], dtype=np.int32))
 
-    _merge_npz_shards_streaming([s1, s2], out)
+    merge_teacher_shards([s1, s2], out, offset_episode_ids=False)
 
     with np.load(out) as d:
         ep = np.asarray(d["episode"], dtype=np.int32)
@@ -59,7 +58,7 @@ def test_run_pipeline_merge_offsets_episode_ids_per_shard(tmp_path: Path) -> Non
     _write_teacher_shard(s1, episodes=np.asarray([0, 0, 1], dtype=np.int32))
     _write_teacher_shard(s2, episodes=np.asarray([0, 1, 1], dtype=np.int32))
 
-    _merge_teacher_shards([s1, s2], out)
+    merge_teacher_shards([s1, s2], out, offset_episode_ids=True)
 
     with np.load(out) as d:
         ep = np.asarray(d["episode"], dtype=np.int32)

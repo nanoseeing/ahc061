@@ -8,9 +8,9 @@ import torch
 import torch.nn as nn
 from torch.distributions.categorical import Categorical
 
-from reinforce.ppo_discrete.algorithms.ppo.config import PPOConfig
-from reinforce.ppo_discrete.algorithms.ppo.rollout_buffer import RolloutBuffer
-from reinforce.ppo_discrete.algorithms.ppo.trainer import PPOTrainer
+from reinforce.ppo_discrete.core.ppo.config import PPOConfig
+from reinforce.ppo_discrete.core.ppo.rollout_buffer import RolloutBuffer
+from reinforce.ppo_discrete.core.ppo.trainer import PPOTrainer
 
 
 class _DummyAgent(nn.Module):
@@ -18,11 +18,12 @@ class _DummyAgent(nn.Module):
         super().__init__()
         self.theta = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
 
-    def get_action_and_value(
+    def forward(
         self,
         obs: torch.Tensor,
         action: torch.Tensor | None = None,
         action_mask: torch.Tensor | None = None,
+        return_aux_opp_param: bool = False,
     ):
         base = obs[:, 0] * self.theta
         logits = torch.stack([base, torch.zeros_like(base)], dim=1)

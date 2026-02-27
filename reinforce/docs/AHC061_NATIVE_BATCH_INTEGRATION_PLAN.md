@@ -9,8 +9,8 @@
 
 前提:
 
-- 学習モデルは `reinforce/ppo_discrete/models/*` を使う
-- 実験管理は `reinforce/ppo_discrete/runtime/*` と既存 CLI/config を使う
+- 学習モデルは `reinforce/ppo_discrete/agents/*` を使う
+- 実験管理は `reinforce/ppo_discrete/infra/*` と既存 CLI/config を使う
 - `exp002` 側は「BatchEnv interface 設計の参照元」に限定する
 
 ## 2. スコープ
@@ -24,7 +24,7 @@
 ### 2.2 実施しないこと
 
 - `exp002` 側の Python 学習スクリプトやモデル実装の直接利用
-- `exp002` ディレクトリを runtime 依存として参照する設計
+- `exp002` ディレクトリを実行時依存として参照する設計
 - `reinforce` の実験管理基盤を別系に置き換えること
 
 ## 3. 固定仕様
@@ -41,15 +41,15 @@
 ### 4.1 レイヤ分割
 
 - Env core (C++):
-  `reinforce/ppo_discrete/domains/ahc061/native_batch/cpp_core/include/ahc061/core/*.hpp`
+  `reinforce/ppo_discrete/domain/ahc061/native_batch/cpp_core/include/ahc061/core/*.hpp`
 - Torch extension (C++):
-  `reinforce/ppo_discrete/domains/ahc061/native_batch/cpp_ext/src/ahc061_ext.cpp`
+  `reinforce/ppo_discrete/domain/ahc061/native_batch/cpp_ext/src/ahc061_ext.cpp`
 - Python wrapper:
-  `reinforce/ppo_discrete/domains/ahc061/native_batch/env.py`
+  `reinforce/ppo_discrete/domain/ahc061/native_batch/env.py`
 - Rollout collector:
-  `reinforce/ppo_discrete/algorithms/ppo/native_rollout.py`
+  `reinforce/ppo_discrete/core/ppo/native_rollout.py`
 - Trainer entrypoint:
-  `reinforce/ppo_discrete/cli/train_ppo.py`（最終統合先）
+  `reinforce/ppo_discrete/entrypoints/train_ppo.py`（最終統合先）
 
 ### 4.2 backend 切替方針
 
@@ -92,8 +92,8 @@ PPO 更新 (`PPOTrainer`) と checkpoint 保存は共通化する。
   - rank-aware seed、rank0 限定 checkpoint/manifest
 - `train_ppo` / `run_pipeline` から native distributed 設定を透過可能
 - model/feature 管理の整理を開始
-  - model preset catalog: `reinforce/ppo_discrete/models/catalog.py`
-  - native feature catalog: `reinforce/ppo_discrete/domains/ahc061/native_batch/feature_catalog.py`
+  - model preset catalog: `reinforce/ppo_discrete/agents/catalog.py`
+  - native feature catalog: `reinforce/ppo_discrete/domain/ahc061/native_batch/feature_catalog.py`
 
 ### 5.4 まだ残る差分（統合上の要対応）
 
@@ -110,7 +110,7 @@ PPO 更新 (`PPOTrainer`) と checkpoint 保存は共通化する。
 
 ### Phase A（最優先）: `train_ppo` への統合
 
-対象: `reinforce/ppo_discrete/cli/train_ppo.py`
+対象: `reinforce/ppo_discrete/entrypoints/train_ppo.py`
 
 - `rollout_backend=gym|native` を追加
 - `native_feature_id`, `native_pf_enabled`, `native_amp` を追加
@@ -178,10 +178,10 @@ PPO 更新 (`PPOTrainer`) と checkpoint 保存は共通化する。
 
 ## 7. 変更対象ファイル（優先度順）
 
-1. `reinforce/ppo_discrete/cli/train_ppo.py`
-2. `reinforce/ppo_discrete/algorithms/ppo/native_rollout.py`
-3. `reinforce/ppo_discrete/domains/ahc061/native_batch/*`
-4. `reinforce/ppo_discrete/cli/run_pipeline.py`
+1. `reinforce/ppo_discrete/entrypoints/train_ppo.py`
+2. `reinforce/ppo_discrete/core/ppo/native_rollout.py`
+3. `reinforce/ppo_discrete/domain/ahc061/native_batch/*`
+4. `reinforce/ppo_discrete/entrypoints/run_pipeline.py`
 5. `reinforce/configs/ppo_discrete/*.toml`
 6. `reinforce/docs/*.md`
 

@@ -1,5 +1,5 @@
 [run_pipeline]
-env_id = "CartPole-v1"
+env_id = "AHC061Local-v0"
 env_kwargs_json = "{}"
 run_root = "reinforce/outputs/pipeline_runs"
 run_name = ""
@@ -10,14 +10,11 @@ seed = 1
 collect_episodes = 200
 collect_policy = "random"
 collect_workers = 1
-collect_vector_env = "sync"
-collect_rollout_backend = "gym"    # gym|native
-collect_native_feature_id = "submit_v1"
-collect_native_pf_enabled = true
-collect_native_amp = false
-collect_native_save_aux_targets = false  # native only; saves opp_param_true/opp_valid keys
-# AHC061Local-v0 の場合、collect_policy=random は実行時に ahc061_main_greedy へ自動補正
-# (collect_rollout_backend=native では random のまま)
+collect_feature_id = "submit_v1"
+collect_pf_enabled = true
+collect_amp = false
+collect_save_aux_targets = false  # saves opp_param_true/opp_valid keys
+# collect_policy は random / model_* を使用
 skip_collect = false
 
 # train_bc
@@ -29,7 +26,7 @@ skip_bc = false
 # train_ppo
 ppo_total_timesteps = 200000
 ppo_num_envs = 8
-ppo_num_steps = 128
+ppo_num_steps = 100
 ppo_learning_rate = 0.00025
 ppo_learning_rate_schedule = "linear(2.5e-4,0.0)"      # e.g. "constant(2.5e-4)" / "piecewise(0:3e-4,1:1e-5)"
 ppo_gamma = 0.99
@@ -56,23 +53,20 @@ ppo_aux_opp_param_use_valid_mask = true
 ppo_max_grad_norm = 0.5
 ppo_target_kl = 0.01
 ppo_checkpoint_interval_steps = 0
-ppo_vector_env = "sync"
-ppo_rollout_backend = "gym"      # gym|native (native is AHC061Local-v0 only)
-ppo_native_feature_id = "submit_v1"
-ppo_native_pf_enabled = true
-ppo_native_amp = false
-ppo_native_memory_format = "auto"
-ppo_native_pin_memory = true
-ppo_native_rollout_cache_device = "auto"
-ppo_native_distributed = "auto"
-ppo_native_model_preset = ""     # e.g. "student_m_submit_v1"
+ppo_feature_id = "submit_v1"
+ppo_pf_enabled = true
+ppo_amp = false
+ppo_memory_format = "auto"
+ppo_pin_memory = true
+ppo_rollout_cache_device = "auto"
+ppo_distributed = "auto"
+ppo_model_preset = ""     # e.g. "student_m_submit_v1"
 ppo_eval_interval_steps = 0
 ppo_eval_episodes = 100
 ppo_eval_seed_start = 2000000
 ppo_eval_fixed_seeds = true
 ppo_eval_deterministic = true
 ppo_eval_at_start = true
-ppo_eval_vector_env = "sync"
 ppo_eval_env_kwargs_json = ""     # if empty, training env_kwargs are reused
 ppo_vecnorm = false
 ppo_vecnorm_norm_obs = true
@@ -91,30 +85,9 @@ ppo_init_model = ""               # optional: train_ppo --init-model path (overr
 skip_ppo = false
 
 # evaluate_policy / periodic val seed band
-# eval_casegen_num_cases > 0 で eval_casegen_* が有効化される（AHC061Local-v0）
 eval_episodes = 50
 eval_env_kwargs_json = ""             # if empty, train env_kwargs is reused
 skip_last_eval = false
-eval_casegen_num_cases = 0
-eval_casegen_seed_mode = "sequential"
-eval_casegen_seed_start = 0
-eval_casegen_rng_seed = 1
-eval_casegen_unique_random = true
-eval_casegen_fixed_m = 0
-eval_casegen_fixed_u = 0
-eval_casegen_tools_dir = "tools"
-
-
-# AHC train/eval seed band (tools/gen_one)
-casegen_enable = false
-casegen_num_cases = 0
-casegen_seed_mode = "sequential"
-casegen_seed_start = 0
-casegen_rng_seed = 1
-casegen_unique_random = true
-casegen_fixed_m = 0
-casegen_fixed_u = 0
-casegen_tools_dir = "tools"
 
 
 # tracking

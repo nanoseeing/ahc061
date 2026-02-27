@@ -12,9 +12,9 @@
 
 - PPO 学習は `rollout_backend=native` で実行可能（DDP 含む）。
 - native feature catalog を追加:
-  - `reinforce/ppo_discrete/domains/ahc061/native_batch/feature_catalog.py`
+  - `reinforce/ppo_discrete/domain/ahc061/native_batch/feature_catalog.py`
 - model preset catalog を追加:
-  - `reinforce/ppo_discrete/models/catalog.py`
+  - `reinforce/ppo_discrete/agents/catalog.py`
 - `train_ppo_native` は `--model-preset` を受け付け、native 非対応 preset を明示エラー化。
 
 ## 残課題

@@ -13,7 +13,7 @@
 
 - 状態: `done`
 - 実施:
-  - `reinforce/ppo_discrete/cli/native_eval_runner.py` を追加
+  - `reinforce/ppo_discrete/entrypoints/native_eval_runner.py` を追加
   - `run_native_policy_episodes()` を実装
   - `eval_policy` native 経路を runner 利用へ置換
 
@@ -56,12 +56,12 @@
 
 - 状態: `done`
 - 実施コマンド:
-  - `python -m py_compile reinforce/ppo_discrete/cli/native_eval_runner.py reinforce/ppo_discrete/cli/eval_policy.py reinforce/ppo_discrete/cli/collect_teacher.py reinforce/ppo_discrete/cli/run_pipeline.py`
-  - `python -m reinforce.ppo_discrete.cli.eval_policy --rollout-backend native ...`
-  - `python -m reinforce.ppo_discrete.cli.collect_teacher --rollout-backend native ...`
-  - `python -m reinforce.ppo_discrete.cli.collect_teacher --rollout-backend gym ...`
-  - `python -m reinforce.ppo_discrete.cli.run_pipeline ... --set collect_rollout_backend=native ... --set skip_bc=true --set skip_ppo=true --set skip_last_eval=true`
-  - `python -m reinforce.ppo_discrete.cli.run_pipeline ... --set collect_rollout_backend=gym ... --set skip_bc=true --set skip_ppo=true --set skip_last_eval=true`
+  - `python -m py_compile reinforce/ppo_discrete/entrypoints/native_eval_runner.py reinforce/ppo_discrete/entrypoints/eval_policy.py reinforce/ppo_discrete/entrypoints/collect_teacher.py reinforce/ppo_discrete/entrypoints/run_pipeline.py`
+  - `python -m reinforce.ppo_discrete.entrypoints.eval_policy --rollout-backend native ...`
+  - `python -m reinforce.ppo_discrete.entrypoints.collect_teacher --rollout-backend native ...`
+  - `python -m reinforce.ppo_discrete.entrypoints.collect_teacher --rollout-backend gym ...`
+  - `python -m reinforce.ppo_discrete.entrypoints.run_pipeline ... --set collect_rollout_backend=native ... --set skip_bc=true --set skip_ppo=true --set skip_last_eval=true`
+  - `python -m reinforce.ppo_discrete.entrypoints.run_pipeline ... --set collect_rollout_backend=gym ... --set skip_bc=true --set skip_ppo=true --set skip_last_eval=true`
 
 ### Step 7. train_ppo(native) の resume 統合
 
@@ -111,7 +111,7 @@
 
 - 状態: `done`
 - 実施:
-  - `runtime/teacher_dataset.py` を追加し、`bayes_params` 既定形（28次元）を共通化
+  - `domains/ahc061/teacher_dataset.py` を追加し、`bayes_params` 既定形（28次元）を共通化
   - `collect_teacher` の native 経路は `bayes_params` をゼロ埋めで固定（NPZ互換維持）
   - `collect_teacher` meta に `bayes_param_sources` / `bayes_param_policy` を追加し、由来を明示
   - `run_pipeline` の shard merge 側も同じ既定形を参照するよう統一

@@ -2,10 +2,10 @@
 type = "StudentMBoardAgent"
 
 [model.kwargs]
-# Current AHC061 obs: board(7x10x10) + global(49)
-board_channels = 7
+# submit_v1 obs: board(46x10x10), no extra global tail
+board_channels = 46
 board_size = 10
-global_dim = 0 # auto: obs_dim - board_dim
+global_dim = 0
 
 # Student-M compact trunk
 width = 48
