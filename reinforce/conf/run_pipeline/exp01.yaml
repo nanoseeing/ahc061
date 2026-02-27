@@ -1,14 +1,17 @@
 # @package _global_
 # environment
 env_id: AHC061Local-v0
-env_kwargs_json: "{}"
+env_kwargs_json: '{}'
+
 # run management
 run_root: reinforce/outputs/pipeline_runs
-run_name: ""
+run_name: ''
 resume: false
 seed: 1
+
 # BC (online knowledge distillation from teacher)
-bc_teacher_model_path: null   # required to run BC; null means skip BC
+# required to run BC; null means skip BC
+bc_teacher_model_path: 'reinforce/outputs/ahc061_teacher_p0_v1_full_tune_kl/teacher_p0_v1_full_tune_kl_seed1/models/ppo_final.pt'
 bc_total_transitions: 200000
 bc_num_envs: 8
 bc_num_steps: 100
@@ -16,78 +19,82 @@ bc_learning_rate: 1.0e-3
 bc_num_minibatches: 4
 bc_max_grad_norm: 0.5
 bc_temperature: 1.0
-skip_bc: false
+skip_bc: true
+
 # PPO core
-ppo_total_timesteps: 200000
-ppo_num_envs: 8
+ppo_total_timesteps: 200_000_000
+ppo_num_envs: 512
 ppo_num_steps: 100
-ppo_learning_rate: 2.5e-4
-ppo_learning_rate_schedule: linear
-ppo_warmup_iters: 0
-ppo_gamma: 0.99
-ppo_gae_lambda: 0.95
-ppo_num_minibatches: 4
-ppo_update_epochs: 4
+ppo_warmup_iters: 1_000_000
+ppo_learning_rate: 2.5e-5
+ppo_learning_rate_schedule: constant
+ppo_gamma: 1.0
+ppo_gae_lambda: 0.99
+ppo_num_minibatches: 512
+ppo_update_epochs: 1
 ppo_norm_adv: true
-ppo_clip_coef: 0.2
-ppo_clip_range_vf: null
+ppo_clip_coef: 0.20
+ppo_clip_coef_schedule: constant
+ppo_clip_coef_final: null
+ppo_clip_coef_schedule_expr: ''
+ppo_clip_range_vf: 0.20
 ppo_clip_range_vf_schedule: constant
 ppo_clip_range_vf_final: null
-ppo_clip_range_vf_schedule_expr: ""
+ppo_clip_range_vf_schedule_expr: ''
 ppo_clip_vloss: true
 ppo_ent_coef: 0.01
 ppo_ent_coef_schedule: constant
 ppo_ent_coef_final: null
-ppo_ent_coef_schedule_expr: ""
+ppo_ent_coef_schedule_expr: ''
 ppo_vf_coef: 0.5
-ppo_aux_opp_param_loss_coef: 0.0
+ppo_aux_opp_param_loss_coef: 0
 ppo_aux_opp_param_use_valid_mask: true
-ppo_max_grad_norm: 0.5
+ppo_max_grad_norm: 1.0
 ppo_target_kl: null
-ppo_clip_coef_schedule: constant
-ppo_clip_coef_final: null
-ppo_clip_coef_schedule_expr: ""
-ppo_checkpoint_interval_steps: 0
-ppo_feature_id: submit_v1
+ppo_checkpoint_interval_steps: 2_000_000
+ppo_feature_id: teacher_p0_v1_88ch
 ppo_pf_enabled: true
 ppo_amp: false
 ppo_memory_format: auto
 ppo_pin_memory: true
 ppo_rollout_cache_device: auto
 ppo_distributed: auto
-ppo_compile: false
-ppo_model_preset: ""
-ppo_eval_interval_steps: 0
+ppo_compile: true
+ppo_model_preset: ''
+ppo_eval_interval_steps: 2_000_000
 ppo_eval_episodes: 100
-ppo_eval_seed_start: 2000000
+ppo_eval_seed_start: 2_000_000
 ppo_eval_fixed_seeds: true
 ppo_eval_deterministic: true
 ppo_eval_at_start: true
-ppo_eval_env_kwargs_json: ""
+ppo_eval_env_kwargs_json: ''
 ppo_vecnorm: false
-ppo_vecnorm_norm_obs: true
-ppo_vecnorm_norm_reward: true
+ppo_vecnorm_norm_obs: false
+ppo_vecnorm_norm_reward: false
 ppo_vecnorm_eval_norm_reward: false
 ppo_vecnorm_clip_obs: 10.0
 ppo_vecnorm_clip_reward: 10.0
 ppo_vecnorm_epsilon: 1.0e-8
-ppo_vecnorm_gamma: null
+ppo_vecnorm_gamma: 1.0
 ppo_log_interval_iters: 1
+
 # shared model settings
 use_action_mask: true
-model_class: ""
+model_class: ''
 model_config_file: null
-model_config_json: ""
+model_config_json: ''
 ppo_init_model: null
 skip_ppo: false
+
 # final eval
-eval_episodes: 50
-eval_env_kwargs_json: ""
+eval_episodes: 1000
+eval_env_kwargs_json: ''
 skip_last_eval: false
+
 # tracking
-mlflow_tracking_uri: ""
+mlflow_tracking_uri: ''
 mlflow_experiment: ppo_discrete
-mlflow_run_name: ""
+mlflow_run_name: ''
 tensorboard: false
 
 hydra:

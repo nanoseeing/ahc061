@@ -153,6 +153,7 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
         ppo_compile=False,
         ppo_model_preset="",
         ppo_learning_rate_schedule="",
+        ppo_warmup_iters=0,
         ppo_clip_range_vf=None,
         ppo_clip_range_vf_schedule="",
         ppo_clip_range_vf_final=None,

@@ -65,6 +65,7 @@ class PPORequest:
     num_steps: int
     learning_rate: float
     learning_rate_schedule: str
+    warmup_iters: int
     gamma: float
     gae_lambda: float
     num_minibatches: int
@@ -128,6 +129,7 @@ def args_to_cfg(args: PPORequest) -> PPOConfig:
         num_steps=args.num_steps,
         learning_rate=args.learning_rate,
         learning_rate_schedule=str(args.learning_rate_schedule),
+        warmup_iters=int(args.warmup_iters),
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
         num_minibatches=args.num_minibatches,
@@ -200,6 +202,7 @@ def build_ppo_request(
         num_steps=int(cfg.num_steps),
         learning_rate=float(cfg.learning_rate),
         learning_rate_schedule=str(cfg.learning_rate_schedule),
+        warmup_iters=int(cfg.warmup_iters),
         gamma=float(cfg.gamma),
         gae_lambda=float(cfg.gae_lambda),
         num_minibatches=int(cfg.num_minibatches),

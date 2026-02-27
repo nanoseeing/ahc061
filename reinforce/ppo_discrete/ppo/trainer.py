@@ -146,6 +146,15 @@ class PPOTrainer:
         aux_loss_count = 0
         last_epoch_kl = torch.tensor(0.0, device=model_device)
 
+        # Normalize advantages over the full batch once (before epoch loop), matching exp002.
+        # Uses population variance: var = E[adv²] - E[adv]²
+        if self.cfg.norm_adv:
+            adv = batch.advantages.float()
+            adv_n = float(adv.numel())
+            adv_mean = adv.sum() / adv_n
+            adv_var = (adv.pow(2).sum() / adv_n - adv_mean.pow(2)).clamp(min=0.0)
+            batch.advantages = ((adv - adv_mean) / (adv_var.sqrt() + 1e-8)).to(batch.advantages.dtype)
+
         for _ in range(self.cfg.update_epochs):
             update_epochs_used += 1
             epoch_kl_sum = torch.tensor(0.0, device=model_device)
@@ -226,8 +235,6 @@ class PPOTrainer:
                     clipfrac_sum += ((ratio - 1.0).abs() > clip_coef).float().mean()
 
                 mb_advantages = advantages_mb
-                if self.cfg.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)

@@ -50,6 +50,8 @@ class PPOConfig(BaseModel):
     clip_coef_final: Optional[float] = None
     clip_coef_schedule_expr: str = ""
 
+    warmup_iters: int = Field(default=0, ge=0)
+
     save_interval: int = Field(default=10, gt=0)
 
     @field_validator("clip_range_vf")

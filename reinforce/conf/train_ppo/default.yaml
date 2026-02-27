@@ -25,6 +25,7 @@ num_envs: 8
 num_steps: 100
 learning_rate: 2.5e-4
 learning_rate_schedule: linear
+warmup_iters: 0
 gamma: 0.99
 gae_lambda: 0.95
 num_minibatches: 4

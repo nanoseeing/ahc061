@@ -1200,6 +1200,10 @@ class PPORunner:
             lr_current = float(self.schedules.learning_rate(progress))
             if not np.isfinite(lr_current) or lr_current < 0.0:
                 raise ValueError(f"invalid scheduled learning_rate={lr_current} at progress={progress}")
+            warmup_steps = int(args.warmup_iters)
+            if warmup_steps > 0:
+                step_after = float(self.global_step + self.global_batch_size)
+                lr_current = lr_current * min(1.0, step_after / float(warmup_steps))
             self.optimizer.param_groups[0]["lr"] = lr_current
 
             ent_coef_current = float(self.schedules.ent_coef(progress))
@@ -1397,7 +1401,7 @@ class PPORunner:
 
             if self.is_main and args.log_interval_iters > 0 and (iteration % int(args.log_interval_iters) == 0):
                 logger.info(
-                    "iter=%d/%d step=%d sps=%d lr=%.6g ploss=%.5f vloss=%.5f aux=%.5f ent=%.5f kl=%.5f ev=%.5f vclip=%.5f score=%.1f",
+                    "iter=%d/%d step=%d sps=%d lr=%.6g ploss=%.5f vloss=%.5f aux=%.5f ent=%.5f kl=%.5f clip=%.4f ev=%.5f vclip=%.5f score=%.1f",
                     iteration,
                     self.num_iterations,
                     self.global_step,
@@ -1408,6 +1412,7 @@ class PPORunner:
                     aux_opp_param_loss_g,
                     entropy_g,
                     approx_kl_g,
+                    clipfrac_g,
                     explained_variance_g,
                     value_clipfrac_g,
                     mean_official,

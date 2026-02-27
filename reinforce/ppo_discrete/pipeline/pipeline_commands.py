@@ -78,6 +78,7 @@ class TrainPPOArgs(ModelArgs, Protocol):
     ppo_compile: bool
     ppo_model_preset: str
     ppo_learning_rate_schedule: str
+    ppo_warmup_iters: int
     ppo_clip_range_vf: float | None
     ppo_clip_range_vf_schedule: str
     ppo_clip_range_vf_final: float | None
@@ -196,9 +197,9 @@ def build_train_ppo_cmd(
         f"num_minibatches={int(args.ppo_num_minibatches)}",
         f"update_epochs={int(args.ppo_update_epochs)}",
         f"clip_coef={float(args.ppo_clip_coef)}",
-        f"clip_coef_schedule={args.ppo_clip_coef_schedule}",
+        f"clip_coef_schedule='{args.ppo_clip_coef_schedule}'",
         f"ent_coef={float(args.ppo_ent_coef)}",
-        f"ent_coef_schedule={args.ppo_ent_coef_schedule}",
+        f"ent_coef_schedule='{args.ppo_ent_coef_schedule}'",
         f"vf_coef={float(args.ppo_vf_coef)}",
         f"aux_opp_param_loss_coef={float(args.ppo_aux_opp_param_loss_coef)}",
         f"max_grad_norm={float(args.ppo_max_grad_norm)}",
@@ -236,23 +237,25 @@ def build_train_ppo_cmd(
     if str(args.ppo_model_preset).strip():
         cmd.append(f"model_preset={args.ppo_model_preset.strip()}")
     if str(args.ppo_learning_rate_schedule).strip():
-        cmd.append(f"learning_rate_schedule={args.ppo_learning_rate_schedule}")
+        cmd.append(f"learning_rate_schedule='{args.ppo_learning_rate_schedule}'")
+    if int(args.ppo_warmup_iters) > 0:
+        cmd.append(f"warmup_iters={int(args.ppo_warmup_iters)}")
     if args.ppo_clip_range_vf is not None:
         cmd.append(f"clip_range_vf={float(args.ppo_clip_range_vf)}")
     if str(args.ppo_clip_range_vf_schedule).strip():
-        cmd.append(f"clip_range_vf_schedule={args.ppo_clip_range_vf_schedule}")
+        cmd.append(f"clip_range_vf_schedule='{args.ppo_clip_range_vf_schedule}'")
     if args.ppo_clip_range_vf_final is not None:
         cmd.append(f"clip_range_vf_final={float(args.ppo_clip_range_vf_final)}")
     if str(args.ppo_clip_range_vf_schedule_expr).strip():
-        cmd.append(f"clip_range_vf_schedule_expr={args.ppo_clip_range_vf_schedule_expr}")
+        cmd.append(f"clip_range_vf_schedule_expr='{args.ppo_clip_range_vf_schedule_expr}'")
     if args.ppo_clip_coef_final is not None:
         cmd.append(f"clip_coef_final={float(args.ppo_clip_coef_final)}")
     if str(args.ppo_clip_coef_schedule_expr).strip():
-        cmd.append(f"clip_coef_schedule_expr={args.ppo_clip_coef_schedule_expr}")
+        cmd.append(f"clip_coef_schedule_expr='{args.ppo_clip_coef_schedule_expr}'")
     if args.ppo_ent_coef_final is not None:
         cmd.append(f"ent_coef_final={float(args.ppo_ent_coef_final)}")
     if str(args.ppo_ent_coef_schedule_expr).strip():
-        cmd.append(f"ent_coef_schedule_expr={args.ppo_ent_coef_schedule_expr}")
+        cmd.append(f"ent_coef_schedule_expr='{args.ppo_ent_coef_schedule_expr}'")
     if args.ppo_target_kl is not None:
         cmd.append(f"target_kl={float(args.ppo_target_kl)}")
     if args.ppo_vecnorm_gamma is not None:

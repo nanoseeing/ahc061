@@ -45,6 +45,7 @@ def _ns_to_ppo_cfg(args: SimpleNamespace) -> PPOConfig:
         num_steps=args.num_steps,
         learning_rate=args.learning_rate,
         learning_rate_schedule=str(args.learning_rate_schedule),
+        warmup_iters=int(args.warmup_iters),
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
         num_minibatches=args.num_minibatches,
