@@ -67,6 +67,8 @@ def _run(args: SimpleNamespace) -> int:
         temperature=float(args.temperature),
         log_interval_iters=int(args.log_interval_iters),
         seed=int(args.seed),
+        seed_min=int(args.seed_min),
+        seed_max_exclusive=int(args.seed_max_exclusive),
         run_root=args.run_root,
         run_name=str(args.run_name),
     )

@@ -224,6 +224,26 @@ def _safe_int(x: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _resolve_train_seed_range(args: PPORequest) -> tuple[int, int]:
+    i64_max = int(np.iinfo(np.int64).max)
+    seed_min = int(_safe_int(getattr(args, "train_seed_min", 0), 0))
+    seed_max_exclusive = int(
+        _safe_int(getattr(args, "train_seed_max_exclusive", i64_max), i64_max)
+    )
+    if seed_min < 0:
+        raise ValueError(f"train_seed_min must be >= 0, got {seed_min}")
+    if seed_max_exclusive <= seed_min:
+        raise ValueError(
+            "train_seed_max_exclusive must be greater than train_seed_min: "
+            f"{seed_max_exclusive} <= {seed_min}"
+        )
+    if seed_max_exclusive > i64_max:
+        raise ValueError(
+            f"train_seed_max_exclusive must be <= int64 max ({i64_max}), got {seed_max_exclusive}"
+        )
+    return int(seed_min), int(seed_max_exclusive)
+
+
 def _vecnorm_state_or_none(vecnorm: VecNormalize | None) -> dict[str, Any] | None:
     if vecnorm is None:
         return None
@@ -299,8 +319,8 @@ def _run_periodic_val(
     agent: torch.nn.Module,
     device: torch.device,
     episodes: int,
+    num_envs: int,
     seed_start: int,
-    deterministic: bool,
     use_action_mask: bool,
     amp: bool,
     vecnorm_state: dict[str, Any] | None = None,
@@ -314,10 +334,11 @@ def _run_periodic_val(
     stats = run_policy_episodes(
         env_id=str(env_id),
         episodes=int(episodes),
+        num_envs=int(num_envs),
         seed=int(seed_start),
         feature_id=str(feature_id),
         pf_enabled=bool(pf_enabled),
-        policy=("model_greedy" if bool(deterministic) else "model_stochastic"),
+        policy="model_greedy",
         agent=agent,
         device=device,
         use_action_mask=bool(use_action_mask),
@@ -623,6 +644,8 @@ class PPORunner:
         local_rank: int,
         local_num_envs: int,
         local_num_minibatches: int,
+        train_seed_min: int,
+        train_seed_max_exclusive: int,
         aux_opp_param_loss_coef: float,
         aux_opp_param_use_valid_mask: bool,
         aux_opp_param_active: bool,
@@ -638,6 +661,8 @@ class PPORunner:
         self.local_rank = local_rank
         self.local_num_envs = local_num_envs
         self.local_num_minibatches = local_num_minibatches
+        self.train_seed_min = int(train_seed_min)
+        self.train_seed_max_exclusive = int(train_seed_max_exclusive)
         self.aux_opp_param_loss_coef = aux_opp_param_loss_coef
         self.aux_opp_param_use_valid_mask = aux_opp_param_use_valid_mask
         self.aux_opp_param_active = aux_opp_param_active
@@ -1084,13 +1109,14 @@ class PPORunner:
             use_aux_opp_param_targets=bool(self.aux_opp_param_active),
         )
 
-        self.rng = np.random.default_rng(int(self.seed_base))
+        # Episode-seed sampler RNG is intentionally decoupled from global seed.
+        self.rng = np.random.default_rng()
         if self.resume_enabled and isinstance(self.resume_meta.get("rng_state"), dict):
             try:
                 self.rng.bit_generator.state = dict(self.resume_meta["rng_state"])
             except Exception:
                 if self.is_main:
-                    logger.warning("failed to restore rng_state from resume; continuing with seeded RNG")
+                    logger.warning("failed to restore rng_state from resume; continuing with fresh RNG state")
 
         self.train_metrics_jsonl = self.layout.logs_dir / "train_metrics.jsonl"
         self.periodic_val_jsonl = self.layout.logs_dir / "periodic_val_metrics.jsonl"
@@ -1178,7 +1204,7 @@ class PPORunner:
             agent=self.rollout_agent,
             device=self.device,
             episodes=int(self.args.eval_episodes),
-            deterministic=bool(self.args.eval_deterministic),
+            num_envs=int(getattr(self.args, "eval_num_envs", 0)),
             use_action_mask=bool(self.args.use_action_mask),
             amp=bool(self.args.amp),
             vecnorm_state=_vecnorm_state_or_none(self.train_vecnorm),
@@ -1265,7 +1291,12 @@ class PPORunner:
         args = self.args
         local_cfg = self.local_cfg
         seeds = torch.as_tensor(
-            self.rng.integers(0, np.iinfo(np.int64).max, size=(local_cfg.num_envs,), dtype=np.int64),
+            self.rng.integers(
+                int(self.train_seed_min),
+                int(self.train_seed_max_exclusive),
+                size=(local_cfg.num_envs,),
+                dtype=np.int64,
+            ),
             dtype=torch.int64,
             device="cpu",
         )
@@ -1571,6 +1602,10 @@ class PPORunner:
                 "env_id": "AHC061Local-v0",
                 "feature_id": str(args.feature_id),
                 "pf_enabled": bool(args.pf_enabled),
+                "train_seed_range": {
+                    "min": int(self.train_seed_min),
+                    "max_exclusive": int(self.train_seed_max_exclusive),
+                },
                 "aux_opp_param": {
                     "loss_coef": float(self.aux_opp_param_loss_coef),
                     "use_valid_mask": bool(self.aux_opp_param_use_valid_mask),
@@ -1590,9 +1625,9 @@ class PPORunner:
                     "enabled": bool(self.periodic_val_enabled),
                     "interval_steps": int(args.eval_interval_steps),
                     "episodes": int(args.eval_episodes),
+                    "num_envs": int(getattr(args, "eval_num_envs", 0)),
                     "seed_start": int(args.eval_seed_start),
                     "fixed_seeds": bool(args.eval_fixed_seeds),
-                    "deterministic": bool(args.eval_deterministic),
                     "val_at_start": bool(args.eval_at_start),
                     "metrics_jsonl": str(self.periodic_val_jsonl),
                 },
@@ -1656,6 +1691,7 @@ class PPORunner:
 
 def run_ppo(args: PPORequest) -> int:
     cfg_global = args_to_cfg(args)
+    train_seed_min, train_seed_max_exclusive = _resolve_train_seed_range(args)
     schedules = PPOScheduleSet.from_config(cfg_global)
     validate_vecnorm_config(
         enabled=bool(args.vecnorm),
@@ -1717,6 +1753,8 @@ def run_ppo(args: PPORequest) -> int:
         local_rank=int(local_rank),
         local_num_envs=int(local_num_envs),
         local_num_minibatches=int(local_num_minibatches),
+        train_seed_min=int(train_seed_min),
+        train_seed_max_exclusive=int(train_seed_max_exclusive),
         aux_opp_param_loss_coef=float(aux_opp_param_loss_coef),
         aux_opp_param_use_valid_mask=bool(aux_opp_param_use_valid_mask),
         aux_opp_param_active=bool(aux_opp_param_active),

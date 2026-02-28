@@ -8,10 +8,14 @@ run_root: reinforce/outputs/pipeline_runs
 run_name: ''
 resume: false
 seed: 1
+train_seed_min: 0
+train_seed_max_exclusive: 9223372036854775807
 
 # BC (online knowledge distillation from teacher)
 # required to run BC; null means skip BC
 bc_teacher_model_path: 'reinforce/outputs/ahc061_teacher_p0_v1_full_tune_kl/teacher_p0_v1_full_tune_kl_seed1/models/ppo_final.pt'
+bc_seed_min: 0
+bc_seed_max_exclusive: 9223372036854775807
 bc_total_transitions: 200000
 bc_num_envs: 8
 bc_num_steps: 100
@@ -63,9 +67,9 @@ ppo_distributed: auto
 ppo_compile: true
 ppo_eval_interval_steps: 2_000_000
 ppo_eval_episodes: 100
+ppo_eval_num_envs: 0
 ppo_eval_seed_start: 2_000_000
 ppo_eval_fixed_seeds: true
-ppo_eval_deterministic: true
 ppo_eval_at_start: true
 ppo_eval_env_kwargs_json: ''
 ppo_vecnorm: false
@@ -88,6 +92,8 @@ skip_ppo: false
 
 # final eval
 eval_episodes: 1000
+eval_num_envs: 0
+eval_seed_start: 0
 eval_env_kwargs_json: ''
 skip_last_eval: false
 

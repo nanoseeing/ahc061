@@ -57,6 +57,8 @@ class OnlineBCConfig:
     temperature: float
     log_interval_iters: int
     seed: int
+    seed_min: int
+    seed_max_exclusive: int
     # Run management
     run_root: Path | None
     run_name: str
@@ -93,6 +95,22 @@ def _resolve_student_model_config(cfg: OnlineBCConfig) -> dict[str, Any]:
         base_cfg,
         default_type=model_class or "DiscreteBoardAgent",
     )
+
+
+def _resolve_seed_range(cfg: OnlineBCConfig) -> tuple[int, int]:
+    i64_max = int(np.iinfo(np.int64).max)
+    seed_min = int(cfg.seed_min)
+    seed_max_exclusive = int(cfg.seed_max_exclusive)
+    if seed_min < 0:
+        raise ValueError(f"seed_min must be >= 0, got {seed_min}")
+    if seed_max_exclusive <= seed_min:
+        raise ValueError(
+            "seed_max_exclusive must be greater than seed_min: "
+            f"{seed_max_exclusive} <= {seed_min}"
+        )
+    if seed_max_exclusive > i64_max:
+        raise ValueError(f"seed_max_exclusive must be <= int64 max ({i64_max}), got {seed_max_exclusive}")
+    return seed_min, seed_max_exclusive
 
 
 def _prepare_run(cfg: OnlineBCConfig) -> tuple[Any, MetricTracker | None]:
@@ -213,6 +231,9 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
     B = cfg.num_envs
     T = cfg.num_steps
     A = action_dim
+    if T > int(env.spec.t_max):
+        raise ValueError(f"num_steps must be <= env.spec.t_max ({env.spec.t_max}), got {T}")
+    seed_min, seed_max_exclusive = _resolve_seed_range(cfg)
     use_cuda = device.type == "cuda"
     pin = use_cuda
 
@@ -226,26 +247,19 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
     mask = torch.empty(B, A, dtype=torch.uint8)
     reward = torch.empty(B, dtype=torch.float32)
     done = torch.empty(B, dtype=torch.uint8)
-    seed_t = torch.empty(B, dtype=torch.int64)
 
     # GPU mirrors of board and mask (used when CUDA is available)
     board_dev = torch.empty(B, *obs_shape, dtype=torch.float32, device=device) if use_cuda else board
     mask_dev = torch.empty(B, A, dtype=torch.uint8, device=device) if use_cuda else mask
-
-    # Initial reset
-    for i in range(B):
-        seed_t[i] = cfg.seed + i
-    env.reset_random(seed_t)
-    env.observe_into(board, mask)
-    if use_cuda:
-        board_dev.copy_(board)
-        mask_dev.copy_(mask)
 
     num_iterations = cfg.num_iterations
     T_temp = float(cfg.temperature)
     total_transitions_done = 0
     iter_kl_losses: list[float] = []
     t_start = time.time()
+    shuffle_rng = np.random.default_rng(int(cfg.seed))
+    # Episode-seed sampler RNG is intentionally decoupled from global seed.
+    seed_sampler = np.random.default_rng()
 
     logger.info(
         "starting online BC: total_transitions=%d num_envs=%d num_steps=%d "
@@ -254,6 +268,22 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
     )
 
     for iteration in range(num_iterations):
+        rollout_seeds = torch.as_tensor(
+            seed_sampler.integers(
+                int(seed_min),
+                int(seed_max_exclusive),
+                size=(B,),
+                dtype=np.int64,
+            ),
+            dtype=torch.int64,
+            device="cpu",
+        )
+        env.reset_random(rollout_seeds)
+        env.observe_into(board, mask)
+        if use_cuda:
+            board_dev.copy_(board)
+            mask_dev.copy_(mask)
+
         # -------------------------------------------------------
         # Phase 1: Rollout with frozen teacher (no grad)
         # -------------------------------------------------------
@@ -295,7 +325,7 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
         flat_mask = mask_buf.view(T * B, A)
         flat_tlogit = tlogit_buf.view(T * B, A)
 
-        indices = np.random.permutation(T * B)
+        indices = shuffle_rng.permutation(T * B)
         mb_size = cfg.minibatch_size
         iter_kl = 0.0
         n_mb = 0
@@ -364,6 +394,8 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
         "final_kl_loss": final_kl,
         "temperature": float(cfg.temperature),
         "seed": int(cfg.seed),
+        "seed_min": int(seed_min),
+        "seed_max_exclusive": int(seed_max_exclusive),
     }
     save_agent_checkpoint(cfg.output_model, student, meta=meta)
     logger.info("saved student model: %s (kl_loss=%.6f)", cfg.output_model, final_kl)

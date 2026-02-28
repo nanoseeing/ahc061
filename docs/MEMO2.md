@@ -1,4 +1,13 @@
-DDP がミスってる warmup が微妙 Log に loss も出したい提出までの 1pass 通す bc ができるようにしたい蒸留方法をためしたい
+- DDP がミスってる
+- Log に loss も出したい
+- 提出までの 1pass 通す
+- bc ができるようにしたい蒸留方法をためしたい
+- sps を上げられるか？
+- log 出力を増やしたい
+- mlflow で結果を見たい
+- eval を log に出したい
+
+---
 
 比較レポート正確性の補足 subagent の結果に一部誤りがありました。reinforce には DDP も torch.compile も実装済みです。
 

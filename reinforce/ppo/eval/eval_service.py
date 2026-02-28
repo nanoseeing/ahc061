@@ -6,19 +6,8 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
-from ..ppo.vecnorm import VecNormalize
 from ..env import BatchEnv
-
-
-@dataclass
-class Transition:
-    episode: int
-    step: int
-    obs: np.ndarray
-    action: int
-    reward: float
-    done: bool
-    bayes_params: np.ndarray
+from ..ppo.vecnorm import VecNormalize
 
 
 @dataclass
@@ -32,25 +21,261 @@ class EpisodeStats:
     episode_u: list[int]
     episode_game_score_self: list[float]
     episode_game_score_enemy_max: list[float]
+    aux_move_dist: torch.Tensor | None = None  # [E, T, M_MAX, A]
+    aux_opp_param: torch.Tensor | None = None  # [E, T, M_MAX, 5]
+    aux_opp_valid: torch.Tensor | None = None  # [E, T, M_MAX]
 
 
-@dataclass
-class AuxTransition:
-    episode: int
-    step: int
-    move_dist: np.ndarray
-    opp_param: np.ndarray
-    opp_valid: np.ndarray
+def _resolve_batch_size(*, episodes: int, num_envs: int) -> int:
+    if int(episodes) <= 0:
+        return 0
+    requested = int(num_envs)
+    if requested <= 0:
+        requested = int(episodes)
+    return int(max(1, min(int(episodes), requested)))
 
 
-def _unwrap_action(action: torch.Tensor) -> np.ndarray:
-    return action.detach().cpu().numpy()
+def _build_eval_vecnorm(
+    *,
+    batch_size: int,
+    obs_shape: tuple[int, ...],
+    enabled: bool,
+    state: dict[str, Any] | None,
+    norm_obs: bool,
+    norm_reward: bool,
+    clip_obs: float,
+    clip_reward: float,
+    epsilon: float,
+    gamma: float,
+) -> VecNormalize | None:
+    if not bool(enabled):
+        return None
+    vecnorm = VecNormalize(
+        num_envs=int(batch_size),
+        obs_shape=obs_shape,
+        norm_obs=bool(norm_obs),
+        norm_reward=bool(norm_reward),
+        clip_obs=float(clip_obs),
+        clip_reward=float(clip_reward),
+        epsilon=float(epsilon),
+        gamma=float(gamma),
+        training=False,
+    )
+    if isinstance(state, dict):
+        vecnorm.load_state_dict(state)
+    vecnorm.set_training(False)
+    return vecnorm
+
+
+def _sample_random_actions(mask: torch.Tensor, action_dim: int, rng: np.random.Generator, *, use_action_mask: bool) -> torch.Tensor:
+    bsz = int(mask.size(0))
+    if not bool(use_action_mask):
+        return torch.as_tensor(
+            rng.integers(0, int(action_dim), size=(bsz,), dtype=np.int64),
+            dtype=torch.int64,
+            device="cpu",
+        )
+    out = torch.empty((bsz,), dtype=torch.int64, device="cpu")
+    for i in range(bsz):
+        legal = torch.nonzero(mask[i] > 0, as_tuple=False).view(-1)
+        if int(legal.numel()) <= 0:
+            out[i] = 0
+        else:
+            ri = int(rng.integers(0, int(legal.numel())))
+            out[i] = int(legal[ri].item())
+    return out
+
+
+def _policy_actions(
+    *,
+    policy_name: str,
+    agent: torch.nn.Module | None,
+    board: torch.Tensor,
+    mask: torch.Tensor,
+    board_dev: torch.Tensor | None,
+    mask_dev: torch.Tensor | None,
+    device: torch.device,
+    use_action_mask: bool,
+    use_amp: bool,
+    action_dim: int,
+    rng: np.random.Generator,
+) -> torch.Tensor:
+    if policy_name == "random":
+        return _sample_random_actions(mask, int(action_dim), rng, use_action_mask=bool(use_action_mask)).contiguous()
+
+    if agent is None:
+        raise RuntimeError("agent is unexpectedly None")
+
+    if device.type == "cuda":
+        if board_dev is None:
+            raise RuntimeError("board_dev is required on CUDA")
+        board_dev.copy_(board, non_blocking=True)
+        obs_model = board_dev
+        mask_model = None
+        if bool(use_action_mask):
+            if mask_dev is None:
+                raise RuntimeError("mask_dev is required on CUDA when use_action_mask=true")
+            mask_dev.copy_(mask, non_blocking=True)
+            mask_model = mask_dev
+    else:
+        obs_model = board
+        mask_model = mask if bool(use_action_mask) else None
+
+    autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=bool(use_amp))
+    with torch.no_grad(), autocast:
+        action_t = agent.act(
+            obs_model,
+            action_mask=mask_model,
+            deterministic=(policy_name == "model_greedy"),
+        )
+    return action_t.to(dtype=torch.int64, device="cpu").contiguous()
+
+
+def _collect_chunk(
+    *,
+    env: BatchEnv,
+    seed_begin: int,
+    policy_name: str,
+    agent: torch.nn.Module | None,
+    device: torch.device,
+    use_action_mask: bool,
+    use_amp: bool,
+    t_limit: int,
+    vecnorm: VecNormalize | None,
+    collect_score_breakdown: bool,
+    collect_aux_targets: bool,
+    rng: np.random.Generator,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray | None,
+    np.ndarray | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+]:
+    bsz = int(env.batch_size)
+    c = int(env.feature_channels)
+    n = int(env.board_size)
+    a = int(env.action_dim)
+    m_max = int(env.spec.m_max)
+
+    board = torch.empty((bsz, c, n, n), dtype=torch.float32, device="cpu")
+    mask = torch.empty((bsz, a), dtype=torch.uint8, device="cpu")
+    reward = torch.empty((bsz,), dtype=torch.float32, device="cpu")
+    done = torch.empty((bsz,), dtype=torch.uint8, device="cpu")
+
+    seed_t = torch.arange(int(seed_begin), int(seed_begin) + int(bsz), dtype=torch.int64, device="cpu")
+    env.reset_random(seed_t)
+
+    mu = env.m_u().to(dtype=torch.int64, device="cpu")
+    m_vals = mu[:, 0].detach().cpu().numpy().astype(np.int64)
+    u_vals = mu[:, 1].detach().cpu().numpy().astype(np.int64)
+
+    env.observe_into(board, mask)
+    if vecnorm is not None:
+        vecnorm.normalize_obs_inplace(board)
+
+    ep_ret = torch.zeros((bsz,), dtype=torch.float64, device="cpu")
+    ep_len = torch.zeros((bsz,), dtype=torch.int64, device="cpu")
+    active = torch.ones((bsz,), dtype=torch.bool, device="cpu")
+
+    use_cuda = device.type == "cuda"
+    board_dev = torch.empty((bsz, c, n, n), dtype=torch.float32, device=device) if use_cuda else None
+    mask_dev = torch.empty((bsz, a), dtype=torch.uint8, device=device) if (use_cuda and bool(use_action_mask)) else None
+
+    aux_move_all: torch.Tensor | None = None
+    aux_param_all: torch.Tensor | None = None
+    aux_valid_all: torch.Tensor | None = None
+    aux_move_tmp: torch.Tensor | None = None
+    aux_param_tmp: torch.Tensor | None = None
+    aux_valid_tmp: torch.Tensor | None = None
+
+    if bool(collect_aux_targets):
+        aux_move_all = torch.empty((bsz, int(t_limit), m_max, a), dtype=torch.float32, device="cpu")
+        aux_param_all = torch.empty((bsz, int(t_limit), m_max, 5), dtype=torch.float32, device="cpu")
+        aux_valid_all = torch.empty((bsz, int(t_limit), m_max), dtype=torch.uint8, device="cpu")
+        aux_move_tmp = torch.empty((bsz, m_max, a), dtype=torch.float32, device="cpu")
+        aux_param_tmp = torch.empty((bsz, m_max, 5), dtype=torch.float32, device="cpu")
+        aux_valid_tmp = torch.empty((bsz, m_max), dtype=torch.uint8, device="cpu")
+
+    for step in range(int(t_limit)):
+        action_cpu = _policy_actions(
+            policy_name=policy_name,
+            agent=agent,
+            board=board,
+            mask=mask,
+            board_dev=board_dev,
+            mask_dev=mask_dev,
+            device=device,
+            use_action_mask=bool(use_action_mask),
+            use_amp=bool(use_amp),
+            action_dim=int(a),
+            rng=rng,
+        )
+
+        try:
+            if bool(collect_aux_targets):
+                assert aux_move_tmp is not None
+                assert aux_param_tmp is not None
+                assert aux_valid_tmp is not None
+                env.step_observe_aux_into(action_cpu, board, mask, reward, done, aux_move_tmp, aux_param_tmp, aux_valid_tmp)
+                assert aux_move_all is not None
+                assert aux_param_all is not None
+                assert aux_valid_all is not None
+                aux_move_all[:, step].copy_(aux_move_tmp)
+                aux_param_all[:, step].copy_(aux_param_tmp)
+                aux_valid_all[:, step].copy_(aux_valid_tmp)
+            else:
+                env.step_observe_into(action_cpu, board, mask, reward, done)
+        except Exception as exc:
+            raise RuntimeError(
+                "cpp step_observe_into failed (likely illegal action). enable/use action mask for rollout"
+            ) from exc
+
+        if vecnorm is not None:
+            vecnorm.normalize_reward_inplace(reward, done)
+            vecnorm.normalize_obs_inplace(board)
+
+        active_f = active.to(dtype=torch.float64)
+        ep_ret += reward.to(dtype=torch.float64) * active_f
+        ep_len += active.to(dtype=torch.int64)
+        done_b = done.to(dtype=torch.bool)
+        active = active & (~done_b)
+        if not bool(active.any().item()):
+            break
+
+    game_score = env.official_score().to(dtype=torch.float64, device="cpu").detach().cpu().numpy()
+
+    self_score_np: np.ndarray | None = None
+    enemy_score_np: np.ndarray | None = None
+    if bool(collect_score_breakdown):
+        score_pair = env.score_s0_sa().to(dtype=torch.float64, device="cpu")
+        self_score_np = score_pair[:, 0].detach().cpu().numpy()
+        enemy_score_np = score_pair[:, 1].detach().cpu().numpy()
+
+    return (
+        ep_ret.detach().cpu().numpy(),
+        ep_len.detach().cpu().numpy().astype(np.int64),
+        game_score,
+        m_vals,
+        u_vals,
+        self_score_np,
+        enemy_score_np,
+        aux_move_all,
+        aux_param_all,
+        aux_valid_all,
+    )
 
 
 def run_policy_episodes(
     *,
     env_id: str,
     episodes: int,
+    num_envs: int = 1,
     seed: int,
     feature_id: str,
     pf_enabled: bool,
@@ -69,30 +294,51 @@ def run_policy_episodes(
     vecnorm_epsilon: float = 1e-8,
     vecnorm_gamma: float = 0.99,
     on_env_ready: Callable[[tuple[int, ...], int], None] | None = None,
-    on_transition: Callable[[Transition], None] | None = None,
-    on_aux_transition: Callable[[AuxTransition], None] | None = None,
     on_episode_end: Callable[[int, float, int], None] | None = None,
     collect_score_breakdown: bool = False,
+    collect_aux_targets: bool = False,
 ) -> EpisodeStats:
     if str(env_id) != "AHC061Local-v0":
         raise ValueError(
             "cpp runner supports only env_id='AHC061Local-v0'; "
             f"got {env_id!r}"
         )
+
+    total_episodes = int(episodes)
+    if total_episodes < 0:
+        raise ValueError(f"episodes must be >= 0, got {episodes}")
+
     policy_name = str(policy).strip().lower()
     if policy_name not in ("random", "model_stochastic", "model_greedy"):
         raise ValueError(f"unsupported policy={policy!r}")
     if policy_name in ("model_stochastic", "model_greedy") and agent is None:
         raise ValueError("agent is required for policy model_stochastic/model_greedy")
 
-    env = BatchEnv(
-        batch_size=1,
-        feature_id=str(feature_id),
-        pf_enabled=bool(pf_enabled),
-    )
-    c = int(env.feature_channels)
-    n = int(env.board_size)
-    a = int(env.action_dim)
+    if total_episodes == 0:
+        env0 = BatchEnv(batch_size=1, feature_id=str(feature_id), pf_enabled=bool(pf_enabled))
+        c0 = int(env0.feature_channels)
+        n0 = int(env0.board_size)
+        a0 = int(env0.action_dim)
+        obs_shape0 = (c0, n0, n0)
+        if on_env_ready is not None:
+            on_env_ready(obs_shape0, a0)
+        return EpisodeStats(
+            obs_shape=obs_shape0,
+            action_dim=a0,
+            episode_returns=[],
+            episode_lengths=[],
+            episode_terminal_game_scores=[],
+            episode_m=[],
+            episode_u=[],
+            episode_game_score_self=[],
+            episode_game_score_enemy_max=[],
+        )
+
+    batch_size = _resolve_batch_size(episodes=total_episodes, num_envs=int(num_envs))
+    env_probe = BatchEnv(batch_size=1, feature_id=str(feature_id), pf_enabled=bool(pf_enabled))
+    c = int(env_probe.feature_channels)
+    n = int(env_probe.board_size)
+    a = int(env_probe.action_dim)
     obs_shape = (c, n, n)
     if on_env_ready is not None:
         on_env_ready(obs_shape, a)
@@ -102,188 +348,122 @@ def run_policy_episodes(
             raise ValueError(f"obs_shape mismatch: model={agent.obs_shape}, env={obs_shape}")
         if int(agent.action_dim) != int(a):
             raise ValueError(f"action_dim mismatch: model={agent.action_dim}, env={a}")
+
+    t_limit = int(env_probe.spec.t_max)
+    if int(max_steps_per_episode) > 0:
+        t_limit = int(min(t_limit, int(max_steps_per_episode)))
+
+    ep_returns = np.empty((total_episodes,), dtype=np.float64)
+    ep_lengths = np.empty((total_episodes,), dtype=np.int64)
+    ep_scores = np.empty((total_episodes,), dtype=np.float64)
+    ep_m = np.empty((total_episodes,), dtype=np.int64)
+    ep_u = np.empty((total_episodes,), dtype=np.int64)
+    ep_self = np.empty((total_episodes,), dtype=np.float64) if bool(collect_score_breakdown) else None
+    ep_enemy = np.empty((total_episodes,), dtype=np.float64) if bool(collect_score_breakdown) else None
+
+    aux_move_dist: torch.Tensor | None = None
+    aux_opp_param: torch.Tensor | None = None
+    aux_opp_valid: torch.Tensor | None = None
+
     was_training = bool(agent.training) if agent is not None else False
     if agent is not None:
         agent.eval()
 
-    vecnorm: VecNormalize | None = None
-    if bool(vecnorm_enabled):
-        vecnorm = VecNormalize(
-            num_envs=1,
-            obs_shape=obs_shape,
-            norm_obs=bool(vecnorm_norm_obs),
-            norm_reward=bool(vecnorm_norm_reward),
-            clip_obs=float(vecnorm_clip_obs),
-            clip_reward=float(vecnorm_clip_reward),
-            epsilon=float(vecnorm_epsilon),
-            gamma=float(vecnorm_gamma),
-            training=False,
-        )
-        if isinstance(vecnorm_state, dict):
-            vecnorm.load_state_dict(vecnorm_state)
-        vecnorm.set_training(False)
-
-    board = torch.empty((1, c, n, n), dtype=torch.float32, device="cpu")
-    mask = torch.empty((1, a), dtype=torch.uint8, device="cpu")
-    reward = torch.empty((1,), dtype=torch.float32, device="cpu")
-    done = torch.empty((1,), dtype=torch.uint8, device="cpu")
-    seed_t = torch.empty((1,), dtype=torch.int64, device="cpu")
-    need_aux = on_aux_transition is not None
-    need_bayes = on_transition is not None
-    move_dist = torch.empty((1, 8, int(a)), dtype=torch.float32, device="cpu") if need_aux else None
-    opp_param = torch.empty((1, 8, 5), dtype=torch.float32, device="cpu") if need_aux else None
-    opp_valid = torch.empty((1, 8), dtype=torch.uint8, device="cpu") if need_aux else None
-    bayes_params = torch.empty((1, 7, 4), dtype=torch.float32, device="cpu") if need_bayes else None
-
-    use_cuda = device.type == "cuda"
-    use_amp = bool(use_cuda and amp)
-    board_dev = torch.empty((1, c, n, n), dtype=torch.float32, device=device) if use_cuda else None
-    mask_dev = torch.empty((1, a), dtype=torch.uint8, device=device) if use_cuda else None
-    autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp)
-
-    ep_returns: list[float] = []
-    ep_lengths: list[int] = []
-    ep_terminal_game_scores: list[float] = []
-    ep_m: list[int] = []
-    ep_u: list[int] = []
-    ep_game_score_self: list[float] = []
-    ep_game_score_enemy_max: list[float] = []
     rng = np.random.default_rng(int(seed))
 
-    t_limit = int(env.spec.t_max)
-    if int(max_steps_per_episode) > 0:
-        t_limit = int(min(t_limit, int(max_steps_per_episode)))
-
     try:
-        for epi in range(int(episodes)):
-            seed_t[0] = int(seed) + int(epi)
-            env.reset_random(seed_t)
-            mu = env.m_u().to(dtype=torch.int64, device="cpu")
-            m_val = int(mu[0, 0].item())
-            u_val = int(mu[0, 1].item())
-            env.observe_into(board, mask)
-            if vecnorm is not None:
-                vecnorm.normalize_obs_inplace(board)
+        epi_start = 0
+        while epi_start < total_episodes:
+            cur_bsz = int(min(batch_size, total_episodes - epi_start))
+            env = BatchEnv(
+                batch_size=cur_bsz,
+                feature_id=str(feature_id),
+                pf_enabled=bool(pf_enabled),
+            )
+            vecnorm = _build_eval_vecnorm(
+                batch_size=cur_bsz,
+                obs_shape=obs_shape,
+                enabled=bool(vecnorm_enabled),
+                state=vecnorm_state,
+                norm_obs=bool(vecnorm_norm_obs),
+                norm_reward=bool(vecnorm_norm_reward),
+                clip_obs=float(vecnorm_clip_obs),
+                clip_reward=float(vecnorm_clip_reward),
+                epsilon=float(vecnorm_epsilon),
+                gamma=float(vecnorm_gamma),
+            )
 
-            ep_ret = 0.0
-            ep_len = 0
-            for step in range(t_limit):
-                obs_before = np.asarray(board[0], dtype=np.float32).copy() if on_transition is not None else None
-                bayes_before = None
-                if need_bayes:
-                    assert bayes_params is not None
-                    env.bayes_params_into(bayes_params)
-                    bayes_before = np.asarray(bayes_params[0], dtype=np.float32).reshape(-1).copy()
+            (
+                ret_chunk,
+                len_chunk,
+                score_chunk,
+                m_chunk,
+                u_chunk,
+                self_chunk,
+                enemy_chunk,
+                aux_move_chunk,
+                aux_param_chunk,
+                aux_valid_chunk,
+            ) = _collect_chunk(
+                env=env,
+                seed_begin=int(seed) + int(epi_start),
+                policy_name=policy_name,
+                agent=agent,
+                device=device,
+                use_action_mask=bool(use_action_mask),
+                use_amp=bool(amp and device.type == "cuda"),
+                t_limit=int(t_limit),
+                vecnorm=vecnorm,
+                collect_score_breakdown=bool(collect_score_breakdown),
+                collect_aux_targets=bool(collect_aux_targets),
+                rng=rng,
+            )
 
-                if policy_name == "random":
-                    if bool(use_action_mask):
-                        legal = torch.nonzero(mask[0] > 0, as_tuple=False).view(-1)
-                        if int(legal.numel()) <= 0:
-                            action_idx = 0
-                        else:
-                            ri = int(rng.integers(0, int(legal.numel())))
-                            action_idx = int(legal[ri].item())
-                    else:
-                        action_idx = int(rng.integers(0, int(a)))
-                    action_cpu = torch.tensor([action_idx], dtype=torch.int64, device="cpu")
-                else:
-                    if agent is None:
-                        raise RuntimeError("agent is unexpectedly None")
-                    if use_cuda:
-                        assert board_dev is not None
-                        board_dev.copy_(board, non_blocking=True)
-                        obs_model = board_dev
-                        mask_model = None
-                        if bool(use_action_mask):
-                            assert mask_dev is not None
-                            mask_dev.copy_(mask, non_blocking=True)
-                            mask_model = mask_dev
-                    else:
-                        obs_model = board
-                        mask_model = mask if bool(use_action_mask) else None
-                    with torch.no_grad(), autocast:
-                        action_t = agent.act(
-                            obs_model,
-                            action_mask=mask_model,
-                            deterministic=(policy_name == "model_greedy"),
-                        )
-                    action_np = _unwrap_action(action_t).astype(np.int64)
-                    if action_np.ndim == 0:
-                        action_np = action_np.reshape(1)
-                    action_cpu = torch.as_tensor(action_np, dtype=torch.int64, device="cpu").contiguous()
-                    action_idx = int(action_cpu[0].item())
-
-                try:
-                    if need_aux:
-                        assert move_dist is not None
-                        assert opp_param is not None
-                        assert opp_valid is not None
-                        env.step_observe_aux_into(action_cpu, board, mask, reward, done, move_dist, opp_param, opp_valid)
-                    else:
-                        env.step_observe_into(action_cpu, board, mask, reward, done)
-                except Exception as exc:
-                    raise RuntimeError(
-                        "cpp step_observe_into failed (likely illegal action). "
-                        "enable/use action mask for rollout"
-                    ) from exc
-
-                if vecnorm is not None:
-                    vecnorm.normalize_reward_inplace(reward, done)
-                    vecnorm.normalize_obs_inplace(board)
-
-                r = float(reward[0].item())
-                d = bool(int(done[0].item()) != 0)
-                if on_transition is not None:
-                    assert obs_before is not None
-                    on_transition(
-                        Transition(
-                            episode=int(epi),
-                            step=int(step),
-                            obs=obs_before,
-                            action=int(action_idx),
-                            reward=float(r),
-                            done=bool(d),
-                            bayes_params=(
-                                bayes_before
-                                if bayes_before is not None
-                                else np.zeros((28,), dtype=np.float32)
-                            ),
-                        )
-                    )
-                if on_aux_transition is not None:
-                    assert move_dist is not None
-                    assert opp_param is not None
-                    assert opp_valid is not None
-                    on_aux_transition(
-                        AuxTransition(
-                            episode=int(epi),
-                            step=int(step),
-                            move_dist=np.asarray(move_dist[0], dtype=np.float32).copy(),
-                            opp_param=np.asarray(opp_param[0], dtype=np.float32).copy(),
-                            opp_valid=np.asarray(opp_valid[0], dtype=np.uint8).copy(),
-                        )
-                    )
-                ep_ret += r
-                ep_len += 1
-                if d:
-                    break
-
-            terminal_game_score = float(env.official_score()[0].item())
-
-            ep_returns.append(float(ep_ret))
-            ep_lengths.append(int(ep_len))
-            ep_terminal_game_scores.append(terminal_game_score)
-            ep_m.append(int(m_val))
-            ep_u.append(int(u_val))
+            sl = slice(int(epi_start), int(epi_start + cur_bsz))
+            ep_returns[sl] = ret_chunk
+            ep_lengths[sl] = len_chunk
+            ep_scores[sl] = score_chunk
+            ep_m[sl] = m_chunk
+            ep_u[sl] = u_chunk
             if bool(collect_score_breakdown):
-                score_pair = env.score_s0_sa().to(dtype=torch.float64, device="cpu")
-                s0 = float(score_pair[0, 0].item())
-                sa = float(score_pair[0, 1].item())
-                ep_game_score_self.append(float(s0))
-                ep_game_score_enemy_max.append(float(sa))
+                if ep_self is None or ep_enemy is None:
+                    raise RuntimeError("internal error: score breakdown buffers are not initialized")
+                if self_chunk is None or enemy_chunk is None:
+                    raise RuntimeError("internal error: score breakdown chunk is missing")
+                ep_self[sl] = self_chunk
+                ep_enemy[sl] = enemy_chunk
+
+            if bool(collect_aux_targets):
+                if aux_move_chunk is None or aux_param_chunk is None or aux_valid_chunk is None:
+                    raise RuntimeError("internal error: aux chunk tensors are missing")
+                if aux_move_dist is None:
+                    aux_move_dist = torch.empty(
+                        (total_episodes, int(t_limit), int(env.spec.m_max), int(a)),
+                        dtype=torch.float32,
+                        device="cpu",
+                    )
+                    aux_opp_param = torch.empty(
+                        (total_episodes, int(t_limit), int(env.spec.m_max), 5),
+                        dtype=torch.float32,
+                        device="cpu",
+                    )
+                    aux_opp_valid = torch.empty(
+                        (total_episodes, int(t_limit), int(env.spec.m_max)),
+                        dtype=torch.uint8,
+                        device="cpu",
+                    )
+                assert aux_opp_param is not None
+                assert aux_opp_valid is not None
+                aux_move_dist[sl].copy_(aux_move_chunk)
+                aux_opp_param[sl].copy_(aux_param_chunk)
+                aux_opp_valid[sl].copy_(aux_valid_chunk)
 
             if on_episode_end is not None:
-                on_episode_end(int(epi), float(ep_ret), int(ep_len))
+                for i in range(cur_bsz):
+                    gi = int(epi_start + i)
+                    on_episode_end(gi, float(ep_returns[gi]), int(ep_lengths[gi]))
+
+            epi_start += cur_bsz
     finally:
         if agent is not None and bool(was_training):
             agent.train()
@@ -291,11 +471,14 @@ def run_policy_episodes(
     return EpisodeStats(
         obs_shape=tuple(obs_shape),
         action_dim=int(a),
-        episode_returns=ep_returns,
-        episode_lengths=ep_lengths,
-        episode_terminal_game_scores=ep_terminal_game_scores,
-        episode_m=ep_m,
-        episode_u=ep_u,
-        episode_game_score_self=ep_game_score_self,
-        episode_game_score_enemy_max=ep_game_score_enemy_max,
+        episode_returns=[float(x) for x in ep_returns.tolist()],
+        episode_lengths=[int(x) for x in ep_lengths.tolist()],
+        episode_terminal_game_scores=[float(x) for x in ep_scores.tolist()],
+        episode_m=[int(x) for x in ep_m.tolist()],
+        episode_u=[int(x) for x in ep_u.tolist()],
+        episode_game_score_self=([] if ep_self is None else [float(x) for x in ep_self.tolist()]),
+        episode_game_score_enemy_max=([] if ep_enemy is None else [float(x) for x in ep_enemy.tolist()]),
+        aux_move_dist=aux_move_dist,
+        aux_opp_param=aux_opp_param,
+        aux_opp_valid=aux_opp_valid,
     )

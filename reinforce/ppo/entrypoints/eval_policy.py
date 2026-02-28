@@ -9,6 +9,7 @@ from typing import Any
 import hydra
 import torch
 from omegaconf import DictConfig
+from tqdm.auto import tqdm
 
 from ..eval.eval_service import run_policy_episodes
 from ..pipeline.model_checkpoint_service import load_agent_checkpoint
@@ -137,7 +138,6 @@ def _build_summary(
     return {
         "env_id": args.env_id,
         "episodes": int(args.episodes),
-        "deterministic": bool(args.deterministic),
         "return": summarize(episode_returns).as_dict(),
         "score": score_summary,
         "terminal_game_score": score_summary,
@@ -172,27 +172,31 @@ def _run_eval(
     if use_vecnorm and not isinstance(vec_state, dict) and vecnorm_mode == "on":
         logger.warning("vecnorm_mode=on but checkpoint has no vecnormalize_state; using fresh statistics")
 
-    stats = run_policy_episodes(
-        env_id=str(args.env_id),
-        episodes=int(args.episodes),
-        seed=int(args.seed),
-        feature_id=str(args.feature_id),
-        pf_enabled=bool(args.pf_enabled),
-        policy=("model_greedy" if bool(args.deterministic) else "model_stochastic"),
-        agent=agent,
-        device=device,
-        use_action_mask=bool(args.use_action_mask),
-        amp=bool(args.amp),
-        vecnorm_enabled=bool(use_vecnorm),
-        vecnorm_state=(vec_state if isinstance(vec_state, dict) else None),
-        vecnorm_norm_obs=bool(args.vecnorm_norm_obs),
-        vecnorm_norm_reward=bool(args.vecnorm_norm_reward),
-        vecnorm_clip_obs=float(args.vecnorm_clip_obs),
-        vecnorm_clip_reward=float(args.vecnorm_clip_reward),
-        vecnorm_epsilon=float(args.vecnorm_epsilon),
-        vecnorm_gamma=float(args.vecnorm_gamma),
-        collect_score_breakdown=True,
-    )
+    total_episodes = int(args.episodes)
+    with tqdm(total=total_episodes, desc="eval", unit="ep", dynamic_ncols=True) as pbar:
+        stats = run_policy_episodes(
+            env_id=str(args.env_id),
+            episodes=total_episodes,
+            num_envs=int(args.num_envs),
+            seed=int(args.start_seed),
+            feature_id=str(args.feature_id),
+            pf_enabled=bool(args.pf_enabled),
+            policy="model_greedy",
+            agent=agent,
+            device=device,
+            use_action_mask=bool(args.use_action_mask),
+            amp=bool(args.amp),
+            vecnorm_enabled=bool(use_vecnorm),
+            vecnorm_state=(vec_state if isinstance(vec_state, dict) else None),
+            vecnorm_norm_obs=bool(args.vecnorm_norm_obs),
+            vecnorm_norm_reward=bool(args.vecnorm_norm_reward),
+            vecnorm_clip_obs=float(args.vecnorm_clip_obs),
+            vecnorm_clip_reward=float(args.vecnorm_clip_reward),
+            vecnorm_epsilon=float(args.vecnorm_epsilon),
+            vecnorm_gamma=float(args.vecnorm_gamma),
+            on_episode_end=lambda _epi, _ret, _len: pbar.update(1),
+            collect_score_breakdown=True,
+        )
 
     return _build_summary(
         args=args,

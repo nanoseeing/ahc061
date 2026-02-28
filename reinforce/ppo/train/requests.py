@@ -17,15 +17,17 @@ class TrainPPORequest:
     env_id: str
     run_dir: Path
     run_name: str
+    train_seed_min: int
+    train_seed_max_exclusive: int
     init_model: Path | None
     resume: bool
     resume_from: Path | None
     checkpoint_interval_steps: int
     eval_interval_steps: int
     eval_episodes: int
+    eval_num_envs: int
     eval_seed_start: int
     eval_fixed_seeds: bool
-    eval_deterministic: bool
     eval_at_start: bool
     vecnorm: bool
     vecnorm_norm_obs: bool
@@ -60,6 +62,8 @@ class PPORequest:
     run_dir: Path
     run_name: str
     seed: int
+    train_seed_min: int
+    train_seed_max_exclusive: int
     device: str
     init_model: Path | None
     resume: bool
@@ -97,9 +101,9 @@ class PPORequest:
     checkpoint_interval_steps: int
     eval_interval_steps: int
     eval_episodes: int
+    eval_num_envs: int
     eval_seed_start: int
     eval_fixed_seeds: bool
-    eval_deterministic: bool
     eval_at_start: bool
     vecnorm: bool
     vecnorm_norm_obs: bool
@@ -205,6 +209,8 @@ def build_ppo_request(
         run_dir=train_req.run_dir,
         run_name=train_req.run_name,
         seed=int(cfg.seed),
+        train_seed_min=int(train_req.train_seed_min),
+        train_seed_max_exclusive=int(train_req.train_seed_max_exclusive),
         device=str(device),
         init_model=train_req.init_model,
         resume=bool(train_req.resume),
@@ -242,9 +248,9 @@ def build_ppo_request(
         checkpoint_interval_steps=int(train_req.checkpoint_interval_steps),
         eval_interval_steps=int(train_req.eval_interval_steps),
         eval_episodes=int(train_req.eval_episodes),
+        eval_num_envs=int(train_req.eval_num_envs),
         eval_seed_start=int(train_req.eval_seed_start),
         eval_fixed_seeds=bool(train_req.eval_fixed_seeds),
-        eval_deterministic=bool(train_req.eval_deterministic),
         eval_at_start=bool(train_req.eval_at_start),
         vecnorm=bool(train_req.vecnorm),
         vecnorm_norm_obs=bool(train_req.vecnorm_norm_obs),

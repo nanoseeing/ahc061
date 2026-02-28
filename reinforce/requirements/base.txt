@@ -5,6 +5,7 @@ omegaconf>=2.3,<3
 pydantic>=2.7,<3
 PyYAML>=6,<7
 torch>=2.4,<2.7
+tqdm>=4.66,<5
 pybind11>=2.11,<3
 setuptools>=68
 ninja>=1.11

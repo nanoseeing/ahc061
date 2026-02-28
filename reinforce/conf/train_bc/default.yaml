@@ -24,6 +24,8 @@ max_grad_norm: 0.5
 temperature: 1.0
 log_interval_iters: 10
 seed: 1
+seed_min: 0
+seed_max_exclusive: 9223372036854775807
 # Output
 output_model: null
 # Run management

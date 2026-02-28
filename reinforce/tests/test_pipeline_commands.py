@@ -48,6 +48,8 @@ def _make_train_bc_args(**kwargs) -> SimpleNamespace:
     defaults = dict(
         env_id="AHC061Local-v0",
         seed=7,
+        bc_seed_min=100000,
+        bc_seed_max_exclusive=200000,
         bc_total_transitions=50000,
         bc_num_envs=4,
         bc_num_steps=64,
@@ -77,6 +79,8 @@ def test_build_train_bc_cmd_basic(tmp_path: Path) -> None:
     assert f"teacher_model_path={teacher}" in cmd
     assert "env_id=AHC061Local-v0" in cmd
     assert "seed=7" in cmd
+    assert "seed_min=100000" in cmd
+    assert "seed_max_exclusive=200000" in cmd
     assert "total_transitions=50000" in cmd
     assert "num_envs=4" in cmd
     assert "num_steps=64" in cmd
@@ -106,6 +110,8 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
     defaults = dict(
         env_id="AHC061Local-v0",
         seed=1,
+        train_seed_min=0,
+        train_seed_max_exclusive=9223372036854775807,
         ppo_total_timesteps=1000,
         ppo_num_envs=4,
         ppo_num_steps=16,
@@ -129,6 +135,7 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
         ppo_checkpoint_interval_steps=0,
         ppo_eval_interval_steps=0,
         ppo_eval_episodes=0,
+        ppo_eval_num_envs=0,
         ppo_eval_seed_start=0,
         ppo_log_interval_iters=10,
         ppo_vecnorm_clip_obs=10.0,
@@ -139,7 +146,6 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
         ppo_clip_vloss=True,
         ppo_eval_at_start=False,
         ppo_eval_fixed_seeds=False,
-        ppo_eval_deterministic=True,
         ppo_vecnorm=False,
         ppo_vecnorm_norm_obs=True,
         ppo_vecnorm_norm_reward=False,
@@ -186,6 +192,8 @@ def test_build_train_ppo_cmd_basic(tmp_path: Path) -> None:
     )
     assert cmd[0] == "python"
     assert "env_id=AHC061Local-v0" in cmd
+    assert "train_seed_min=0" in cmd
+    assert "train_seed_max_exclusive=9223372036854775807" in cmd
     assert "total_timesteps=1000" in cmd
     assert "num_envs=4" in cmd
     assert "feature_id=v1" in cmd
@@ -265,6 +273,8 @@ def _make_eval_args(**kwargs) -> SimpleNamespace:
     defaults = dict(
         env_id="AHC061Local-v0",
         eval_episodes=20,
+        eval_num_envs=0,
+        eval_seed_start=1000,
         seed=0,
         ppo_feature_id="v1",
         ppo_pf_enabled=False,
@@ -293,8 +303,9 @@ def test_build_eval_policy_cmd_basic(tmp_path: Path) -> None:
     assert "env_id=AHC061Local-v0" in cmd
     assert f"model_path={model}" in cmd
     assert "episodes=20" in cmd
+    assert "num_envs=0" in cmd
+    assert "start_seed=1000" in cmd
     assert f"output_json={out_json}" in cmd
-    assert "deterministic=true" in cmd
     assert "prefer_run_layout=false" in cmd
     assert "feature_id=v1" in cmd
     assert "use_action_mask=true" in cmd

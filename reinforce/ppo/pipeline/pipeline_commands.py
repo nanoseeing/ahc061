@@ -15,6 +15,8 @@ class ModelArgs(Protocol):
 class TrainBCArgs(ModelArgs, Protocol):
     env_id: str
     seed: int
+    bc_seed_min: int
+    bc_seed_max_exclusive: int
     bc_total_transitions: int
     bc_num_envs: int
     bc_num_steps: int
@@ -31,6 +33,8 @@ class TrainBCArgs(ModelArgs, Protocol):
 class TrainPPOArgs(ModelArgs, Protocol):
     env_id: str
     seed: int
+    train_seed_min: int
+    train_seed_max_exclusive: int
     ppo_total_timesteps: int
     ppo_num_envs: int
     ppo_num_steps: int
@@ -54,6 +58,7 @@ class TrainPPOArgs(ModelArgs, Protocol):
     ppo_checkpoint_interval_steps: int
     ppo_eval_interval_steps: int
     ppo_eval_episodes: int
+    ppo_eval_num_envs: int
     ppo_eval_seed_start: int
     ppo_log_interval_iters: int
     ppo_vecnorm_clip_obs: float
@@ -64,7 +69,6 @@ class TrainPPOArgs(ModelArgs, Protocol):
     ppo_clip_vloss: bool
     ppo_eval_at_start: bool
     ppo_eval_fixed_seeds: bool
-    ppo_eval_deterministic: bool
     ppo_vecnorm: bool
     ppo_vecnorm_norm_obs: bool
     ppo_vecnorm_norm_reward: bool
@@ -96,6 +100,8 @@ class TrainPPOArgs(ModelArgs, Protocol):
 class EvalPolicyArgs(Protocol):
     env_id: str
     eval_episodes: int
+    eval_num_envs: int
+    eval_seed_start: int
     seed: int
     ppo_feature_id: str
     ppo_pf_enabled: bool
@@ -159,6 +165,8 @@ def build_train_bc_cmd(
         f"teacher_model_path={teacher_model_path}",
         f"env_id={args.env_id}",
         f"seed={int(args.seed)}",
+        f"seed_min={int(args.bc_seed_min)}",
+        f"seed_max_exclusive={int(args.bc_seed_max_exclusive)}",
         f"total_transitions={int(args.bc_total_transitions)}",
         f"num_envs={int(args.bc_num_envs)}",
         f"num_steps={int(args.bc_num_steps)}",
@@ -192,6 +200,8 @@ def build_train_ppo_cmd(
         f"env_id={args.env_id}",
         f"run_dir={run_dir}",
         f"seed={int(args.seed)}",
+        f"train_seed_min={int(args.train_seed_min)}",
+        f"train_seed_max_exclusive={int(args.train_seed_max_exclusive)}",
         f"total_timesteps={int(args.ppo_total_timesteps)}",
         f"num_envs={int(args.ppo_num_envs)}",
         f"num_steps={int(args.ppo_num_steps)}",
@@ -210,6 +220,7 @@ def build_train_ppo_cmd(
         f"checkpoint_interval_steps={int(args.ppo_checkpoint_interval_steps)}",
         f"eval_interval_steps={int(args.ppo_eval_interval_steps)}",
         f"eval_episodes={int(args.ppo_eval_episodes)}",
+        f"eval_num_envs={int(args.ppo_eval_num_envs)}",
         f"eval_seed_start={int(args.ppo_eval_seed_start)}",
         f"log_interval_iters={int(args.ppo_log_interval_iters)}",
         f"vecnorm_clip_obs={float(args.ppo_vecnorm_clip_obs)}",
@@ -228,7 +239,6 @@ def build_train_ppo_cmd(
     append_bool_flag(cmd, "eval_at_start", bool(args.ppo_eval_at_start))
     append_bool_flag(cmd, "use_action_mask", bool(args.use_action_mask))
     append_bool_flag(cmd, "eval_fixed_seeds", bool(args.ppo_eval_fixed_seeds))
-    append_bool_flag(cmd, "eval_deterministic", bool(args.ppo_eval_deterministic))
     append_bool_flag(cmd, "vecnorm", bool(args.ppo_vecnorm))
     append_bool_flag(cmd, "vecnorm_norm_obs", bool(args.ppo_vecnorm_norm_obs))
     append_bool_flag(cmd, "vecnorm_norm_reward", bool(args.ppo_vecnorm_norm_reward))
@@ -299,10 +309,11 @@ def build_eval_policy_cmd(
         f"env_id={args.env_id}",
         f"model_path={model_path}",
         f"episodes={int(args.eval_episodes)}",
+        f"num_envs={int(args.eval_num_envs)}",
         f"seed={int(args.seed)}",
+        f"start_seed={int(args.eval_seed_start)}",
         f"output_json={output_json}",
         "prefer_run_layout=false",
-        "deterministic=true",
         f"env_kwargs_json='{json.dumps(env_kwargs)}'",
         f"feature_id={args.ppo_feature_id}",
     ]

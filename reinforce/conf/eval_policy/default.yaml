@@ -4,9 +4,10 @@ feature_id: submit_v1
 pf_enabled: true
 amp: false
 episodes: 50
+num_envs: 0
 seed: 1
+start_seed: 0
 device: auto
-deterministic: false
 use_action_mask: false
 model_path: null
 vecnorm_mode: auto

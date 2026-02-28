@@ -6,6 +6,8 @@ env_kwargs_json: "{}"
 run_dir: reinforce/outputs/ppo_runs
 run_name: ""
 seed: 1
+train_seed_min: 0
+train_seed_max_exclusive: 9223372036854775807
 device: auto
 init_model: null
 resume: false
@@ -60,9 +62,9 @@ save_interval: 10
 checkpoint_interval_steps: 0
 eval_interval_steps: 0
 eval_episodes: 100
+eval_num_envs: 0
 eval_seed_start: 2000000
 eval_fixed_seeds: true
-eval_deterministic: true
 eval_at_start: true
 eval_env_kwargs_json: ""
 # vecnorm

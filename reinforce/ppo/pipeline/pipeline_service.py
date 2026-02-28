@@ -332,7 +332,7 @@ class _PipelineRunner:
                 mlflow_tracking_uri=args.mlflow_tracking_uri,
                 mlflow_experiment=args.mlflow_experiment,
                 mlflow_run_name=args.mlflow_run_name,
-                tensorboard=bool(args.tensorboard),
+                tensorboard=bool(getattr(args, "tensorboard", False)),
                 config=config_snapshot,
             )
             tracker.log_event("runtime_env", runtime_env)
