@@ -103,6 +103,10 @@ def _run_backend(*, args: SimpleNamespace, cfg: PPOConfig, device: torch.device)
         distributed=str(args.distributed),
         compile=bool(args.compile),
         log_interval_iters=int(args.log_interval_iters),
+        mlflow_tracking_uri=str(args.mlflow_tracking_uri),
+        mlflow_experiment=str(args.mlflow_experiment),
+        mlflow_run_name=str(args.mlflow_run_name),
+        tensorboard=bool(args.tensorboard),
     )
     return int(
         run_ppo_from_train_request(

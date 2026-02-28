@@ -45,6 +45,7 @@ from ..utils.experiment import (
 from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize, group_score_mean_variance_by_m_u
 from ..utils.runtime import choose_device as choose_runtime_device
+from ..utils.tracking import MetricTracker
 from ..game_constants import AUX_OPP_PARAM_TOTAL, OPP_SLOT_COUNT
 from .requests import PPORequest, TrainPPORequest, args_to_cfg, build_ppo_request
 from ..eval.eval_service import run_policy_episodes
@@ -679,6 +680,7 @@ class PPORunner:
         self.eval_at_start_enabled = False
         self.train_metrics_jsonl: Path = Path(".")
         self.periodic_val_jsonl: Path = Path(".")
+        self.tracker: MetricTracker | None = None
         self.best_model: Path = Path(".")
         self.last_model: Path = Path(".")
         self.checkpoint_dir: Path = Path(".")
@@ -758,6 +760,28 @@ class PPORunner:
         _seed_everything(self.seed_base, device=self.device)
 
         if self.is_main:
+            args_snapshot = to_jsonable(vars(args))
+            cfg_snapshot = to_jsonable(self.cfg_global)
+            local_cfg_snapshot = to_jsonable(self.local_cfg)
+            distributed_snapshot = {
+                "mode": str(self.dist_mode),
+                "world_size": int(self.world_size),
+            }
+            self.tracker = MetricTracker(
+                self.layout.root,
+                run_name=self.run_name,
+                mlflow_tracking_uri=str(getattr(args, "mlflow_tracking_uri", "")),
+                mlflow_experiment=str(getattr(args, "mlflow_experiment", "ppo_discrete")),
+                mlflow_run_name=str(getattr(args, "mlflow_run_name", "")),
+                tensorboard=bool(getattr(args, "tensorboard", False)),
+                config={
+                    "args": args_snapshot,
+                    "ppo_config": cfg_snapshot,
+                    "ppo_config_local": local_cfg_snapshot,
+                    "distributed": distributed_snapshot,
+                    "paths": self.layout.as_dict(),
+                },
+            )
             update_manifest(
                 self.layout,
                 {
@@ -768,14 +792,18 @@ class PPORunner:
                         "enabled": bool(self.resume_enabled),
                         "resume_from": (str(self.resume_from) if self.resume_from is not None else ""),
                     },
-                    "args": to_jsonable(vars(args)),
-                    "ppo_config": to_jsonable(self.cfg_global),
-                    "ppo_config_local": to_jsonable(self.local_cfg),
-                    "distributed": {
-                        "mode": str(self.dist_mode),
-                        "world_size": int(self.world_size),
-                    },
+                    "args": args_snapshot,
+                    "ppo_config": cfg_snapshot,
+                    "ppo_config_local": local_cfg_snapshot,
+                    "distributed": distributed_snapshot,
                     "paths": self.layout.as_dict(),
+                },
+            )
+            self.tracker.log_event(
+                "train_start",
+                {
+                    "device": str(self.device),
+                    "distributed": distributed_snapshot,
                 },
             )
         if self.is_distributed:
@@ -1194,6 +1222,15 @@ class PPORunner:
                 float(eval_summary["return"]["mean"]),
                 float(eval_summary["terminal_game_score"]["mean"]),
             )
+            if self.tracker is not None:
+                self.tracker.log_metrics(
+                    0,
+                    {
+                        "val/episodes": int(eval_summary["episodes"]),
+                        "val/mean_return": float(eval_summary["return"]["mean"]),
+                        "val/mean_terminal_game_score": float(eval_summary["terminal_game_score"]["mean"]),
+                    },
+                )
             cand = float(eval_summary["terminal_game_score"]["mean"])
             if np.isfinite(cand) and cand > self.best_metric_value:
                 self.best_metric_value = float(cand)
@@ -1438,6 +1475,14 @@ class PPORunner:
         args = self.args
         if self.is_main:
             _append_jsonl(self.train_metrics_jsonl, row)
+            if self.tracker is not None:
+                tracker_metrics: dict[str, float | int] = {}
+                for k, v in row.items():
+                    if k == "global_step":
+                        continue
+                    metric_key = f"val/{k[len('periodic_val_'):]}" if k.startswith("periodic_val_") else f"train/{k}"
+                    tracker_metrics[metric_key] = v
+                self.tracker.log_metrics(step=int(self.global_step), metrics=tracker_metrics)
 
         if self.is_main and args.log_interval_iters > 0 and (iteration % int(args.log_interval_iters) == 0):
             logger.info(
@@ -1581,6 +1626,15 @@ class PPORunner:
                     "result": self.summary,
                 },
             )
+            if self.tracker is not None:
+                self.tracker.log_event(
+                    "train_complete",
+                    {
+                        "global_step": int(self.global_step),
+                        "best_metric_name": str(self.best_metric_name),
+                        "best_metric_value": float(self.best_metric_value),
+                    },
+                )
         if self.is_distributed:
             dist.barrier()
 
@@ -1681,6 +1735,8 @@ def run_ppo(args: PPORequest) -> int:
             )
         raise
     finally:
+        if runner.is_main and runner.tracker is not None:
+            runner.tracker.close()
         if _dist_ready():
             try:
                 dist.barrier()

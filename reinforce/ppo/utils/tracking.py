@@ -10,12 +10,13 @@ from .experiment import to_jsonable
 
 
 class MetricTracker:
-    """Metrics logger: MLflow (primary) + JSONL (offline fallback).
+    """Metrics logger: JSONL + optional MLflow + optional TensorBoard.
 
     Outputs:
     - logs/metrics.jsonl  (always written)
     - logs/events.jsonl   (always written)
     - MLflow run          (if mlflow_tracking_uri is set)
+    - TensorBoard events  (if tensorboard is true)
     """
 
     def __init__(
@@ -26,6 +27,7 @@ class MetricTracker:
         mlflow_tracking_uri: str = "",
         mlflow_experiment: str = "ppo_discrete",
         mlflow_run_name: str = "",
+        tensorboard: bool = False,
         config: dict[str, Any] | None = None,
     ):
         self.run_dir = Path(run_dir)
@@ -37,8 +39,19 @@ class MetricTracker:
         self.events_path = self.logs_dir / "events.jsonl"
         self._mlflow = None
         self._mlflow_run = None
+        self._tb_writer = None
         safe_config_obj = to_jsonable(config) if config is not None else None
         safe_config: dict[str, Any] | None = safe_config_obj if isinstance(safe_config_obj, dict) else None
+
+        if bool(tensorboard):
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+
+                tb_dir = self.logs_dir / "tensorboard"
+                tb_dir.mkdir(parents=True, exist_ok=True)
+                self._tb_writer = SummaryWriter(log_dir=str(tb_dir))
+            except Exception as e:
+                self.log_event("tensorboard_init_failed", {"error": str(e)})
 
         if mlflow_tracking_uri:
             try:
@@ -81,6 +94,14 @@ class MetricTracker:
                 except Exception:
                     pass
 
+        if self._tb_writer is not None:
+            clean = {k: vv for k, v in metrics.items() if (vv := _safe_numeric(v)) is not None}
+            for k, v in clean.items():
+                try:
+                    self._tb_writer.add_scalar(str(k), float(v), global_step=int(step))
+                except Exception:
+                    continue
+
     def log_event(self, name: str, payload: dict[str, Any] | None = None) -> None:
         row = {"event": name, "time": time.time(), "payload": to_jsonable(payload or {})}
         with self.events_path.open("a", encoding="utf-8") as f:
@@ -91,6 +112,12 @@ class MetricTracker:
         if self._mlflow is not None and self._mlflow_run is not None:
             try:
                 self._mlflow.end_run()
+            except Exception:
+                pass
+        if self._tb_writer is not None:
+            try:
+                self._tb_writer.flush()
+                self._tb_writer.close()
             except Exception:
                 pass
 

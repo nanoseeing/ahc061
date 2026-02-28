@@ -49,6 +49,10 @@ class TrainPPORequest:
     distributed: str
     compile: bool
     log_interval_iters: int
+    mlflow_tracking_uri: str
+    mlflow_experiment: str
+    mlflow_run_name: str
+    tensorboard: bool
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,10 @@ class PPORequest:
     distributed: str
     compile: bool
     log_interval_iters: int
+    mlflow_tracking_uri: str
+    mlflow_experiment: str
+    mlflow_run_name: str
+    tensorboard: bool
 
 
 def args_to_cfg(args: PPORequest) -> PPOConfig:
@@ -260,4 +268,8 @@ def build_ppo_request(
         distributed=str(train_req.distributed),
         compile=bool(train_req.compile),
         log_interval_iters=int(train_req.log_interval_iters),
+        mlflow_tracking_uri=str(train_req.mlflow_tracking_uri),
+        mlflow_experiment=str(train_req.mlflow_experiment),
+        mlflow_run_name=str(train_req.mlflow_run_name),
+        tensorboard=bool(train_req.tensorboard),
     )

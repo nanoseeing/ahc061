@@ -269,6 +269,10 @@ def _make_eval_args(**kwargs) -> SimpleNamespace:
         ppo_feature_id="v1",
         ppo_pf_enabled=False,
         use_action_mask=True,
+        mlflow_tracking_uri="",
+        mlflow_experiment="",
+        mlflow_run_name="",
+        tensorboard=False,
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -291,6 +295,26 @@ def test_build_eval_policy_cmd_basic(tmp_path: Path) -> None:
     assert "episodes=20" in cmd
     assert f"output_json={out_json}" in cmd
     assert "deterministic=true" in cmd
+    assert "prefer_run_layout=false" in cmd
     assert "feature_id=v1" in cmd
     assert "use_action_mask=true" in cmd
     assert "pf_enabled=false" in cmd
+    assert "tensorboard=false" in cmd
+
+
+def test_build_eval_policy_cmd_with_mlflow(tmp_path: Path) -> None:
+    args = _make_eval_args(
+        mlflow_tracking_uri="file:./mlruns",
+        mlflow_experiment="ppo_discrete",
+        mlflow_run_name="eval_run",
+    )
+    cmd = build_eval_policy_cmd(
+        py="python",
+        args=args,
+        model_path=tmp_path / "best.pt",
+        output_json=tmp_path / "eval.json",
+        env_kwargs={},
+    )
+    assert "mlflow_tracking_uri=file:./mlruns" in cmd
+    assert "mlflow_experiment=ppo_discrete" in cmd
+    assert "mlflow_run_name=eval_run" in cmd

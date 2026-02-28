@@ -76,10 +76,10 @@ vecnorm_epsilon: 1.0e-8
 vecnorm_gamma: null
 # logging / tracking
 log_interval_iters: 1
-mlflow_tracking_uri: ""
+mlflow_tracking_uri: file:./reinforce/outputs/mlruns
 mlflow_experiment: ppo_discrete
 mlflow_run_name: ""
-tensorboard: false
+tensorboard: true
 
 hydra:
   run:

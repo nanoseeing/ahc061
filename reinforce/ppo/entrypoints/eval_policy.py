@@ -46,6 +46,13 @@ def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
 
 
 def _prepare_run(args: SimpleNamespace) -> tuple[Any, MetricTracker | None]:
+    if args.run_root is None and (
+        bool(getattr(args, "tensorboard", False)) or bool(str(getattr(args, "mlflow_tracking_uri", "")).strip())
+    ):
+        if args.output_json is not None:
+            args.run_root = args.output_json.parent / "_eval_runs"
+        else:
+            args.run_root = Path("reinforce/outputs/eval_runs")
     if args.run_root is None:
         return None, None
 
@@ -57,7 +64,15 @@ def _prepare_run(args: SimpleNamespace) -> tuple[Any, MetricTracker | None]:
     config_snapshot = to_jsonable({"args": vars(args), "layout": layout.as_dict()})
     (layout.config_dir / "evaluate_policy.args.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
 
-    tracker = MetricTracker(layout.root, run_name=run_name, config=config_snapshot)
+    tracker = MetricTracker(
+        layout.root,
+        run_name=run_name,
+        mlflow_tracking_uri=str(getattr(args, "mlflow_tracking_uri", "")),
+        mlflow_experiment=str(getattr(args, "mlflow_experiment", "ppo_discrete")),
+        mlflow_run_name=str(getattr(args, "mlflow_run_name", "")),
+        tensorboard=bool(getattr(args, "tensorboard", False)),
+        config=config_snapshot,
+    )
     update_manifest(
         layout,
         {
@@ -217,6 +232,15 @@ def _run(args: SimpleNamespace) -> int:
             logger.info("saved: %s", args.output_json)
 
         if tracker is not None and layout is not None:
+            tracker.log_metrics(
+                0,
+                {
+                    "eval/episodes": int(summary["episodes"]),
+                    "eval/mean_return": float(summary["return"]["mean"]),
+                    "eval/mean_terminal_game_score": float(summary["terminal_game_score"]["mean"]),
+                    "eval/std_terminal_game_score": float(summary["terminal_game_score"]["std"]),
+                },
+            )
             report_path = layout.reports_dir / "evaluate_policy_summary.json"
             report_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
             update_manifest(

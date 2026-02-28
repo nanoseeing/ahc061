@@ -21,6 +21,10 @@ env_kwargs_json: "{}"
 run_root: null
 run_name: ""
 prefer_run_layout: true
+mlflow_tracking_uri: file:./reinforce/outputs/mlruns
+mlflow_experiment: ppo_discrete
+mlflow_run_name: ""
+tensorboard: true
 
 hydra:
   run:

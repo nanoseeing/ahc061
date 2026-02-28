@@ -100,6 +100,10 @@ class EvalPolicyArgs(Protocol):
     ppo_feature_id: str
     ppo_pf_enabled: bool
     use_action_mask: bool
+    mlflow_tracking_uri: str
+    mlflow_experiment: str
+    mlflow_run_name: str
+    tensorboard: bool
 
 
 class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
@@ -297,10 +301,18 @@ def build_eval_policy_cmd(
         f"episodes={int(args.eval_episodes)}",
         f"seed={int(args.seed)}",
         f"output_json={output_json}",
+        "prefer_run_layout=false",
         "deterministic=true",
         f"env_kwargs_json='{json.dumps(env_kwargs)}'",
         f"feature_id={args.ppo_feature_id}",
     ]
     append_bool_flag(cmd, "pf_enabled", bool(args.ppo_pf_enabled))
     append_bool_flag(cmd, "use_action_mask", bool(args.use_action_mask))
+    append_bool_flag(cmd, "tensorboard", bool(args.tensorboard))
+    if str(args.mlflow_tracking_uri).strip():
+        cmd.append(f"mlflow_tracking_uri={args.mlflow_tracking_uri}")
+        if str(args.mlflow_experiment).strip():
+            cmd.append(f"mlflow_experiment={args.mlflow_experiment}")
+        if str(args.mlflow_run_name).strip():
+            cmd.append(f"mlflow_run_name={args.mlflow_run_name}")
     return cmd
