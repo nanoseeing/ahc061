@@ -7,7 +7,7 @@
 
 #include "ahc061/opponent/move_summary.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 struct ASoftmaxLaplaceEstimator {
     // Fixed hyperparams for research_v3.
@@ -239,4 +239,4 @@ struct ASoftmaxLaplaceEstimator {
     }
 };
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

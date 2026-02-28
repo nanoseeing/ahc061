@@ -11,7 +11,7 @@
 #include "ahc061/features/feature_registry.hpp"
 #include "ahc061/features/features_teacher_bayes.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 class BatchEnv {
 public:
@@ -35,8 +35,8 @@ public:
         feature_id_ = std::move(feature_id);
     }
 
-    int feature_channels() const { return ahc061::exp002::feature_channels(feature_id_); }
-    int feature_channels_of(std::string feature_id) const { return ahc061::exp002::feature_channels(feature_id); }
+    int feature_channels() const { return ahc061::feature_channels(feature_id_); }
+    int feature_channels_of(std::string feature_id) const { return ahc061::feature_channels(feature_id); }
 
     static std::int64_t pick_grain(std::int64_t n) {
         const std::int64_t threads = static_cast<std::int64_t>(at::get_num_threads());
@@ -200,7 +200,7 @@ public:
     }
 
     void observe_into_feature(torch::Tensor board, torch::Tensor mask, const std::string& feature_id) const {
-        const int c = ahc061::exp002::feature_channels(feature_id);
+        const int c = ahc061::feature_channels(feature_id);
         TORCH_CHECK(board.device().is_cpu(), "board must be on CPU");
         TORCH_CHECK(mask.device().is_cpu(), "mask must be on CPU");
         TORCH_CHECK(board.scalar_type() == torch::kFloat32, "board must be float32");
@@ -231,8 +231,8 @@ public:
         torch::Tensor mask,
         const std::string& feature_id_a,
         const std::string& feature_id_b) const {
-        const int ca = ahc061::exp002::feature_channels(feature_id_a);
-        const int cb = ahc061::exp002::feature_channels(feature_id_b);
+        const int ca = ahc061::feature_channels(feature_id_a);
+        const int cb = ahc061::feature_channels(feature_id_b);
 
         TORCH_CHECK(board_a.device().is_cpu(), "board_a must be on CPU");
         TORCH_CHECK(board_b.device().is_cpu(), "board_b must be on CPU");
@@ -554,8 +554,8 @@ public:
         torch::Tensor done,
         const std::string& feature_id_a,
         const std::string& feature_id_b) {
-        const int ca = ahc061::exp002::feature_channels(feature_id_a);
-        const int cb = ahc061::exp002::feature_channels(feature_id_b);
+        const int ca = ahc061::feature_channels(feature_id_a);
+        const int cb = ahc061::feature_channels(feature_id_b);
 
         TORCH_CHECK(board_a.device().is_cpu(), "board_a must be on CPU");
         TORCH_CHECK(board_b.device().is_cpu(), "board_b must be on CPU");
@@ -671,16 +671,16 @@ private:
     std::vector<EnvInstance> envs_{};
 };
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    using ahc061::exp002::BatchEnv;
+    using ahc061::BatchEnv;
 
-    m.def("feature_ids", []() { return ahc061::exp002::feature_ids(); });
-    m.def("feature_channels", [](const std::string& feature_id) { return ahc061::exp002::feature_channels(feature_id); });
+    m.def("feature_ids", []() { return ahc061::feature_ids(); });
+    m.def("feature_channels", [](const std::string& feature_id) { return ahc061::feature_channels(feature_id); });
     m.def(
         "feature_submit_supported",
-        [](const std::string& feature_id) { return ahc061::exp002::feature_submit_supported(feature_id); });
+        [](const std::string& feature_id) { return ahc061::feature_submit_supported(feature_id); });
     pybind11::class_<BatchEnv>(m, "BatchEnv")
         .def(
             pybind11::init<int, std::string, bool>(),

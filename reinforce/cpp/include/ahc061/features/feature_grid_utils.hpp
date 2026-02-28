@@ -7,7 +7,7 @@
 
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline void fill_frontier_from_binary_mask(
     const std::array<std::uint8_t, CELL_MAX>& mask,
@@ -97,4 +97,4 @@ inline void fill_manhattan_dist_to_sources_clip(
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

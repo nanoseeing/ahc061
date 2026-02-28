@@ -8,8 +8,9 @@
 
 #include "ahc061/opponent/move_summary.hpp"
 #include "ahc061/game/rules.hpp"
+#include "ahc061/utils/xorshift.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 #ifndef AHC061_PF_PARTICLES
 #define AHC061_PF_PARTICLES 1024
@@ -239,4 +240,4 @@ struct ParticleFilterSMC {
     const std::array<double, 5>& particle_theta(int idx) const { return theta[idx]; }
 };
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

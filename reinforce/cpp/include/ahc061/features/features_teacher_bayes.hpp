@@ -10,7 +10,7 @@
 #include "ahc061/features/feature_common.hpp"
 #include "ahc061/opponent/move_summary.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline float teacher_clipf(float v, float lo, float hi) {
     return std::min(hi, std::max(lo, v));
@@ -155,4 +155,4 @@ inline void teacher_write_enemy_next_prob_map(
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

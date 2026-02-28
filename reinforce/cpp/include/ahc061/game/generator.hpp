@@ -6,8 +6,9 @@
 #include <cstdint>
 
 #include "ahc061/base/state.hpp"
+#include "ahc061/utils/xorshift.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline void generate_values_problem_distribution(XorShift64& rng, std::array<int, CELL_MAX>& out_value) {
     std::array<double, CELL_MAX> v{};
@@ -145,4 +146,4 @@ inline std::uint64_t compute_case_seed_for_pf(const State& st) {
     return seed;
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

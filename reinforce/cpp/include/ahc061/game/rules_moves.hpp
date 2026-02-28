@@ -5,7 +5,7 @@
 
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline void compute_component_mask(const State& st, int p, std::array<std::uint8_t, CELL_MAX>& comp) {
     comp.fill(0);
@@ -92,4 +92,4 @@ inline int enumerate_legal_moves(
     return c;
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

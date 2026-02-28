@@ -9,7 +9,7 @@
 #include "ahc061/opponent/move_summary.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 struct AdfBetaEstimator {
     // Recommended setting from exp003 large survey + tuned search.
@@ -343,4 +343,4 @@ struct AdfBetaEstimator {
     }
 };
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

@@ -7,7 +7,7 @@
 #include "ahc061/features/features.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 static constexpr int FEATURE_RESEARCH_V1_C = FEATURE_C + 2;
 
@@ -28,5 +28,5 @@ inline void write_features_research_v1_from_common(const FeatureCommon& common, 
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061
 

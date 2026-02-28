@@ -11,7 +11,7 @@
 #include "ahc061/game/rules.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 static constexpr int FEATURE_C = 46;
 
@@ -118,4 +118,4 @@ inline void extract_features_into(
     write_features_submit_v1_from_common(common, out_board);
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

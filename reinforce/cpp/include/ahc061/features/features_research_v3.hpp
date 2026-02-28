@@ -6,7 +6,7 @@
 
 #include "ahc061/features/features_research_v2.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 // research_v3:
 // - same as research_v2 for spatial features
@@ -50,5 +50,5 @@ inline void write_features_research_v3_from_common(const FeatureCommon& common, 
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061
 

@@ -5,7 +5,7 @@
 
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline void compute_component_mask(const State& st, int p, std::array<std::uint8_t, CELL_MAX>& comp) {
     comp.fill(0);
@@ -210,4 +210,4 @@ inline void apply_simultaneous_turn(
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

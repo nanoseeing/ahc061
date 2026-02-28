@@ -11,7 +11,7 @@
 #include "ahc061/features/features_teacher_bayes.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 static constexpr int FEATURE_TEACHER_P0_V1_88CH_C = 88;
 
@@ -151,4 +151,4 @@ inline void write_features_teacher_p0_v1_88ch_from_common(const FeatureCommon& c
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

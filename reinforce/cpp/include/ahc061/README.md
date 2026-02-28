@@ -4,6 +4,8 @@
 
 - `base/`
   - 基本型・定数 (`state.hpp`)
+- `utils/`
+  - 汎用ユーティリティ (`xorshift.hpp`)
 - `game/`
   - ルール、スコア、ケース生成 (`rules.hpp`, `score.hpp`, `generator.hpp`)
 - `opponent/`

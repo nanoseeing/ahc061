@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 static constexpr int N = 10;
 static constexpr int M_MAX = 8;
@@ -30,29 +30,6 @@ static constexpr std::array<std::array<int, 4>, CELL_MAX> NEIGH_RDLU = [] {
     return nei;
 }();
 
-struct XorShift64 {
-    std::uint64_t x = 88172645463325252ULL;
-    XorShift64() = default;
-    explicit XorShift64(std::uint64_t seed) : x(seed ? seed : 88172645463325252ULL) {}
-
-    std::uint64_t next_u64() {
-        x ^= x << 7;
-        x ^= x >> 9;
-        return x;
-    }
-
-    int next_int(int lo, int hi) {  // inclusive
-        const std::uint64_t span = static_cast<std::uint64_t>(hi - lo + 1);
-        return lo + static_cast<int>(next_u64() % span);
-    }
-
-    double next_double01() {
-        // [0, 1)
-        constexpr double INV_U64 = 1.0 / 18446744073709551616.0;  // 2^64
-        return static_cast<double>(next_u64()) * INV_U64;
-    }
-};
-
 struct OpponentParam {
     double wa = 0.65;
     double wb = 0.65;
@@ -74,4 +51,4 @@ struct State {
     std::array<std::uint8_t, M_MAX> ey{};  // piece y
 };
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

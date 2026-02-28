@@ -12,7 +12,7 @@
 #include "ahc061/game/rules.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 enum class NextMode : std::uint8_t {
     k_uniform_or_pf = 0,
@@ -473,4 +473,4 @@ inline void compute_feature_common_into(
     compute_feature_common_next_into(st, pf, a_softmax, adf_beta, pf_enabled, next_mode, moves, move_cnt, out);
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

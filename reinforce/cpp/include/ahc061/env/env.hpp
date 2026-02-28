@@ -18,8 +18,9 @@
 #include "ahc061/game/rules.hpp"
 #include "ahc061/game/score.hpp"
 #include "ahc061/io/tools_input.hpp"
+#include "ahc061/utils/xorshift.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 struct EnvInstance {
     State st{};
@@ -317,4 +318,4 @@ struct EnvInstance {
     }
 };
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

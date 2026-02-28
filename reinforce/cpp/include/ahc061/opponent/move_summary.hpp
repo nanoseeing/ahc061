@@ -4,7 +4,7 @@
 
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 struct MoveSummary {
     int n = 0;                  // |B|
@@ -63,4 +63,4 @@ inline MoveSummary summarize_ai_observation_from_moves(
     return s;
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

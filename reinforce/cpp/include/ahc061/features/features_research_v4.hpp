@@ -10,7 +10,7 @@
 #include "ahc061/features/feature_grid_utils.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 // research_v4 layout (149ch):
 //  - global  : 19ch (0..18)
@@ -268,4 +268,4 @@ inline void write_features_research_v4_from_common(const FeatureCommon& common, 
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

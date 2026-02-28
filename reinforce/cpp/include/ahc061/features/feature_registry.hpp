@@ -15,7 +15,7 @@
 #include "ahc061/features/features_teacher_p0_v1.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 struct FeatureSet {
     const char* id;
@@ -90,4 +90,4 @@ inline std::vector<std::string> feature_ids() {
     return out;
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

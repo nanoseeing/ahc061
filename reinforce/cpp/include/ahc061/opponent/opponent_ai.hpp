@@ -8,7 +8,7 @@
 #include "ahc061/game/rules.hpp"
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline void compute_move_dist_ai_like_from_moves(
     const State& st,
@@ -175,4 +175,4 @@ inline int select_move_ai_like(
     return select_move_ai_like_from_moves(st, p, param, r1, r2, moves.data(), cnt);
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

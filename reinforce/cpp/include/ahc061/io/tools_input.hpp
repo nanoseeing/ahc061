@@ -9,7 +9,7 @@
 
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 struct ToolsCase {
     State st{};
@@ -99,4 +99,4 @@ inline ToolsCase load_tools_case(const std::string& path) {
     return tc;
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

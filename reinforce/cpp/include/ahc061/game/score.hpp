@@ -7,7 +7,7 @@
 
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline std::pair<std::int64_t, std::int64_t> compute_score_s0_sa(const State& st) {
     std::array<std::int64_t, M_MAX> s{};
@@ -51,4 +51,4 @@ inline std::int64_t compute_official_score(const State& st) {
     return compute_official_score(s0, sa);
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061

@@ -7,7 +7,7 @@
 
 #include "ahc061/base/state.hpp"
 
-namespace ahc061::exp002 {
+namespace ahc061 {
 
 inline void compute_move_dist_ai_like_from_moves(
     const State& st,
@@ -90,4 +90,4 @@ inline void compute_move_dist_ai_like_from_moves(
     }
 }
 
-}  // namespace ahc061::exp002
+}  // namespace ahc061
