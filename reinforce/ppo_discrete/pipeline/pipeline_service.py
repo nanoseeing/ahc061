@@ -8,8 +8,8 @@ import platform
 import shutil
 import subprocess
 import sys
-import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -26,7 +26,6 @@ from .pipeline_commands import (
 )
 
 logger = get_logger("run_pipeline")
-_STREAM_EMIT_LOCK = threading.Lock()
 
 
 def _attach_file_handler(log: logging.Logger, path: Path) -> logging.FileHandler | None:
@@ -107,20 +106,6 @@ def _stream_subprocess(cmd: list[str], *, tee_fp: TextIO | None) -> None:
         rc = int(proc.wait())
     if rc != 0:
         raise subprocess.CalledProcessError(rc, cmd)
-
-
-def _emit_child_output(text: str, *, tee_fp: TextIO | None) -> None:
-    if not text:
-        return
-    if not text.endswith("\n"):
-        text += "\n"
-    with _STREAM_EMIT_LOCK:
-        sys.stdout.write(text)
-        sys.stdout.flush()
-        if tee_fp is not None:
-            tee_fp.write(text)
-            tee_fp.flush()
-
 
 
 def run(
@@ -241,227 +226,317 @@ def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any],
     meta["prepared"] = bool(ok)
     return meta
 
+@dataclass
+class _PipelineRuntime:
+    args: PipelineArgs
+    run_name: str
+    layout: Any
+    resume_enabled: bool
+    env_kwargs: dict[str, Any]
+    eval_env_kwargs: dict[str, Any]
+    ppo_val_env_kwargs_json_resolved: str
+    bayes_backend_meta: dict[str, Any]
+    config_snapshot: dict[str, Any]
+    stdout_log_path: Path
+    stdout_fp: TextIO
+    file_handler: logging.FileHandler | None
+    tracker: MetricTracker
+    py: str
+    bc_model: Path
+    bc_teacher_model_path: Path | None
+    ppo_init_model: Path | None
+    ppo_root: Path
+    trained_model: Path
+    consolidated_model: Path
+    stage_result: dict[str, Any]
+
+
+class _PipelineRunner:
+    def __init__(self, args: PipelineArgs) -> None:
+        self.args = args
+
+    def run(self) -> int:
+        rt = self._prepare_runtime()
+        try:
+            self._run_bc_stage(rt)
+            self._run_ppo_stage(rt)
+            self._run_eval_stage(rt)
+            return self._finalize_success(rt)
+        except Exception as e:
+            self._finalize_failure(rt, error=e)
+            raise
+        finally:
+            self._close_runtime(rt)
+
+    def _prepare_runtime(self) -> _PipelineRuntime:
+        args = self.args
+        _validate_backend_combinations(args)
+        base_env_kwargs = parse_json_object(str(args.env_kwargs_json), field_name="--env-kwargs-json")
+        eval_env_kwargs = (
+            parse_json_object(str(args.eval_env_kwargs_json), field_name="--eval-env-kwargs-json")
+            if str(args.eval_env_kwargs_json).strip()
+            else dict(base_env_kwargs)
+        )
+        env_kwargs = dict(base_env_kwargs)
+        resume_enabled = bool(args.resume)
+
+        if resume_enabled and not str(args.run_name).strip():
+            raise ValueError("--resume requires --run-name for an existing pipeline directory")
+        run_name = args.run_name or make_run_name(args.env_id.replace("/", "_") + "_pipeline", seed=args.seed)
+        layout = create_run_layout(args.run_root, run_name)
+        if resume_enabled and not (layout.root / "manifest.json").exists():
+            raise FileNotFoundError(f"resume requested but manifest was not found: {layout.root / 'manifest.json'}")
+
+        bayes_backend_meta = _maybe_prepare_cpp_bayes_backend(
+            env_id=str(args.env_id),
+            env_kwargs=env_kwargs,
+            eval_env_kwargs=eval_env_kwargs,
+        )
+        if bool(bayes_backend_meta.get("enabled")):
+            logger.info(
+                "bayes_backend: train=%s eval=%s cpp_prepared=%s",
+                bayes_backend_meta.get("train_backend"),
+                bayes_backend_meta.get("eval_backend"),
+                bayes_backend_meta.get("prepared"),
+            )
+
+        ppo_val_env_kwargs_json_resolved = str(args.ppo_eval_env_kwargs_json).strip()
+        if not ppo_val_env_kwargs_json_resolved:
+            ppo_val_env_kwargs_json_resolved = json.dumps(eval_env_kwargs)
+
+        config_snapshot = to_jsonable(
+            {
+                "args": vars(args),
+                "env_kwargs": env_kwargs,
+                "eval_env_kwargs": eval_env_kwargs,
+                "ppo_val_env_kwargs_json_resolved": ppo_val_env_kwargs_json_resolved,
+                "bayes_backend": bayes_backend_meta,
+                "layout": layout.as_dict(),
+            }
+        )
+        (layout.config_dir / "run_pipeline.args.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
+
+        stdout_log_path = layout.logs_dir / "pipeline.stdout.log"
+        stdout_fp: TextIO | None = None
+        file_handler: logging.FileHandler | None = None
+        tracker: MetricTracker | None = None
+        try:
+            stdout_fp = stdout_log_path.open("a", encoding="utf-8", buffering=1)
+            file_handler = _attach_file_handler(logger, stdout_log_path)
+            runtime_env = _runtime_env_snapshot()
+            logger.info("runtime_env=%s", json.dumps(runtime_env, ensure_ascii=False, sort_keys=True))
+
+            tracker = MetricTracker(
+                layout.root,
+                run_name=run_name,
+                mlflow_tracking_uri=args.mlflow_tracking_uri,
+                mlflow_experiment=args.mlflow_experiment,
+                mlflow_run_name=args.mlflow_run_name,
+                config=config_snapshot,
+            )
+            tracker.log_event("runtime_env", runtime_env)
+
+            update_manifest(
+                layout,
+                {
+                    "job": "run_pipeline",
+                    "status": "running",
+                    "run_name": run_name,
+                    "layout": layout.as_dict(),
+                    "config": config_snapshot,
+                    "logs": {"stdout_log": str(stdout_log_path)},
+                    "timestamps": {"started_at": time.time()},
+                },
+            )
+
+            py = sys.executable
+            bc_model = layout.models_dir / "bc_init.pt"
+            bc_teacher_model_path = coerce_optional_path(args.bc_teacher_model_path, dot_is_none=True)
+            ppo_init_model = coerce_optional_path(args.ppo_init_model, dot_is_none=True)
+            if ppo_init_model is not None and not ppo_init_model.exists():
+                raise FileNotFoundError(f"--ppo-init-model was set but file does not exist: {ppo_init_model}")
+            ppo_root = layout.artifacts_dir / "ppo_runs"
+            ppo_root.mkdir(parents=True, exist_ok=True)
+
+            stage_result: dict[str, Any] = {
+                "resume": {"enabled": bool(resume_enabled)},
+                "bayes_backend": bayes_backend_meta,
+                "bc": {"skipped": bool(args.skip_bc) or bc_teacher_model_path is None},
+                "ppo": {"skipped": bool(args.skip_ppo)},
+                "eval": {"skipped": bool(args.skip_last_eval)},
+                "logs": {"stdout_log": str(stdout_log_path)},
+            }
+            return _PipelineRuntime(
+                args=args,
+                run_name=run_name,
+                layout=layout,
+                resume_enabled=bool(resume_enabled),
+                env_kwargs=env_kwargs,
+                eval_env_kwargs=eval_env_kwargs,
+                ppo_val_env_kwargs_json_resolved=ppo_val_env_kwargs_json_resolved,
+                bayes_backend_meta=bayes_backend_meta,
+                config_snapshot=config_snapshot,
+                stdout_log_path=stdout_log_path,
+                stdout_fp=stdout_fp,
+                file_handler=file_handler,
+                tracker=tracker,
+                py=py,
+                bc_model=bc_model,
+                bc_teacher_model_path=bc_teacher_model_path,
+                ppo_init_model=ppo_init_model,
+                ppo_root=ppo_root,
+                trained_model=bc_model,
+                consolidated_model=layout.models_dir / "ppo_final.pt",
+                stage_result=stage_result,
+            )
+        except Exception:
+            if tracker is not None:
+                tracker.close()
+            if file_handler is not None:
+                logger.removeHandler(file_handler)
+                file_handler.close()
+            if stdout_fp is not None:
+                stdout_fp.close()
+            raise
+
+    def _run_bc_stage(self, rt: _PipelineRuntime) -> None:
+        args = rt.args
+        if bool(args.skip_bc) or rt.bc_teacher_model_path is None:
+            return
+        if rt.resume_enabled and rt.bc_model.exists():
+            logger.info("resume: skip train_bc (found %s)", rt.bc_model)
+            rt.stage_result["bc"]["resumed"] = True
+            rt.stage_result["bc"]["model"] = str(rt.bc_model)
+            return
+        if not rt.bc_teacher_model_path.exists():
+            raise FileNotFoundError(f"bc_teacher_model_path does not exist: {rt.bc_teacher_model_path}")
+        bc_cmd = build_train_bc_cmd(
+            py=rt.py,
+            args=args,
+            output_model=rt.bc_model,
+            teacher_model_path=rt.bc_teacher_model_path,
+        )
+        run(bc_cmd, tracker=rt.tracker, stage="train_bc", tee_fp=rt.stdout_fp)
+        rt.stage_result["bc"]["model"] = str(rt.bc_model)
+        rt.stage_result["bc"]["teacher_model"] = str(rt.bc_teacher_model_path)
+
+    def _run_ppo_stage(self, rt: _PipelineRuntime) -> None:
+        args = rt.args
+        if bool(args.skip_ppo):
+            return
+
+        resume_ppo_dir = maybe_latest_dir(rt.ppo_root) if rt.resume_enabled else None
+        resume_ppo_ckpt = None
+        if resume_ppo_dir is not None:
+            cand = resume_ppo_dir / "models" / "last.pt"
+            if cand.exists():
+                resume_ppo_ckpt = cand
+        resume_ppo_step = read_ppo_global_step(resume_ppo_dir) if resume_ppo_dir is not None else None
+        if (
+            rt.resume_enabled
+            and rt.consolidated_model.exists()
+            and resume_ppo_step is not None
+            and int(resume_ppo_step) >= int(args.ppo_total_timesteps)
+        ):
+            logger.info(
+                "resume: skip train_ppo (already reached step %d >= target %d)",
+                int(resume_ppo_step),
+                int(args.ppo_total_timesteps),
+            )
+            rt.trained_model = rt.consolidated_model
+            rt.stage_result["ppo"]["resumed"] = True
+            rt.stage_result["ppo"]["resumed_step"] = int(resume_ppo_step)
+            rt.stage_result["ppo"]["consolidated_model"] = str(rt.consolidated_model)
+            return
+
+        cmd_init_model: Path | None = None
+        cmd_resume_name = ""
+        cmd_resume_from: Path | None = None
+        if resume_ppo_ckpt is not None and resume_ppo_dir is not None:
+            cmd_resume_name = str(resume_ppo_dir.name)
+            cmd_resume_from = resume_ppo_ckpt
+            rt.stage_result["ppo"]["resume_from"] = str(resume_ppo_ckpt)
+        elif rt.ppo_init_model is not None:
+            cmd_init_model = rt.ppo_init_model
+            rt.stage_result["ppo"]["init_model"] = str(rt.ppo_init_model)
+        elif rt.bc_model.exists():
+            cmd_init_model = rt.bc_model
+            rt.stage_result["ppo"]["init_model"] = str(rt.bc_model)
+        cmd = build_train_ppo_cmd(
+            py=rt.py,
+            args=args,
+            run_dir=rt.ppo_root,
+            env_kwargs=rt.env_kwargs,
+            ppo_val_env_kwargs_json=rt.ppo_val_env_kwargs_json_resolved,
+            init_model=cmd_init_model,
+            resume_run_name=cmd_resume_name,
+            resume_from=cmd_resume_from,
+        )
+        rt.stage_result["ppo"]["aux_opp_param_loss_coef"] = float(args.ppo_aux_opp_param_loss_coef)
+        rt.stage_result["ppo"]["aux_opp_param_use_valid_mask"] = bool(args.ppo_aux_opp_param_use_valid_mask)
+        run(cmd, tracker=rt.tracker, stage="train_ppo", tee_fp=rt.stdout_fp)
+
+        latest = latest_dir(rt.ppo_root)
+        rt.trained_model = resolve_ppo_model(latest)
+        rt.stage_result["ppo"]["run_dir"] = str(latest)
+        rt.stage_result["ppo"]["model"] = str(rt.trained_model)
+
+        if rt.consolidated_model.exists() or rt.consolidated_model.is_symlink():
+            rt.consolidated_model.unlink()
+        shutil.copy2(rt.trained_model, rt.consolidated_model)
+        rt.trained_model = rt.consolidated_model
+        rt.stage_result["ppo"]["consolidated_model"] = str(rt.consolidated_model)
+
+    def _run_eval_stage(self, rt: _PipelineRuntime) -> None:
+        args = rt.args
+        if bool(args.skip_last_eval):
+            return
+        eval_json = rt.layout.reports_dir / "eval_policy.json"
+        if rt.resume_enabled and eval_json.exists():
+            logger.info("resume: skip eval_policy (found %s)", eval_json)
+            rt.stage_result["eval"]["resumed"] = True
+        else:
+            eval_cmd = build_eval_policy_cmd(
+                py=rt.py,
+                args=args,
+                model_path=rt.trained_model,
+                output_json=eval_json,
+                env_kwargs=rt.eval_env_kwargs,
+            )
+            run(
+                eval_cmd,
+                tracker=rt.tracker,
+                stage="evaluate_policy",
+                tee_fp=rt.stdout_fp,
+            )
+        rt.stage_result["eval"]["report"] = str(eval_json)
+        rt.stage_result["eval"]["env_kwargs"] = to_jsonable(rt.eval_env_kwargs)
+
+    def _finalize_success(self, rt: _PipelineRuntime) -> int:
+        summary = {
+            "run_name": rt.run_name,
+            "run_dir": str(rt.layout.root),
+            "trained_model": str(rt.trained_model),
+            "stages": rt.stage_result,
+            "timestamps": {"finished_at": time.time()},
+        }
+        (rt.layout.reports_dir / "pipeline_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        update_manifest(rt.layout, {"status": "completed", "result": summary})
+        rt.tracker.log_event("pipeline_complete", summary)
+        logger.info("done: %s", rt.layout.root)
+        return 0
+
+    def _finalize_failure(self, rt: _PipelineRuntime, *, error: Exception) -> None:
+        update_manifest(rt.layout, {"status": "failed", "error": str(error), "timestamps": {"failed_at": time.time()}})
+        rt.tracker.log_event("pipeline_failed", {"error": str(error)})
+
+    def _close_runtime(self, rt: _PipelineRuntime) -> None:
+        rt.stdout_fp.close()
+        if rt.file_handler is not None:
+            logger.removeHandler(rt.file_handler)
+            rt.file_handler.close()
+        rt.tracker.close()
 
 
 def run_pipeline(args: PipelineArgs) -> int:
-    _validate_backend_combinations(args)
-    base_env_kwargs = parse_json_object(str(args.env_kwargs_json), field_name="--env-kwargs-json")
-    eval_env_kwargs = (
-        parse_json_object(str(args.eval_env_kwargs_json), field_name="--eval-env-kwargs-json")
-        if str(args.eval_env_kwargs_json).strip()
-        else dict(base_env_kwargs)
-    )
-    env_kwargs = dict(base_env_kwargs)
-    resume_enabled = bool(args.resume)
-
-    if resume_enabled and not str(args.run_name).strip():
-        raise ValueError("--resume requires --run-name for an existing pipeline directory")
-    run_name = args.run_name or make_run_name(args.env_id.replace("/", "_") + "_pipeline", seed=args.seed)
-    layout = create_run_layout(args.run_root, run_name)
-    if resume_enabled and not (layout.root / "manifest.json").exists():
-        raise FileNotFoundError(f"resume requested but manifest was not found: {layout.root / 'manifest.json'}")
-
-    bayes_backend_meta = _maybe_prepare_cpp_bayes_backend(
-        env_id=str(args.env_id),
-        env_kwargs=env_kwargs,
-        eval_env_kwargs=eval_env_kwargs,
-    )
-    if bool(bayes_backend_meta.get("enabled")):
-        logger.info(
-            "bayes_backend: train=%s eval=%s cpp_prepared=%s",
-            bayes_backend_meta.get("train_backend"),
-            bayes_backend_meta.get("eval_backend"),
-            bayes_backend_meta.get("prepared"),
-        )
-
-    ppo_val_env_kwargs_json_resolved = str(args.ppo_eval_env_kwargs_json).strip()
-    if not ppo_val_env_kwargs_json_resolved:
-        ppo_val_env_kwargs_json_resolved = json.dumps(eval_env_kwargs)
-
-    config_snapshot = to_jsonable(
-        {
-            "args": vars(args),
-            "env_kwargs": env_kwargs,
-            "eval_env_kwargs": eval_env_kwargs,
-            "ppo_val_env_kwargs_json_resolved": ppo_val_env_kwargs_json_resolved,
-            "bayes_backend": bayes_backend_meta,
-            "layout": layout.as_dict(),
-        }
-    )
-    (layout.config_dir / "run_pipeline.args.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
-
-    stdout_log_path = layout.logs_dir / "pipeline.stdout.log"
-    stdout_fp = stdout_log_path.open("a", encoding="utf-8", buffering=1)
-    file_handler = _attach_file_handler(logger, stdout_log_path)
-    runtime_env = _runtime_env_snapshot()
-    logger.info("runtime_env=%s", json.dumps(runtime_env, ensure_ascii=False, sort_keys=True))
-
-    tracker = MetricTracker(
-        layout.root,
-        run_name=run_name,
-        mlflow_tracking_uri=args.mlflow_tracking_uri,
-        mlflow_experiment=args.mlflow_experiment,
-        mlflow_run_name=args.mlflow_run_name,
-        config=config_snapshot,
-    )
-    tracker.log_event("runtime_env", runtime_env)
-
-    update_manifest(
-        layout,
-        {
-            "job": "run_pipeline",
-            "status": "running",
-            "run_name": run_name,
-            "layout": layout.as_dict(),
-            "config": config_snapshot,
-            "logs": {"stdout_log": str(stdout_log_path)},
-            "timestamps": {"started_at": time.time()},
-        },
-    )
-
-    py = sys.executable
-    bc_model = layout.models_dir / "bc_init.pt"
-    bc_teacher_model_path = coerce_optional_path(args.bc_teacher_model_path, dot_is_none=True)
-    ppo_init_model = coerce_optional_path(args.ppo_init_model, dot_is_none=True)
-    if ppo_init_model is not None and not ppo_init_model.exists():
-        raise FileNotFoundError(f"--ppo-init-model was set but file does not exist: {ppo_init_model}")
-    ppo_root = layout.artifacts_dir / "ppo_runs"
-    ppo_root.mkdir(parents=True, exist_ok=True)
-
-    stage_result: dict[str, Any] = {
-        "resume": {"enabled": bool(resume_enabled)},
-        "bayes_backend": bayes_backend_meta,
-        "bc": {"skipped": bool(args.skip_bc) or bc_teacher_model_path is None},
-        "ppo": {"skipped": bool(args.skip_ppo)},
-        "eval": {"skipped": bool(args.skip_last_eval)},
-        "logs": {"stdout_log": str(stdout_log_path)},
-    }
-
-    try:
-        if not args.skip_bc and bc_teacher_model_path is not None:
-            if resume_enabled and bc_model.exists():
-                logger.info("resume: skip train_bc (found %s)", bc_model)
-                stage_result["bc"]["resumed"] = True
-                stage_result["bc"]["model"] = str(bc_model)
-            else:
-                if not bc_teacher_model_path.exists():
-                    raise FileNotFoundError(f"bc_teacher_model_path does not exist: {bc_teacher_model_path}")
-                bc_cmd = build_train_bc_cmd(
-                    py=py,
-                    args=args,
-                    output_model=bc_model,
-                    teacher_model_path=bc_teacher_model_path,
-                )
-                run(bc_cmd, tracker=tracker, stage="train_bc", tee_fp=stdout_fp)
-                stage_result["bc"]["model"] = str(bc_model)
-                stage_result["bc"]["teacher_model"] = str(bc_teacher_model_path)
-
-        trained_model = bc_model
-        consolidated_model = layout.models_dir / "ppo_final.pt"
-        if not args.skip_ppo:
-            resume_ppo_dir = maybe_latest_dir(ppo_root) if resume_enabled else None
-            resume_ppo_ckpt = None
-            if resume_ppo_dir is not None:
-                cand = resume_ppo_dir / "models" / "last.pt"
-                if cand.exists():
-                    resume_ppo_ckpt = cand
-            resume_ppo_step = read_ppo_global_step(resume_ppo_dir) if resume_ppo_dir is not None else None
-            if (
-                resume_enabled
-                and consolidated_model.exists()
-                and resume_ppo_step is not None
-                and int(resume_ppo_step) >= int(args.ppo_total_timesteps)
-            ):
-                logger.info(
-                    "resume: skip train_ppo (already reached step %d >= target %d)",
-                    int(resume_ppo_step),
-                    int(args.ppo_total_timesteps),
-                )
-                trained_model = consolidated_model
-                stage_result["ppo"]["resumed"] = True
-                stage_result["ppo"]["resumed_step"] = int(resume_ppo_step)
-                stage_result["ppo"]["consolidated_model"] = str(consolidated_model)
-            else:
-
-                cmd_init_model: Path | None = None
-                cmd_resume_name = ""
-                cmd_resume_from: Path | None = None
-                if resume_ppo_ckpt is not None and resume_ppo_dir is not None:
-                    cmd_resume_name = str(resume_ppo_dir.name)
-                    cmd_resume_from = resume_ppo_ckpt
-                    stage_result["ppo"]["resume_from"] = str(resume_ppo_ckpt)
-                elif ppo_init_model is not None:
-                    cmd_init_model = ppo_init_model
-                    stage_result["ppo"]["init_model"] = str(ppo_init_model)
-                elif bc_model.exists():
-                    cmd_init_model = bc_model
-                    stage_result["ppo"]["init_model"] = str(bc_model)
-                cmd = build_train_ppo_cmd(
-                    py=py,
-                    args=args,
-                    run_dir=ppo_root,
-                    env_kwargs=env_kwargs,
-                    ppo_val_env_kwargs_json=ppo_val_env_kwargs_json_resolved,
-                    init_model=cmd_init_model,
-                    resume_run_name=cmd_resume_name,
-                    resume_from=cmd_resume_from,
-                )
-                stage_result["ppo"]["aux_opp_param_loss_coef"] = float(args.ppo_aux_opp_param_loss_coef)
-                stage_result["ppo"]["aux_opp_param_use_valid_mask"] = bool(args.ppo_aux_opp_param_use_valid_mask)
-                run(cmd, tracker=tracker, stage="train_ppo", tee_fp=stdout_fp)
-
-                latest = latest_dir(ppo_root)
-                trained_model = resolve_ppo_model(latest)
-                stage_result["ppo"]["run_dir"] = str(latest)
-                stage_result["ppo"]["model"] = str(trained_model)
-
-                if consolidated_model.exists() or consolidated_model.is_symlink():
-                    consolidated_model.unlink()
-                shutil.copy2(trained_model, consolidated_model)
-                trained_model = consolidated_model
-                stage_result["ppo"]["consolidated_model"] = str(consolidated_model)
-
-        if not args.skip_last_eval:
-            eval_json = layout.reports_dir / "eval_policy.json"
-            if resume_enabled and eval_json.exists():
-                logger.info("resume: skip eval_policy (found %s)", eval_json)
-                stage_result["eval"]["resumed"] = True
-            else:
-                eval_cmd = build_eval_policy_cmd(
-                    py=py,
-                    args=args,
-                    model_path=trained_model,
-                    output_json=eval_json,
-                    env_kwargs=eval_env_kwargs,
-                )
-                run(
-                    eval_cmd,
-                    tracker=tracker,
-                    stage="evaluate_policy",
-                    tee_fp=stdout_fp,
-                )
-            stage_result["eval"]["report"] = str(eval_json)
-            stage_result["eval"]["env_kwargs"] = to_jsonable(eval_env_kwargs)
-
-        summary = {
-            "run_name": run_name,
-            "run_dir": str(layout.root),
-            "trained_model": str(trained_model),
-            "stages": stage_result,
-            "timestamps": {"finished_at": time.time()},
-        }
-        (layout.reports_dir / "pipeline_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        update_manifest(layout, {"status": "completed", "result": summary})
-        tracker.log_event("pipeline_complete", summary)
-        logger.info("done: %s", layout.root)
-        return 0
-    except Exception as e:
-        update_manifest(layout, {"status": "failed", "error": str(e), "timestamps": {"failed_at": time.time()}})
-        tracker.log_event("pipeline_failed", {"error": str(e)})
-        raise
-    finally:
-        stdout_fp.close()
-        if file_handler is not None:
-            logger.removeHandler(file_handler)
-            file_handler.close()
-        tracker.close()
+    return int(_PipelineRunner(args).run())
