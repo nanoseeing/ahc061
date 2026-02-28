@@ -5,10 +5,11 @@ from types import SimpleNamespace
 from reinforce.ppo.entrypoints.eval_policy import _build_summary
 
 
-def test_build_summary_emits_terminal_game_score_summary() -> None:
+def test_build_summary_emits_score_summary_and_episode_seed() -> None:
     args = SimpleNamespace(
         env_id="AHC061Local-v0",
         episodes=2,
+        start_seed=1000,
         model_path="m.pt",
     )
     summary = _build_summary(
@@ -23,4 +24,7 @@ def test_build_summary_emits_terminal_game_score_summary() -> None:
         episode_enemy_max_scores=[400.0, 266.0],
     )
     assert summary["return"]["mean"] == 1.5
-    assert summary["terminal_game_score"]["mean"] == 150.0
+    assert summary["score"]["mean"] == 150.0
+    assert "terminal_game_score" not in summary
+    assert summary["per_episode"][0]["seed"] == 1000
+    assert summary["per_episode"][1]["seed"] == 1001

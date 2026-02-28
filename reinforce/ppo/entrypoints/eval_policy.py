@@ -113,11 +113,13 @@ def _build_summary(
             f"self={len(episode_self_scores)} enemy={len(episode_enemy_max_scores)}"
         )
 
+    start_seed = int(getattr(args, "start_seed", 0))
     per_episode: list[dict[str, float | int]] = []
     for idx in range(len(episode_scores)):
         per_episode.append(
             {
                 "episode": int(idx),
+                "seed": int(start_seed + idx),
                 "M": int(episode_m[idx]),
                 "U": int(episode_u[idx]),
                 "self_score": float(episode_self_scores[idx]),
@@ -140,7 +142,6 @@ def _build_summary(
         "episodes": int(args.episodes),
         "return": summarize(episode_returns).as_dict(),
         "score": score_summary,
-        "terminal_game_score": score_summary,
         "per_episode": per_episode,
         "grouped_score": grouped_score,
         "model_path": str(args.model_path),
@@ -241,8 +242,8 @@ def _run(args: SimpleNamespace) -> int:
                 {
                     "eval/episodes": int(summary["episodes"]),
                     "eval/mean_return": float(summary["return"]["mean"]),
-                    "eval/mean_terminal_game_score": float(summary["terminal_game_score"]["mean"]),
-                    "eval/std_terminal_game_score": float(summary["terminal_game_score"]["std"]),
+                    "eval/mean_score": float(summary["score"]["mean"]),
+                    "eval/std_score": float(summary["score"]["std"]),
                 },
             )
             report_path = layout.reports_dir / "evaluate_policy_summary.json"
@@ -255,7 +256,7 @@ def _run(args: SimpleNamespace) -> int:
                         "output_json": str(args.output_json) if args.output_json is not None else "",
                         "report_json": str(report_path),
                         "mean_return": summary["return"]["mean"],
-                        "mean_terminal_game_score": summary["terminal_game_score"]["mean"],
+                        "mean_score": summary["score"]["mean"],
                     },
                     "timestamps": {"finished_at": time.time()},
                 },
