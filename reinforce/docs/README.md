@@ -1,5 +1,8 @@
 # ppo_discrete
 
+> NOTE:
+> 環境構築と最新の実行手順は `reinforce/docs/SETUP.md` を参照してください。
+
 `reinforce/ppo_discrete` は、離散行動向け PPO 学習基盤です。
 現行の実装対象は以下です。
 

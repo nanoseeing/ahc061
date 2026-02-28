@@ -1,0 +1,12 @@
+services:
+  reinforce:
+    build:
+      context: ../..
+      dockerfile: reinforce/docker/Dockerfile
+    image: ahc061-reinforce:latest
+    working_dir: /workspace/AHC061
+    volumes:
+      - ../..:/workspace/AHC061
+    environment:
+      - PYTHONPATH=/workspace/AHC061
+    command: ["python", "-m", "pytest", "-q", "reinforce/tests"]

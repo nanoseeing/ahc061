@@ -1,0 +1,14 @@
+.git
+.mypy_cache
+.venv
+venv
+__pycache__
+*.pyc
+
+__bkup
+AHC061-RL
+build
+reinforce/build
+reinforce/outputs
+
+*.log
