@@ -1,4 +1,5 @@
 """Tests for reinforce.ppo.pipeline.pipeline_commands."""
+
 from __future__ import annotations
 
 import json
@@ -6,14 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from reinforce.ppo.pipeline.pipeline_commands import (
     append_bool_flag,
     build_eval_policy_cmd,
     build_train_bc_cmd,
     build_train_ppo_cmd,
 )
-
 
 # ---------------------------------------------------------------------------
 # append_bool_flag
@@ -200,7 +199,7 @@ def test_build_train_ppo_cmd_basic(tmp_path: Path) -> None:
     assert "use_action_mask=true" in cmd
     assert "tensorboard=false" in cmd
     ek_elem = next(e for e in cmd if e.startswith("env_kwargs_json="))
-    inner = ek_elem[len("env_kwargs_json="):]
+    inner = ek_elem[len("env_kwargs_json=") :]
     assert json.loads(inner[1:-1]) == {"a": 2}
 
 
@@ -316,7 +315,7 @@ def test_build_eval_policy_cmd_basic(tmp_path: Path) -> None:
 def test_build_eval_policy_cmd_with_mlflow(tmp_path: Path) -> None:
     args = _make_eval_args(
         mlflow_tracking_uri="file:./mlruns",
-        mlflow_experiment="ppo_discrete",
+        mlflow_experiment="ahc061",
         mlflow_run_name="eval_run",
     )
     cmd = build_eval_policy_cmd(
@@ -327,5 +326,5 @@ def test_build_eval_policy_cmd_with_mlflow(tmp_path: Path) -> None:
         env_kwargs={},
     )
     assert "mlflow_tracking_uri=file:./mlruns" in cmd
-    assert "mlflow_experiment=ppo_discrete" in cmd
+    assert "mlflow_experiment=ahc061" in cmd
     assert "mlflow_run_name=eval_run" in cmd

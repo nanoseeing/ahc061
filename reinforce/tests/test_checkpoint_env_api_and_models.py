@@ -15,6 +15,7 @@ from reinforce.ppo.models import (
     build_agent,
     get_model_config_from_preset,
 )
+from reinforce.ppo.train.ppo_service import _load_initial_weights
 
 
 class TestPPOCoreModelAndCheckpoint:
@@ -147,3 +148,32 @@ class TestPPOCoreModelAndCheckpoint:
             p1 = next(agent.parameters()).detach().cpu().numpy()
             p2 = next(loaded_agent.parameters()).detach().cpu().numpy()
             np.testing.assert_allclose(p1, p2, rtol=1e-7, atol=1e-7)
+
+    def test_load_initial_weights_accepts_compile_wrapped_module(self) -> None:
+        class _CompileLikeWrapper(torch.nn.Module):
+            def __init__(self, mod: torch.nn.Module) -> None:
+                super().__init__()
+                self._orig_mod = mod
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return self._orig_mod(x)
+
+        base = torch.nn.Linear(4, 3)
+        with torch.no_grad():
+            base.weight.zero_()
+            base.bias.zero_()
+
+        donor = torch.nn.Linear(4, 3)
+        with torch.no_grad():
+            donor.weight.fill_(0.25)
+            donor.bias.fill_(0.75)
+
+        wrapper = _CompileLikeWrapper(base)
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "init.pt"
+            torch.save({"model_state_dict": donor.state_dict(), "meta": {"kind": "unit-test"}}, p)
+            meta = _load_initial_weights(p, wrapper, torch.device("cpu"))
+
+        assert meta.get("kind") == "unit-test"
+        np.testing.assert_allclose(base.weight.detach().cpu().numpy(), donor.weight.detach().cpu().numpy(), rtol=1e-7, atol=1e-7)
+        np.testing.assert_allclose(base.bias.detach().cpu().numpy(), donor.bias.detach().cpu().numpy(), rtol=1e-7, atol=1e-7)

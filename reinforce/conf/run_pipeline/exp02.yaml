@@ -99,7 +99,7 @@ skip_last_eval: false
 
 # tracking
 mlflow_tracking_uri: file:./reinforce/outputs/mlruns
-mlflow_experiment: ppo_discrete
+mlflow_experiment: ahc061
 mlflow_run_name: ''
 tensorboard: true
 

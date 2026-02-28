@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -80,3 +82,11 @@ def test_ppo_config_from_source_builds_expected_fields() -> None:
     assert cfg.clip_coef_final == pytest.approx(0.1)
     assert cfg.clip_range_vf_schedule == "cosine"
     assert cfg.save_interval == 7
+
+
+def test_entrypoints_default_force_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    import reinforce.ppo.entrypoints as entrypoints_pkg
+
+    importlib.reload(entrypoints_pkg)
+    assert os.environ.get("FORCE_COLOR") == "1"

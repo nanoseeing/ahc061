@@ -15,7 +15,7 @@ class PPOConfig(BaseModel):
 
     model_config = ConfigDict(frozen=False)
 
-    exp_name: str = "ppo_discrete_board"
+    exp_name: str = "ahc061"
     seed: int = 1
     cuda: bool = True
 

@@ -13,20 +13,10 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from ..ppo.config import PPOConfig
-from ..ppo.rollout import collect_rollout, create_rollout_workspace
-from ..ppo.vecnorm import VecNormalize
-from ..ppo.rollout_buffer import RolloutBuffer
-from ..ppo.trainer import PPOTrainer, UpdateStats
-from ..train.schedule import (
-    PPOScheduleSet,
-    RuntimeScheduleCoefficients,
-    RuntimeScheduleResolver,
-    resolve_vecnorm_gamma,
-    validate_vecnorm_config,
-)
 from ..env import BatchEnv, BatchEnvProtocol, ensure_batch_env
 from ..env.feature_catalog import get_feature_spec
+from ..eval.eval_service import run_policy_episodes
+from ..game_constants import AUX_OPP_PARAM_TOTAL, OPP_SLOT_COUNT
 from ..models import (
     build_agent,
     get_model_config_from_preset,
@@ -35,20 +25,24 @@ from ..models import (
     normalize_model_config,
 )
 from ..pipeline.model_checkpoint_service import save_agent_checkpoint
-from ..utils.experiment import (
-    coerce_optional_path,
-    create_run_layout,
-    make_run_name,
-    to_jsonable,
-    update_manifest,
+from ..ppo.config import PPOConfig
+from ..ppo.rollout import collect_rollout, create_rollout_workspace
+from ..ppo.rollout_buffer import RolloutBuffer
+from ..ppo.trainer import PPOTrainer, UpdateStats
+from ..ppo.vecnorm import VecNormalize
+from ..train.schedule import (
+    PPOScheduleSet,
+    RuntimeScheduleCoefficients,
+    RuntimeScheduleResolver,
+    resolve_vecnorm_gamma,
+    validate_vecnorm_config,
 )
+from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, to_jsonable, update_manifest
 from ..utils.log_utils import get_logger
-from ..utils.metrics import summarize, group_score_mean_variance_by_m_u
+from ..utils.metrics import group_score_mean_variance_by_m_u, summarize
 from ..utils.runtime import choose_device as choose_runtime_device
 from ..utils.tracking import MetricTracker
-from ..game_constants import AUX_OPP_PARAM_TOTAL, OPP_SLOT_COUNT
 from .requests import PPORequest, TrainPPORequest, args_to_cfg, build_ppo_request
-from ..eval.eval_service import run_policy_episodes
 
 logger = get_logger("train_ppo")
 
@@ -205,7 +199,7 @@ def _load_initial_weights(path: Path, agent: torch.nn.Module, device: torch.devi
     payload = torch.load(path, map_location=device, weights_only=False)
     if not isinstance(payload, dict) or "model_state_dict" not in payload:
         raise ValueError(f"invalid checkpoint format (missing model_state_dict): {path}")
-    agent.load_state_dict(payload["model_state_dict"], strict=True)
+    _unwrap_model(agent).load_state_dict(payload["model_state_dict"], strict=True)
     meta = payload.get("meta")
     if isinstance(meta, dict):
         return dict(meta)
@@ -227,20 +221,15 @@ def _safe_int(x: Any, default: int = 0) -> int:
 def _resolve_train_seed_range(args: PPORequest) -> tuple[int, int]:
     i64_max = int(np.iinfo(np.int64).max)
     seed_min = int(_safe_int(getattr(args, "train_seed_min", 0), 0))
-    seed_max_exclusive = int(
-        _safe_int(getattr(args, "train_seed_max_exclusive", i64_max), i64_max)
-    )
+    seed_max_exclusive = int(_safe_int(getattr(args, "train_seed_max_exclusive", i64_max), i64_max))
     if seed_min < 0:
         raise ValueError(f"train_seed_min must be >= 0, got {seed_min}")
     if seed_max_exclusive <= seed_min:
         raise ValueError(
-            "train_seed_max_exclusive must be greater than train_seed_min: "
-            f"{seed_max_exclusive} <= {seed_min}"
+            f"train_seed_max_exclusive must be greater than train_seed_min: {seed_max_exclusive} <= {seed_min}"
         )
     if seed_max_exclusive > i64_max:
-        raise ValueError(
-            f"train_seed_max_exclusive must be <= int64 max ({i64_max}), got {seed_max_exclusive}"
-        )
+        raise ValueError(f"train_seed_max_exclusive must be <= int64 max ({i64_max}), got {seed_max_exclusive}")
     return int(seed_min), int(seed_max_exclusive)
 
 
@@ -429,7 +418,7 @@ def _restore_training_state(
             raise ValueError(f"obs_shape mismatch: model={ckpt_obs_shape}, env={obs_shape}")
         if ckpt_action_dim > 0 and int(ckpt_action_dim) != int(action_dim):
             raise ValueError(f"action_dim mismatch: model={ckpt_action_dim}, env={action_dim}")
-        _unwrap_ddp(agent).load_state_dict(payload["model_state_dict"], strict=True)
+        _unwrap_model(agent).load_state_dict(payload["model_state_dict"], strict=True)
         if "optimizer_state_dict" in payload:
             optimizer.load_state_dict(payload["optimizer_state_dict"])
         resume_meta = dict(payload.get("meta", {}))
@@ -796,7 +785,7 @@ class PPORunner:
                 self.layout.root,
                 run_name=self.run_name,
                 mlflow_tracking_uri=str(getattr(args, "mlflow_tracking_uri", "")),
-                mlflow_experiment=str(getattr(args, "mlflow_experiment", "ppo_discrete")),
+                mlflow_experiment=str(getattr(args, "mlflow_experiment", "ahc061")),
                 mlflow_run_name=str(getattr(args, "mlflow_run_name", "")),
                 tensorboard=bool(getattr(args, "tensorboard", False)),
                 config={
@@ -1014,6 +1003,11 @@ class PPORunner:
                     logger.info("restored vecnormalize state from %s checkpoint", incoming_vec_source)
             elif self.resume_enabled and self.is_main:
                 logger.warning("vecnorm is enabled but resume checkpoint has no vecnormalize_state")
+            elif (not self.resume_enabled) and self.args.init_model is not None and self.is_main:
+                logger.warning(
+                    "vecnorm is enabled but init_model checkpoint has no vecnormalize_state; "
+                    "using fresh statistics"
+                )
             if self.is_main:
                 logger.info(
                     "vecnorm: enabled=true norm_obs=%s norm_reward=%s clip_obs=%.4f clip_reward=%.4f eps=%g gamma=%.6f",
@@ -1318,14 +1312,28 @@ class PPORunner:
         )
 
         copy_non_blocking = bool(self.cache_device.type == "cuda")
-        self.buffer.obs.copy_(rollout.obs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-        self.buffer.actions.copy_(rollout.actions.to(device=self.cache_device, dtype=torch.long, non_blocking=copy_non_blocking))
-        self.buffer.logprobs.copy_(rollout.logprobs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-        self.buffer.rewards.copy_(rollout.rewards.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-        self.buffer.dones.copy_(rollout.dones.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-        self.buffer.values.copy_(rollout.values.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+        self.buffer.obs.copy_(
+            rollout.obs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        )
+        self.buffer.actions.copy_(
+            rollout.actions.to(device=self.cache_device, dtype=torch.long, non_blocking=copy_non_blocking)
+        )
+        self.buffer.logprobs.copy_(
+            rollout.logprobs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        )
+        self.buffer.rewards.copy_(
+            rollout.rewards.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        )
+        self.buffer.dones.copy_(
+            rollout.dones.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        )
+        self.buffer.values.copy_(
+            rollout.values.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        )
         if self.buffer.action_masks is not None:
-            self.buffer.action_masks.copy_(rollout.masks.to(device=self.cache_device, dtype=torch.bool, non_blocking=copy_non_blocking))
+            self.buffer.action_masks.copy_(
+                rollout.masks.to(device=self.cache_device, dtype=torch.bool, non_blocking=copy_non_blocking)
+            )
         if bool(self.aux_opp_param_active):
             if rollout.aux_opp_param_true is None or rollout.aux_opp_valid is None:
                 raise RuntimeError("rollout did not provide aux_opp_param targets")
@@ -1346,14 +1354,18 @@ class PPORunner:
                 )
             )
 
-        next_value = rollout.last_value.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        next_value = rollout.last_value.to(
+            device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking
+        )
         next_done = rollout.last_done.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
         self.buffer.compute_gae(next_value, next_done, local_cfg.gamma, local_cfg.gae_lambda)
         explained_variance_local = _explained_variance(self.buffer.values, self.buffer.returns)
         stats = self.trainer.update(self.buffer)
         return stats, float(explained_variance_local)
 
-    def _aggregate_iteration_stats(self, *, stats: UpdateStats, explained_variance_local: float) -> _IterationAggregateStats:
+    def _aggregate_iteration_stats(
+        self, *, stats: UpdateStats, explained_variance_local: float
+    ) -> _IterationAggregateStats:
         stats_vec = torch.tensor(
             [
                 float(stats.policy_loss),
@@ -1379,8 +1391,12 @@ class PPORunner:
         approx_kl = float((stats_vec[3] / ws).item())
         clipfrac = float((stats_vec[4] / ws).item())
         value_clipfrac = float("nan") if float(stats_vec[6].item()) >= ws else float((stats_vec[5] / ws).item())
-        explained_variance = float("nan") if float(stats_vec[8].item()) <= 0.0 else float((stats_vec[7] / stats_vec[8]).item())
-        aux_opp_param_loss = float("nan") if float(stats_vec[10].item()) <= 0.0 else float((stats_vec[9] / stats_vec[10]).item())
+        explained_variance = (
+            float("nan") if float(stats_vec[8].item()) <= 0.0 else float((stats_vec[7] / stats_vec[8]).item())
+        )
+        aux_opp_param_loss = (
+            float("nan") if float(stats_vec[10].item()) <= 0.0 else float((stats_vec[9] / stats_vec[10]).item())
+        )
 
         score_now = self.env.official_score().to(dtype=torch.float32)
         metric_vec = torch.tensor(
@@ -1389,7 +1405,9 @@ class PPORunner:
             dtype=torch.float64,
         )
         _all_reduce_sum_tensor(metric_vec)
-        mean_official_score = float((metric_vec[0] / metric_vec[1]).item()) if float(metric_vec[1].item()) > 0.0 else 0.0
+        mean_official_score = (
+            float((metric_vec[0] / metric_vec[1]).item()) if float(metric_vec[1].item()) > 0.0 else 0.0
+        )
         return _IterationAggregateStats(
             policy_loss=float(policy_loss),
             value_loss=float(value_loss),
@@ -1511,7 +1529,7 @@ class PPORunner:
                 for k, v in row.items():
                     if k == "global_step":
                         continue
-                    metric_key = f"val/{k[len('periodic_val_'):]}" if k.startswith("periodic_val_") else f"train/{k}"
+                    metric_key = f"val/{k[len('periodic_val_') :]}" if k.startswith("periodic_val_") else f"train/{k}"
                     tracker_metrics[metric_key] = v
                 self.tracker.log_metrics(step=int(self.global_step), metrics=tracker_metrics)
 
@@ -1569,7 +1587,9 @@ class PPORunner:
                 runtime=runtime,
                 agg=agg,
             )
-            self._maybe_run_periodic_eval(iteration=int(iteration), row=row, mean_official=float(agg.mean_official_score))
+            self._maybe_run_periodic_eval(
+                iteration=int(iteration), row=row, mean_official=float(agg.mean_official_score)
+            )
             self._record_and_log_iteration(
                 iteration=int(iteration),
                 sps=int(sps),
@@ -1587,7 +1607,9 @@ class PPORunner:
         """Save final model and write training summary."""
         args = self.args
         if self.is_main:
-            final_iteration = int(max(0, min(self.num_iterations, int(self.global_step // max(1, self.global_batch_size)))))
+            final_iteration = int(
+                max(0, min(self.num_iterations, int(self.global_step // max(1, self.global_batch_size))))
+            )
             save_agent_checkpoint(
                 self.last_model,
                 _unwrap_model(self.agent),
@@ -1652,7 +1674,9 @@ class PPORunner:
                 },
                 "elapsed_sec": float(time.time() - self.start_time),
             }
-            (self.layout.reports_dir / "train_summary.json").write_text(json.dumps(self.summary, indent=2), encoding="utf-8")
+            (self.layout.reports_dir / "train_summary.json").write_text(
+                json.dumps(self.summary, indent=2), encoding="utf-8"
+            )
             (self.layout.root / "summary.json").write_text(json.dumps(self.summary, indent=2), encoding="utf-8")
             update_manifest(
                 self.layout,

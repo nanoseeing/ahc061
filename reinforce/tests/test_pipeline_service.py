@@ -21,7 +21,7 @@ def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         eval_seed_start=0,
         ppo_eval_env_kwargs_json="",
         mlflow_tracking_uri="",
-        mlflow_experiment="ppo_discrete",
+        mlflow_experiment="ahc061",
         mlflow_run_name="",
         bc_teacher_model_path=None,
         ppo_init_model=None,
