@@ -25,6 +25,7 @@ def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         skip_bc=True,
         skip_ppo=True,
         skip_last_eval=True,
+        ppo_distributed="auto",
         ppo_total_timesteps=1000,
         ppo_aux_opp_param_loss_coef=0.0,
         ppo_aux_opp_param_use_valid_mask=True,
@@ -83,3 +84,91 @@ def test_run_pipeline_bc_stage_isolated(monkeypatch, tmp_path: Path) -> None:
     obj = json.loads(summary_path.read_text(encoding="utf-8"))
     assert obj["stages"]["bc"]["skipped"] is False
     assert obj["stages"]["bc"]["teacher_model"] == str(teacher)
+
+
+def test_run_pipeline_resume_skips_ppo_when_target_already_reached(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr(
+        ps,
+        "_maybe_prepare_cpp_bayes_backend",
+        lambda **_kwargs: {"enabled": False, "prepared": False, "train_backend": "", "eval_backend": ""},
+    )
+
+    def _fake_run(cmd: list[str], *, tracker, stage: str | None, tee_fp) -> None:
+        calls.append((str(stage), list(cmd)))
+
+    monkeypatch.setattr(ps, "run", _fake_run)
+
+    run_name = "resume_ppo"
+    run_dir = tmp_path / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    (run_dir / "models").mkdir(parents=True, exist_ok=True)
+    (run_dir / "models" / "ppo_final.pt").write_bytes(b"x")
+    latest_ppo = run_dir / "artifacts" / "ppo_runs" / "r0"
+    (latest_ppo / "models").mkdir(parents=True, exist_ok=True)
+    (latest_ppo / "reports").mkdir(parents=True, exist_ok=True)
+    (latest_ppo / "models" / "last.pt").write_bytes(b"x")
+    (latest_ppo / "reports" / "train_summary.json").write_text(
+        json.dumps({"global_step": 1000}),
+        encoding="utf-8",
+    )
+
+    args = _make_pipeline_args(
+        tmp_path,
+        run_name=run_name,
+        resume=True,
+        skip_bc=True,
+        skip_ppo=False,
+        skip_last_eval=True,
+        ppo_total_timesteps=800,
+    )
+    rc = ps.run_pipeline(args)
+    assert rc == 0
+    assert calls == []
+
+    summary_path = run_dir / "reports" / "pipeline_summary.json"
+    obj = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert obj["stages"]["ppo"]["resumed"] is True
+    assert obj["stages"]["ppo"]["resumed_step"] == 1000
+    assert obj["trained_model"] == str(run_dir / "models" / "ppo_final.pt")
+
+
+def test_run_pipeline_resume_skips_eval_when_report_exists(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr(
+        ps,
+        "_maybe_prepare_cpp_bayes_backend",
+        lambda **_kwargs: {"enabled": False, "prepared": False, "train_backend": "", "eval_backend": ""},
+    )
+
+    def _fake_run(cmd: list[str], *, tracker, stage: str | None, tee_fp) -> None:
+        calls.append((str(stage), list(cmd)))
+
+    monkeypatch.setattr(ps, "run", _fake_run)
+
+    run_name = "resume_eval"
+    run_dir = tmp_path / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    (run_dir / "reports").mkdir(parents=True, exist_ok=True)
+    (run_dir / "reports" / "eval_policy.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+    args = _make_pipeline_args(
+        tmp_path,
+        run_name=run_name,
+        resume=True,
+        skip_bc=True,
+        skip_ppo=True,
+        skip_last_eval=False,
+    )
+    rc = ps.run_pipeline(args)
+    assert rc == 0
+    assert calls == []
+
+    summary_path = run_dir / "reports" / "pipeline_summary.json"
+    obj = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert obj["stages"]["eval"]["resumed"] is True
+    assert obj["stages"]["eval"]["report"] == str(run_dir / "reports" / "eval_policy.json")
