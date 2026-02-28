@@ -90,8 +90,43 @@ class TestTrainPPOSchedule:
         assert c1.clip_range_vf is None
 
         c2 = resolver.resolve(iteration=2, global_step=100)
-        assert c2.progress == pytest.approx(0.25, abs=1e-6)
+        assert c2.progress == pytest.approx(0.0, abs=1e-6)
         assert c2.learning_rate == pytest.approx(1.0, abs=1e-6)
+
+    def test_runtime_schedule_resolver_starts_lr_anneal_after_warmup(self) -> None:
+        cfg = PPOConfig(
+            total_timesteps=500,
+            num_envs=2,
+            num_steps=50,
+            num_minibatches=2,
+            learning_rate=1.0,
+            learning_rate_schedule="linear",
+            ent_coef=0.02,
+            ent_coef_schedule="constant",
+            clip_coef=0.3,
+            clip_coef_schedule="constant",
+        )
+        schedules = PPOScheduleSet.from_config(cfg)
+        resolver = RuntimeScheduleResolver(
+            schedules=schedules,
+            total_iterations=5,
+            warmup_steps=200,
+            global_batch_size=100,
+        )
+
+        # warmup phase
+        c1 = resolver.resolve(iteration=1, global_step=0)
+        c2 = resolver.resolve(iteration=2, global_step=100)
+        assert c1.learning_rate == pytest.approx(0.5, abs=1e-6)
+        assert c2.learning_rate == pytest.approx(1.0, abs=1e-6)
+
+        # anneal starts after warmup (iteration=3 starts from base LR)
+        c3 = resolver.resolve(iteration=3, global_step=200)
+        c4 = resolver.resolve(iteration=4, global_step=300)
+        c5 = resolver.resolve(iteration=5, global_step=400)
+        assert c3.learning_rate == pytest.approx(1.0, abs=1e-6)
+        assert c4.learning_rate == pytest.approx(0.5, abs=1e-6)
+        assert c5.learning_rate == pytest.approx(0.0, abs=1e-6)
 
     def test_runtime_schedule_resolver_validates_inputs(self) -> None:
         cfg = PPOConfig(
