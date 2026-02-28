@@ -17,7 +17,7 @@ class TrainBCArgs(ModelArgs, Protocol):
     seed: int
     bc_seed_min: int
     bc_seed_max_exclusive: int
-    bc_total_transitions: int
+    bc_total_iterations: int
     bc_num_envs: int
     bc_num_steps: int
     bc_learning_rate: float
@@ -35,7 +35,7 @@ class TrainPPOArgs(ModelArgs, Protocol):
     seed: int
     train_seed_min: int
     train_seed_max_exclusive: int
-    ppo_total_timesteps: int
+    ppo_total_iterations: int
     ppo_num_envs: int
     ppo_num_steps: int
     ppo_learning_rate: float
@@ -126,6 +126,48 @@ class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
     ppo_init_model: Path | None
 
 
+def _get_int_arg(args: object, *, name: str, default: int | None = None) -> int:
+    if not hasattr(args, name):
+        if default is None:
+            raise AttributeError(f"missing required argument: {name}")
+        return int(default)
+    return int(getattr(args, name))
+
+
+def resolve_bc_total_iterations(args: TrainBCArgs) -> int:
+    v = int(getattr(args, "bc_total_iterations"))
+    if v <= 0:
+        raise ValueError(f"bc_total_iterations must be > 0, got {v}")
+    return int(v)
+
+
+def resolve_bc_total_transitions(args: TrainBCArgs) -> int:
+    iters = int(resolve_bc_total_iterations(args))
+    num_envs = int(_get_int_arg(args, name="bc_num_envs"))
+    num_steps = int(_get_int_arg(args, name="bc_num_steps"))
+    batch_size = int(num_envs * num_steps)
+    if batch_size <= 0:
+        raise ValueError(f"bc batch_size must be > 0: num_envs={num_envs}, num_steps={num_steps}")
+    return int(iters * batch_size)
+
+
+def resolve_ppo_total_iterations(args: TrainPPOArgs) -> int:
+    v = int(getattr(args, "ppo_total_iterations"))
+    if v <= 0:
+        raise ValueError(f"ppo_total_iterations must be > 0, got {v}")
+    return int(v)
+
+
+def resolve_ppo_total_timesteps(args: TrainPPOArgs) -> int:
+    iters = int(resolve_ppo_total_iterations(args))
+    num_envs = int(_get_int_arg(args, name="ppo_num_envs"))
+    num_steps = int(_get_int_arg(args, name="ppo_num_steps"))
+    batch_size = int(num_envs * num_steps)
+    if batch_size <= 0:
+        raise ValueError(f"ppo batch_size must be > 0: num_envs={num_envs}, num_steps={num_steps}")
+    return int(iters * batch_size)
+
+
 def append_bool_flag(cmd: list[str], name: str, value: bool) -> None:
     """Append a Hydra boolean override: name=true or name=false.
 
@@ -157,6 +199,7 @@ def build_train_bc_cmd(
     output_model: Path,
     teacher_model_path: Path,
 ) -> list[str]:
+    total_transitions = int(resolve_bc_total_transitions(args))
     cmd = [
         py,
         "-m",
@@ -167,7 +210,7 @@ def build_train_bc_cmd(
         f"seed={int(args.seed)}",
         f"seed_min={int(args.bc_seed_min)}",
         f"seed_max_exclusive={int(args.bc_seed_max_exclusive)}",
-        f"total_transitions={int(args.bc_total_transitions)}",
+        f"total_transitions={total_transitions}",
         f"num_envs={int(args.bc_num_envs)}",
         f"num_steps={int(args.bc_num_steps)}",
         f"learning_rate={float(args.bc_learning_rate)}",
@@ -193,6 +236,7 @@ def build_train_ppo_cmd(
     resume_run_name: str = "",
     resume_from: Path | None = None,
 ) -> list[str]:
+    total_timesteps = int(resolve_ppo_total_timesteps(args))
     cmd = [
         py,
         "-m",
@@ -202,7 +246,7 @@ def build_train_ppo_cmd(
         f"seed={int(args.seed)}",
         f"train_seed_min={int(args.train_seed_min)}",
         f"train_seed_max_exclusive={int(args.train_seed_max_exclusive)}",
-        f"total_timesteps={int(args.ppo_total_timesteps)}",
+        f"total_timesteps={total_timesteps}",
         f"num_envs={int(args.ppo_num_envs)}",
         f"num_steps={int(args.ppo_num_steps)}",
         f"learning_rate={float(args.ppo_learning_rate)}",

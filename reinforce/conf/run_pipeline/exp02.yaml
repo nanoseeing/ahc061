@@ -16,7 +16,7 @@ train_seed_max_exclusive: 9223372036854775807
 bc_teacher_model_path: 'reinforce/outputs/ahc061_teacher_p0_v1_full_tune_kl/teacher_p0_v1_full_tune_kl_seed1/models/ppo_final.pt'
 bc_seed_min: 0
 bc_seed_max_exclusive: 9223372036854775807
-bc_total_transitions: 200000
+bc_total_iterations: 250
 bc_num_envs: 8
 bc_num_steps: 100
 bc_learning_rate: 1.0e-3
@@ -26,7 +26,7 @@ bc_temperature: 1.0
 skip_bc: true
 
 # PPO core
-ppo_total_timesteps: 200_000_000
+ppo_total_iterations: 3907
 ppo_num_envs: 512
 ppo_num_steps: 100
 ppo_warmup_iters: 1_000_000

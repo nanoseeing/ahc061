@@ -49,7 +49,7 @@ def _make_train_bc_args(**kwargs) -> SimpleNamespace:
         seed=7,
         bc_seed_min=100000,
         bc_seed_max_exclusive=200000,
-        bc_total_transitions=50000,
+        bc_total_iterations=50,
         bc_num_envs=4,
         bc_num_steps=64,
         bc_learning_rate=1e-3,
@@ -80,7 +80,7 @@ def test_build_train_bc_cmd_basic(tmp_path: Path) -> None:
     assert "seed=7" in cmd
     assert "seed_min=100000" in cmd
     assert "seed_max_exclusive=200000" in cmd
-    assert "total_transitions=50000" in cmd
+    assert "total_transitions=12800" in cmd
     assert "num_envs=4" in cmd
     assert "num_steps=64" in cmd
     assert "learning_rate=0.001" in cmd
@@ -111,7 +111,7 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
         seed=1,
         train_seed_min=0,
         train_seed_max_exclusive=9223372036854775807,
-        ppo_total_timesteps=1000,
+        ppo_total_iterations=1000,
         ppo_num_envs=4,
         ppo_num_steps=16,
         ppo_learning_rate=3e-4,
@@ -193,7 +193,7 @@ def test_build_train_ppo_cmd_basic(tmp_path: Path) -> None:
     assert "env_id=AHC061Local-v0" in cmd
     assert "train_seed_min=0" in cmd
     assert "train_seed_max_exclusive=9223372036854775807" in cmd
-    assert "total_timesteps=1000" in cmd
+    assert "total_timesteps=64000" in cmd
     assert "num_envs=4" in cmd
     assert "feature_id=v1" in cmd
     assert "use_action_mask=true" in cmd

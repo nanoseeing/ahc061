@@ -18,6 +18,9 @@ def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         seed=1,
         bc_seed_min=0,
         bc_seed_max_exclusive=9223372036854775807,
+        bc_total_iterations=10,
+        bc_num_envs=4,
+        bc_num_steps=16,
         eval_seed_start=0,
         ppo_eval_env_kwargs_json="",
         mlflow_tracking_uri="",
@@ -29,7 +32,9 @@ def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         skip_ppo=True,
         skip_last_eval=True,
         ppo_distributed="auto",
-        ppo_total_timesteps=1000,
+        ppo_total_iterations=20,
+        ppo_num_envs=4,
+        ppo_num_steps=16,
         ppo_aux_opp_param_loss_coef=0.0,
         ppo_aux_opp_param_use_valid_mask=True,
     )
@@ -125,7 +130,7 @@ def test_run_pipeline_resume_skips_ppo_when_target_already_reached(monkeypatch, 
         skip_bc=True,
         skip_ppo=False,
         skip_last_eval=True,
-        ppo_total_timesteps=800,
+        ppo_total_iterations=10,
     )
     rc = ps.run_pipeline(args)
     assert rc == 0

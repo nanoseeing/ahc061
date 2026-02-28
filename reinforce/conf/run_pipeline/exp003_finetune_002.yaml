@@ -8,16 +8,14 @@ run_root: reinforce/outputs/pipeline_runs
 run_name: ''
 resume: false
 seed: 1
-train_seed_min: 0
-train_seed_max_exclusive: 9223372036854775807
 
 # BC (online knowledge distillation from teacher)
 # required to run BC; null means skip BC
 bc_teacher_model_path: 'reinforce/outputs/ahc061_teacher_p0_v1_full_tune_kl/teacher_p0_v1_full_tune_kl_seed1/models/ppo_final.pt'
-bc_seed_min: 0
-bc_seed_max_exclusive: 9223372036854775807
-bc_total_iterations: 250
-bc_num_envs: 8
+bc_seed_min: 1_000_000_000
+bc_seed_max_exclusive: 2_000_000_000
+bc_total_iterations: 100
+bc_num_envs: 512
 bc_num_steps: 100
 bc_learning_rate: 1.0e-3
 bc_num_minibatches: 4
@@ -26,9 +24,11 @@ bc_temperature: 1.0
 skip_bc: true
 
 # PPO core
-ppo_total_iterations: 3907
+ppo_total_iterations: 100
 ppo_num_envs: 512
 ppo_num_steps: 100
+train_seed_min: 2_000_000_000
+train_seed_max_exclusive: 3_000_000_000
 ppo_warmup_iters: 1_000_000
 ppo_learning_rate: 2.5e-5
 ppo_learning_rate_schedule: constant
@@ -55,7 +55,7 @@ ppo_aux_opp_param_loss_coef: 0
 ppo_aux_opp_param_use_valid_mask: true
 ppo_max_grad_norm: 1.0
 ppo_target_kl: null
-ppo_checkpoint_interval_steps: 2_000_000
+ppo_checkpoint_interval_steps: 100_000
 ppo_feature_id: teacher_p0_v1_88ch
 ppo_model_preset: exp002_submit_v1_88ch
 ppo_pf_enabled: true
@@ -65,10 +65,10 @@ ppo_pin_memory: true
 ppo_rollout_cache_device: auto
 ppo_distributed: auto
 ppo_compile: true
-ppo_eval_interval_steps: 2_000_000
-ppo_eval_episodes: 100
-ppo_eval_num_envs: 0
-ppo_eval_seed_start: 2_000_000
+ppo_eval_interval_steps: 100_000
+ppo_eval_episodes: 10000
+ppo_eval_num_envs: 512
+ppo_eval_seed_start: 3_000_000_000
 ppo_eval_fixed_seeds: true
 ppo_eval_at_start: true
 ppo_eval_env_kwargs_json: ''
@@ -79,7 +79,7 @@ ppo_vecnorm_eval_norm_reward: false
 ppo_vecnorm_clip_obs: 10.0
 ppo_vecnorm_clip_reward: 10.0
 ppo_vecnorm_epsilon: 1.0e-8
-ppo_vecnorm_gamma: 1.0
+ppo_vecnorm_gamma: null
 ppo_log_interval_iters: 1
 
 # shared model settings
@@ -87,13 +87,13 @@ use_action_mask: true
 model_class: ''
 model_config_file: null
 model_config_json: ''
-ppo_init_model: null
+ppo_init_model: 'reinforce/outputs/pipeline_runs/AHC061Local-v0_pipeline__seed1__1772225065635__p2885962/models/ppo_final.pt'
 skip_ppo: false
 
 # final eval
-eval_episodes: 1000
-eval_num_envs: 0
-eval_seed_start: 0
+eval_episodes: 10000
+eval_num_envs: 512
+eval_seed_start: 1
 eval_env_kwargs_json: ''
 skip_last_eval: false
 
