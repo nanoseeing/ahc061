@@ -93,7 +93,7 @@ def _build_summary(
         "reward_components": {
             "illegal_penalty": summarize(episode_illegal_penalties).as_dict(),
             "terminal_score": summarize(episode_terminal_scores).as_dict(),
-            "terminal_score_ratio": summarize(episode_terminal_scores).as_dict(),
+            "terminal_score_ratio": summarize(episode_game_score_ratio).as_dict(),
             "terminal_game_score": summarize(episode_terminal_game_scores).as_dict(),
         },
         "game_score": {
