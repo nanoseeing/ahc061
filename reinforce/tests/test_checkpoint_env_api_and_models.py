@@ -95,6 +95,23 @@ class TestPPOCoreModelAndCheckpoint:
         assert tuple(logits.shape) == (2, 100)
         assert tuple(value.shape) == (2, 1)
 
+    def test_build_agent_exp002_submit_v1_88ch_with_submit_v1_obs(self) -> None:
+        model_cfg = get_model_config_from_preset("exp002_submit_v1_88ch")
+        agent, resolved = build_agent(
+            obs_shape=(46 * 10 * 10,),
+            action_dim=100,
+            model_config=model_cfg,
+        )
+        assert isinstance(agent, Exp002ResNetBoardAgent)
+        assert int(agent.board_channels) == 46
+        assert resolved["type"] == "Exp002ResNetBoardAgent"
+        assert int(resolved["kwargs"]["board_channels"]) == 46
+        obs = torch.zeros((2, 46 * 10 * 10), dtype=torch.float32)
+        logits = agent.get_logits(obs)
+        value = agent.get_value(obs)
+        assert tuple(logits.shape) == (2, 100)
+        assert tuple(value.shape) == (2, 1)
+
     def test_checkpoint_roundtrip(self) -> None:
         agent, _resolved = build_agent(
             obs_shape=(4,),

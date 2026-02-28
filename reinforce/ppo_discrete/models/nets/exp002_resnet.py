@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import warnings
 
 import numpy as np
 import torch
@@ -68,17 +69,40 @@ class Exp002ResNetBoardAgent(nn.Module):
 
         self.obs_shape = tuple(obs_shape)
         self.action_dim = int(action_dim)
-        self.board_channels = int(board_channels)
         self.board_size = int(board_size)
-        self.board_dim = int(self.board_channels * self.board_size * self.board_size)
         self.hidden_channels = int(hidden_channels)
         self.blocks = int(blocks)
         self.use_aux_opp_param_head = bool(aux_opp_param_head)
 
         obs_dim = int(np.prod(self.obs_shape))
-        if obs_dim < self.board_dim:
-            raise ValueError(f"obs_dim too small: obs_dim={obs_dim}, board_dim={self.board_dim}")
-        self.global_dim = int(obs_dim - self.board_dim) if int(global_dim) <= 0 else int(global_dim)
+        board_area = int(self.board_size * self.board_size)
+        requested_board_channels = int(board_channels)
+        resolved_board_channels = int(requested_board_channels)
+        if int(global_dim) <= 0:
+            requested_board_dim = int(requested_board_channels * board_area)
+            if obs_dim < requested_board_dim:
+                if obs_dim % board_area != 0:
+                    raise ValueError(
+                        f"obs_dim too small: obs_dim={obs_dim}, requested_board_dim={requested_board_dim}, "
+                        f"and obs_dim is not divisible by board_area={board_area}"
+                    )
+                inferred_channels = int(obs_dim // board_area)
+                if inferred_channels <= 0:
+                    raise ValueError(f"inferred board_channels must be positive, got: {inferred_channels}")
+                resolved_board_channels = inferred_channels
+                warnings.warn(
+                    "Exp002ResNetBoardAgent: auto-adjusted board_channels "
+                    f"from {requested_board_channels} to {resolved_board_channels} "
+                    f"to match obs_shape={self.obs_shape}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.global_dim = int(obs_dim - resolved_board_channels * board_area)
+        else:
+            self.global_dim = int(global_dim)
+
+        self.board_channels = int(resolved_board_channels)
+        self.board_dim = int(self.board_channels * board_area)
         if self.global_dim < 0 or self.board_dim + self.global_dim != obs_dim:
             raise ValueError(
                 f"invalid global_dim={self.global_dim} for obs_dim={obs_dim}, board_dim={self.board_dim}"

@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+run_name: exp002_submit_v1_submit_v1
+
+# Keep exp002 submit-v1 architecture preset, but run with submit_v1(46ch) features.
+# Exp002ResNetBoardAgent auto-adjusts board_channels from obs_shape when needed.
+ppo_feature_id: submit_v1
+ppo_model_preset: exp002_submit_v1_88ch
+
+# This preset is PPO-only by default.
+skip_bc: true
