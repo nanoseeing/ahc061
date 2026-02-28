@@ -1,3 +1,4 @@
+"""`feature_catalog` に関する環境処理。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,12 +8,21 @@ from .cpp_ext import load_ext
 
 @dataclass(frozen=True)
 class FeatureSpec:
+    """`FeatureSpec` を表すクラス。"""
     feature_id: str
     channels: int
     submit_supported: bool
 
 
 def list_feature_specs(*, verbose_build: bool = False) -> list[FeatureSpec]:
+    """`list_feature_specs` を実行する。
+
+    Args:
+        verbose_build (bool): 有効化フラグ。
+
+    Returns:
+        list[FeatureSpec]: 計算結果。
+    """
     ext = load_ext(verbose=bool(verbose_build))
     ids = [str(x) for x in ext.feature_ids()]
     out: list[FeatureSpec] = []
@@ -29,6 +39,15 @@ def list_feature_specs(*, verbose_build: bool = False) -> list[FeatureSpec]:
 
 
 def get_feature_spec(feature_id: str, *, verbose_build: bool = False) -> FeatureSpec:
+    """`feature_spec`を取得する。
+
+    Args:
+        feature_id (str): feature_id の値。
+        verbose_build (bool): 有効化フラグ。
+
+    Returns:
+        FeatureSpec: 計算結果。
+    """
     key = str(feature_id).strip()
     if not key:
         raise ValueError("feature_id must not be empty")

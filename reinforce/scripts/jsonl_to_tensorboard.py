@@ -1,21 +1,4 @@
-"""JSONL ログを TensorBoard イベントファイルに変換するスクリプト。
-
-対象ファイル:
-  - train_metrics.jsonl       : PPO 訓練メトリクス (per iteration)
-  - periodic_val_metrics.jsonl: 定期評価メトリクス (nested summary)
-  - metrics.jsonl             : 最終評価メトリクス (flat)
-
-出力: 各 logs/ ディレクトリ内の tensorboard/ サブディレクトリ
-
-Usage:
-    python scripts/jsonl_to_tensorboard.py <pipeline_run_dir>
-    python scripts/jsonl_to_tensorboard.py <specific_run_dir>   # 単一 run も可
-
-Example:
-    python scripts/jsonl_to_tensorboard.py \\
-        reinforce/outputs/pipeline_runs/AHC061Local-v0_pipeline__seed1__xxx
-    tensorboard --logdir reinforce/outputs/pipeline_runs/AHC061Local-v0_pipeline__seed1__xxx
-"""
+"""`jsonl_to_tensorboard` スクリプト。"""
 
 from __future__ import annotations
 
@@ -27,6 +10,14 @@ from pathlib import Path
 
 
 def _safe_float(v: object) -> float | None:
+    """内部ヘルパー: `safe_float` を実行する。
+
+    Args:
+        v (object): v の値。
+
+    Returns:
+        float | None: 計算結果。
+    """
     if isinstance(v, bool):
         return float(v)
     if isinstance(v, (int, float)):
@@ -40,7 +31,15 @@ def _safe_float(v: object) -> float | None:
 
 
 def _flatten(obj: object, prefix: str = "") -> dict[str, float]:
-    """ネストされた dict/list を key.subkey 形式にフラット化し、数値のみ返す。"""
+    """内部ヘルパー: `flatten` を実行する。
+
+    Args:
+        obj (object): obj の値。
+        prefix (str): prefix の値。
+
+    Returns:
+        dict[str, float]: 計算結果。
+    """
     out: dict[str, float] = {}
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -61,7 +60,15 @@ def _flatten(obj: object, prefix: str = "") -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 def _convert_train_metrics(jsonl_path: Path, writer) -> int:
-    """train_metrics.jsonl を変換する。x軸 = global_step。"""
+    """内部ヘルパー: `convert_train_metrics` を実行する。
+
+    Args:
+        jsonl_path (Path): 対象パス。
+        writer (Any): writer の値。
+
+    Returns:
+        int: 計算結果。
+    """
     skip_keys = {"iteration", "global_step", "time"}
     count = 0
     with jsonl_path.open(encoding="utf-8") as f:
@@ -82,7 +89,15 @@ def _convert_train_metrics(jsonl_path: Path, writer) -> int:
 
 
 def _convert_periodic_val_metrics(jsonl_path: Path, writer) -> int:
-    """periodic_val_metrics.jsonl を変換する。x軸 = global_step。"""
+    """内部ヘルパー: `convert_periodic_val_metrics` を実行する。
+
+    Args:
+        jsonl_path (Path): 対象パス。
+        writer (Any): writer の値。
+
+    Returns:
+        int: 計算結果。
+    """
     skip_keys = {"global_step", "eval_round", "seed_base", "fixed_seeds", "time"}
     count = 0
     with jsonl_path.open(encoding="utf-8") as f:
@@ -103,7 +118,16 @@ def _convert_periodic_val_metrics(jsonl_path: Path, writer) -> int:
 
 
 def _convert_flat_metrics(jsonl_path: Path, writer, tag_prefix: str = "eval_final") -> int:
-    """metrics.jsonl (flat) を変換する。x軸 = step フィールド。"""
+    """内部ヘルパー: `convert_flat_metrics` を実行する。
+
+    Args:
+        jsonl_path (Path): 対象パス。
+        writer (Any): writer の値。
+        tag_prefix (str): tag_prefix の値。
+
+    Returns:
+        int: 計算結果。
+    """
     skip_keys = {"step", "time"}
     count = 0
     with jsonl_path.open(encoding="utf-8") as f:
@@ -128,13 +152,28 @@ def _convert_flat_metrics(jsonl_path: Path, writer, tag_prefix: str = "eval_fina
 # ---------------------------------------------------------------------------
 
 def _make_writer(tb_dir: Path):
+    """内部ヘルパー: `make_writer` を実行する。
+
+    Args:
+        tb_dir (Path): 対象パス。
+
+    Returns:
+        Any: 計算結果。
+    """
     from torch.utils.tensorboard import SummaryWriter
     tb_dir.mkdir(parents=True, exist_ok=True)
     return SummaryWriter(log_dir=str(tb_dir))
 
 
 def convert_ppo_run(run_dir: Path) -> bool:
-    """train_ppo run ディレクトリを変換する。logs/train_metrics.jsonl があること。"""
+    """`convert_ppo_run` を実行する。
+
+    Args:
+        run_dir (Path): 対象パス。
+
+    Returns:
+        bool: 計算結果。
+    """
     logs_dir = run_dir / "logs"
     train_metrics = logs_dir / "train_metrics.jsonl"
     periodic_val = logs_dir / "periodic_val_metrics.jsonl"
@@ -159,7 +198,14 @@ def convert_ppo_run(run_dir: Path) -> bool:
 
 
 def convert_eval_run(run_dir: Path) -> bool:
-    """eval run ディレクトリを変換する。logs/metrics.jsonl があること。"""
+    """`convert_eval_run` を実行する。
+
+    Args:
+        run_dir (Path): 対象パス。
+
+    Returns:
+        bool: 計算結果。
+    """
     metrics = run_dir / "logs" / "metrics.jsonl"
     if not metrics.exists():
         return False
@@ -178,7 +224,11 @@ def convert_eval_run(run_dir: Path) -> bool:
 
 
 def convert_pipeline_run(pipeline_dir: Path) -> None:
-    """パイプライン run ディレクトリ全体を再帰的に変換する。"""
+    """`convert_pipeline_run` を実行する。
+
+    Args:
+        pipeline_dir (Path): 対象パス。
+    """
     converted = 0
 
     # ppo_runs/*/
@@ -211,6 +261,7 @@ def convert_pipeline_run(pipeline_dir: Path) -> None:
 
 
 def main() -> None:
+    """メイン処理を実行する。"""
     parser = argparse.ArgumentParser(description="JSONL → TensorBoard 変換")
     parser.add_argument("run_dir", type=Path, help="パイプライン run ディレクトリ（または単一 run）")
     args = parser.parse_args()

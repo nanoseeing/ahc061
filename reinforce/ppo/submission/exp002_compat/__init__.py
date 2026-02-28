@@ -1,1 +1,1 @@
-"""exp002 compatibility assets and model/ckpt helpers for submission exporters."""
+"""`__init__` に関する提出用処理。"""

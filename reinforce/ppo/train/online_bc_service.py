@@ -1,3 +1,4 @@
+"""オンライン BC（教師分布蒸留）を実行する学習サービス。"""
 from __future__ import annotations
 
 import json
@@ -29,6 +30,37 @@ logger = get_logger("online_bc")
 
 @dataclass
 class OnlineBCConfig:
+    """online BC 実行に必要な設定を束ねるデータクラス。
+
+    Attributes:
+        env_id (str): 実行環境 ID。
+        feature_id (str): 観測特徴量 ID。
+        pf_enabled (bool): PF ベイズ推定の有効化フラグ。
+        use_action_mask (bool): 合法手マスク利用フラグ。
+        amp (bool): AMP 利用フラグ。
+        teacher_model_path (Path): 教師モデルチェックポイント。
+        model_class (str): 学生モデル種別。
+        model_config_file (Path | None): 学生モデル設定ファイル。
+        model_config_json (str): 学生モデル設定 JSON。
+        model_preset (str): 学生モデル preset 名。
+        init_model (Path | None): 学生初期重み。
+        output_model (Path): 最終保存先。
+        num_envs (int): 同時環境数。
+        num_steps (int): 1 反復あたりロールアウト長。
+        total_iterations (int): 学習反復回数。
+        learning_rate (float): 学習率。
+        weight_decay (float): Weight decay。
+        num_minibatches (int): ミニバッチ分割数。
+        max_grad_norm (float): 勾配クリップ上限。
+        temperature (float): 教師分布温度。
+        log_interval_iters (int): ログ出力間隔。
+        seed (int): 学習乱数シード。
+        seed_min (int): 生成シード最小値。
+        seed_max_exclusive (int): 生成シード上限（排他）。
+        run_root (Path | None): 実験ラン保存ルート。
+        run_name (str): ラン名。
+    """
+
     # Environment
     env_id: str
     feature_id: str
@@ -64,18 +96,41 @@ class OnlineBCConfig:
 
     @property
     def batch_size(self) -> int:
+        """`batch_size` を実行する。
+
+        Returns:
+            int: 計算結果。
+        """
         return self.num_envs * self.num_steps
 
     @property
     def minibatch_size(self) -> int:
+        """`minibatch_size` を実行する。
+
+        Returns:
+            int: 計算結果。
+        """
         return self.batch_size // self.num_minibatches
 
     @property
     def num_iterations(self) -> int:
+        """`num_iterations` を実行する。
+
+        Returns:
+            int: 計算結果。
+        """
         return int(self.total_iterations)
 
 
 def _resolve_student_model_config(cfg: OnlineBCConfig) -> dict[str, Any]:
+    """内部ヘルパー: `resolve_student_model_config` を実行する。
+
+    Args:
+        cfg (OnlineBCConfig): 設定オブジェクト。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     preset_id = str(cfg.model_preset).strip()
     preset_cfg: dict[str, Any] | None = None
     if preset_id:
@@ -97,6 +152,14 @@ def _resolve_student_model_config(cfg: OnlineBCConfig) -> dict[str, Any]:
 
 
 def _resolve_seed_range(cfg: OnlineBCConfig) -> tuple[int, int]:
+    """内部ヘルパー: `resolve_seed_range` を実行する。
+
+    Args:
+        cfg (OnlineBCConfig): 設定オブジェクト。
+
+    Returns:
+        tuple[int, int]: 計算結果。
+    """
     i64_max = int(np.iinfo(np.int64).max)
     seed_min = int(cfg.seed_min)
     seed_max_exclusive = int(cfg.seed_max_exclusive)
@@ -113,6 +176,14 @@ def _resolve_seed_range(cfg: OnlineBCConfig) -> tuple[int, int]:
 
 
 def _prepare_run(cfg: OnlineBCConfig) -> tuple[Any, MetricTracker | None]:
+    """内部ヘルパー: `prepare_run` を実行する。
+
+    Args:
+        cfg (OnlineBCConfig): 設定オブジェクト。
+
+    Returns:
+        tuple[Any, MetricTracker | None]: 計算結果。
+    """
     if cfg.run_root is None:
         return None, None
 
@@ -138,7 +209,13 @@ def _prepare_run(cfg: OnlineBCConfig) -> tuple[Any, MetricTracker | None]:
 
 
 def run_online_bc(cfg: OnlineBCConfig) -> None:
-    """Online behavioral cloning via KL-divergence distillation from a fixed teacher model."""
+    """online BC 学習フローを実行する。
+
+    準備（ラン管理）・本体学習・完了/失敗時後処理までを担当する。
+
+    Args:
+        cfg (OnlineBCConfig): online BC 実行設定。
+    """
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
@@ -161,6 +238,13 @@ def run_online_bc(cfg: OnlineBCConfig) -> None:
 
 
 def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker | None) -> None:
+    """teacher/student を用いたオンライン蒸留ループを実行する。
+
+    Args:
+        cfg (OnlineBCConfig): 学習設定。
+        layout (Any): ランディレクトリ情報。
+        tracker (MetricTracker | None): 実験トラッカー。
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bool(cfg.amp and device.type == "cuda")
     autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp)

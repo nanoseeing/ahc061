@@ -1,3 +1,4 @@
+"""`exp002_resnet` に関するモデル処理。"""
 from __future__ import annotations
 
 from typing import Any
@@ -13,6 +14,14 @@ from ...game_constants import AUX_OPP_PARAM_TOTAL, OPP_PARAM_DIM, OPP_SLOT_COUNT
 
 
 def _pick_gn_groups(channels: int) -> int:
+    """内部ヘルパー: `pick_gn_groups` を実行する。
+
+    Args:
+        channels (int): channels の値。
+
+    Returns:
+        int: 計算結果。
+    """
     for g in (8, 4, 2, 1):
         if int(channels) % g == 0:
             return g
@@ -20,7 +29,13 @@ def _pick_gn_groups(channels: int) -> int:
 
 
 class _ResidualBlock(nn.Module):
+    """`_ResidualBlock` を表すクラス。"""
     def __init__(self, channels: int):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): channels の値。
+        """
         super().__init__()
         g = _pick_gn_groups(channels)
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
@@ -29,6 +44,14 @@ class _ResidualBlock(nn.Module):
         self.gn2 = nn.GroupNorm(g, channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """`forward` を実行する。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         y = self.conv1(x)
         y = self.gn1(y)
         y = F.silu(y)
@@ -38,7 +61,7 @@ class _ResidualBlock(nn.Module):
 
 
 class Exp002ResNetBoardAgent(nn.Module):
-    """exp002 `resnet_v1` style board-only actor-critic."""
+    """`Exp002ResNetBoardAgent` を表すクラス。"""
 
     model_type: str = "exp002_resnet_v1"
 
@@ -55,6 +78,19 @@ class Exp002ResNetBoardAgent(nn.Module):
         aux_opp_param_head: bool = False,
         aux_opp_param_hidden_dim: int | None = None,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            obs_shape (tuple[int, ...]): obs_shape の値。
+            action_dim (int): action_dim の値。
+            board_channels (int): board_channels の値。
+            board_size (int): board_size の値。
+            global_dim (int): global_dim の値。
+            hidden_channels (int): hidden_channels の値。
+            blocks (int): blocks の値。
+            aux_opp_param_head (bool): 有効化フラグ。
+            aux_opp_param_hidden_dim (int | None): aux_opp_param_hidden_dim の値。
+        """
         super().__init__()
         if int(action_dim) <= 0:
             raise ValueError("action_dim must be positive")
@@ -158,29 +194,85 @@ class Exp002ResNetBoardAgent(nn.Module):
         }
 
     def _flatten_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `flatten_obs` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         return obs.reshape(obs.shape[0], -1)
 
     def _split_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `split_obs` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x = self._flatten_obs(obs)
         return x[:, : self.board_dim].view(x.shape[0], self.board_channels, self.board_size, self.board_size)
 
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `encode` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         h = self.stem(self._split_obs(obs))
         return self.res_blocks(h)
 
     @staticmethod
     def _pool(h: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `pool` を実行する。
+
+        Args:
+            h (torch.Tensor): h の値。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         return h.mean(dim=(2, 3))
 
     def get_logits(self, obs: torch.Tensor) -> torch.Tensor:
+        """`logits`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         h = self._encode(obs)
         return self.policy_head(h).flatten(1)
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
+        """`value`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         h = self._encode(obs)
         return self.value_head(self._pool(h))
 
     def get_aux_opp_param(self, obs: torch.Tensor) -> torch.Tensor:
+        """`aux_opp_param`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         if self.aux_opp_param_head is None:
             raise RuntimeError("aux_opp_param_head is disabled for this model")
         h = self._encode(obs)
@@ -194,6 +286,17 @@ class Exp002ResNetBoardAgent(nn.Module):
         action_mask: torch.Tensor | None = None,
         return_aux_opp_param: bool = False,
     ):
+        """`action_and_value`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action (torch.Tensor | None): action の値。
+            action_mask (torch.Tensor | None): action_mask の値。
+            return_aux_opp_param (bool): 有効化フラグ。
+
+        Returns:
+            Any: 計算結果。
+        """
         h = self._encode(obs)
         logits = self.policy_head(h).flatten(1)
 
@@ -224,6 +327,17 @@ class Exp002ResNetBoardAgent(nn.Module):
         action_mask: torch.Tensor | None = None,
         return_aux_opp_param: bool = False,
     ):
+        """`forward` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action (torch.Tensor | None): action の値。
+            action_mask (torch.Tensor | None): action_mask の値。
+            return_aux_opp_param (bool): 有効化フラグ。
+
+        Returns:
+            Any: 計算結果。
+        """
         return self.get_action_and_value(
             obs,
             action=action,
@@ -237,6 +351,16 @@ class Exp002ResNetBoardAgent(nn.Module):
         action_mask: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> torch.Tensor:
+        """`act` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action_mask (torch.Tensor | None): action_mask の値。
+            deterministic (bool): 有効化フラグ。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         logits = self.get_logits(obs)
         if action_mask is not None:
             if action_mask.ndim == 1:

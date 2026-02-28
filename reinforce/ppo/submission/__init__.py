@@ -1,3 +1,4 @@
+"""`__init__` に関する提出用処理。"""
 from .payload_codec import (
     PAYLOAD_CODEC_BASE91,
     PAYLOAD_CODEC_BASE122,

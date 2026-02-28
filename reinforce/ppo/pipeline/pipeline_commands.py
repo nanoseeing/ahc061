@@ -1,3 +1,4 @@
+"""パイプライン実行で使うサブコマンド組み立てユーティリティ。"""
 from __future__ import annotations
 
 import json
@@ -6,13 +7,14 @@ from typing import Any, Protocol
 
 
 class ModelArgs(Protocol):
-    """Attributes accessed by append_model_args / build_train_bc_cmd / build_train_ppo_cmd."""
+    """モデル指定に関する共通引数を表す Protocol。"""
     model_class: str
     model_config_file: Path | None
     model_config_json: str
 
 
 class TrainBCArgs(ModelArgs, Protocol):
+    """BC 学習コマンドに必要な引数セット。"""
     env_id: str
     seed: int
     bc_seed_min: int
@@ -31,6 +33,7 @@ class TrainBCArgs(ModelArgs, Protocol):
 
 
 class TrainPPOArgs(ModelArgs, Protocol):
+    """PPO 学習コマンドに必要な引数セット。"""
     env_id: str
     seed: int
     train_seed_min: int
@@ -98,6 +101,7 @@ class TrainPPOArgs(ModelArgs, Protocol):
 
 
 class EvalPolicyArgs(Protocol):
+    """評価コマンドに必要な引数セット。"""
     env_id: str
     eval_episodes: int
     eval_num_envs: int
@@ -113,7 +117,7 @@ class EvalPolicyArgs(Protocol):
 
 
 class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
-    """All attributes accessed by pipeline_service.run_pipeline and helpers."""
+    """パイプライン実行全体で利用する統合引数セット。"""
     run_root: Path
     run_name: str
     resume: bool
@@ -127,6 +131,7 @@ class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
 
 
 def resolve_bc_total_iterations(args: TrainBCArgs) -> int:
+    """`bc_total_iterations` を正の整数として検証して返す。"""
     v = int(getattr(args, "bc_total_iterations"))
     if v <= 0:
         raise ValueError(f"bc_total_iterations must be > 0, got {v}")
@@ -134,6 +139,7 @@ def resolve_bc_total_iterations(args: TrainBCArgs) -> int:
 
 
 def resolve_ppo_total_iterations(args: TrainPPOArgs) -> int:
+    """`ppo_total_iterations` を正の整数として検証して返す。"""
     v = int(getattr(args, "ppo_total_iterations"))
     if v <= 0:
         raise ValueError(f"ppo_total_iterations must be > 0, got {v}")
@@ -141,6 +147,7 @@ def resolve_ppo_total_iterations(args: TrainPPOArgs) -> int:
 
 
 def resolve_ppo_checkpoint_interval_iterations(args: TrainPPOArgs) -> int:
+    """チェックポイント保存間隔を非負整数として検証して返す。"""
     v = int(getattr(args, "ppo_checkpoint_interval_iterations"))
     if v < 0:
         raise ValueError(f"ppo_checkpoint_interval_iterations must be >= 0, got {v}")
@@ -148,6 +155,7 @@ def resolve_ppo_checkpoint_interval_iterations(args: TrainPPOArgs) -> int:
 
 
 def resolve_ppo_eval_interval_iterations(args: TrainPPOArgs) -> int:
+    """評価実行間隔を非負整数として検証して返す。"""
     v = int(getattr(args, "ppo_eval_interval_iterations"))
     if v < 0:
         raise ValueError(f"ppo_eval_interval_iterations must be >= 0, got {v}")
@@ -155,16 +163,13 @@ def resolve_ppo_eval_interval_iterations(args: TrainPPOArgs) -> int:
 
 
 def append_bool_flag(cmd: list[str], name: str, value: bool) -> None:
-    """Append a Hydra boolean override: name=true or name=false.
-
-    ``name`` may use either hyphens or underscores; hyphens are converted to
-    underscores to match Hydra config key names.
-    """
+    """Hydra 形式の真偽値引数（`key=true|false`）を追加する。"""
     key = name.replace("-", "_")
     cmd.append(f"{key}={'true' if bool(value) else 'false'}")
 
 
 def append_model_args(cmd: list[str], args: ModelArgs) -> None:
+    """モデルクラス/設定引数をコマンド列へ追加する。"""
     model_class = str(args.model_class).strip()
     model_config_file = str(args.model_config_file).strip() if args.model_config_file is not None else ""
     model_config_json = str(args.model_config_json).strip()
@@ -185,6 +190,7 @@ def build_train_bc_cmd(
     output_model: Path,
     teacher_model_path: Path,
 ) -> list[str]:
+    """`train_bc` エントリーポイント向けコマンド配列を構築する。"""
     total_iterations = int(resolve_bc_total_iterations(args))
     cmd = [
         py,
@@ -222,6 +228,7 @@ def build_train_ppo_cmd(
     resume_run_name: str = "",
     resume_from: Path | None = None,
 ) -> list[str]:
+    """`train_ppo` エントリーポイント向けコマンド配列を構築する。"""
     total_iterations = int(resolve_ppo_total_iterations(args))
     checkpoint_interval_iterations = int(resolve_ppo_checkpoint_interval_iterations(args))
     eval_interval_iterations = int(resolve_ppo_eval_interval_iterations(args))
@@ -334,6 +341,7 @@ def build_eval_policy_cmd(
     output_json: Path,
     env_kwargs: dict[str, Any],
 ) -> list[str]:
+    """`eval_policy` エントリーポイント向けコマンド配列を構築する。"""
     cmd = [
         py,
         "-m",

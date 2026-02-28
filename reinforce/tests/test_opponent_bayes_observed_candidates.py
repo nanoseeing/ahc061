@@ -1,3 +1,4 @@
+"""`test_opponent_bayes_observed_candidates` のテストモジュール。"""
 from __future__ import annotations
 
 import numpy as np
@@ -7,6 +8,11 @@ from reinforce.ppo.opponent.opponent_bayes import create_opponent_bayes_estimato
 
 
 def _build_small_state():
+    """内部ヘルパー: `build_small_state` を実行する。
+
+    Returns:
+        Any: 計算結果。
+    """
     n, m, u = 10, 4, 3
     values = np.arange(n * n, dtype=np.int32).reshape(n, n) % 100 + 1
     owner = np.full((n, n), -1, dtype=np.int16)
@@ -33,6 +39,14 @@ def _build_small_state():
 
 
 def _run_once(backend: str):
+    """内部ヘルパー: `run_once` を実行する。
+
+    Args:
+        backend (str): backend の値。
+
+    Returns:
+        Any: 計算結果。
+    """
     s = _build_small_state()
     e = create_opponent_bayes_estimator(
         n=s["n"],
@@ -53,6 +67,7 @@ def _run_once(backend: str):
 
 
 def test_auto_backend_observed_candidates_runs():
+    """`auto_backend_observed_candidates_runs` の振る舞いを検証する。"""
     if not ensure_cpp_backend(build_if_missing=False, force_build=False, verbose=False):
         return
     feat = _run_once("auto")
@@ -61,6 +76,7 @@ def test_auto_backend_observed_candidates_runs():
 
 
 def test_cpp_backend_observed_candidates_runs():
+    """`cpp_backend_observed_candidates_runs` の振る舞いを検証する。"""
     if not ensure_cpp_backend(build_if_missing=False, force_build=False, verbose=False):
         return
     f_cpp = _run_once("cpp")

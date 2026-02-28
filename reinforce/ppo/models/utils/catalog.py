@@ -1,3 +1,4 @@
+"""`catalog` に関するモデル処理。"""
 from __future__ import annotations
 
 import copy
@@ -7,6 +8,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ModelPreset:
+    """`ModelPreset` を表すクラス。"""
     id: str
     model_config: dict[str, Any]
     default_feature_id: str | None = None
@@ -74,16 +76,37 @@ _MODEL_PRESET_TABLE: dict[str, ModelPreset] = {
 
 
 def list_model_presets() -> list[ModelPreset]:
+    """`list_model_presets` を実行する。
+
+    Returns:
+        list[ModelPreset]: 計算結果。
+    """
     out = list(_MODEL_PRESET_TABLE.values())
     out.sort(key=lambda x: x.id)
     return out
 
 
 def has_model_preset(preset_id: str) -> bool:
+    """`model_preset`かどうかを判定する。
+
+    Args:
+        preset_id (str): preset_id の値。
+
+    Returns:
+        bool: 判定結果。
+    """
     return str(preset_id) in _MODEL_PRESET_TABLE
 
 
 def get_model_preset(preset_id: str) -> ModelPreset:
+    """`model_preset`を取得する。
+
+    Args:
+        preset_id (str): preset_id の値。
+
+    Returns:
+        ModelPreset: 計算結果。
+    """
     key = str(preset_id).strip()
     if not key:
         raise ValueError("model preset id must not be empty")
@@ -95,4 +118,12 @@ def get_model_preset(preset_id: str) -> ModelPreset:
 
 
 def get_model_config_from_preset(preset_id: str) -> dict[str, Any]:
+    """`model_config_from_preset`を取得する。
+
+    Args:
+        preset_id (str): preset_id の値。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     return copy.deepcopy(get_model_preset(preset_id).model_config)

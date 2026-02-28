@@ -1,3 +1,4 @@
+"""`build_ext` に関する相手モデル処理。"""
 from __future__ import annotations
 
 import sysconfig
@@ -8,6 +9,14 @@ from setuptools.command.build_ext import build_ext
 
 
 def _module_candidates(pkg_dir: Path) -> list[Path]:
+    """内部ヘルパー: `module_candidates` を実行する。
+
+    Args:
+        pkg_dir (Path): 対象パス。
+
+    Returns:
+        list[Path]: 計算結果。
+    """
     suffix = str(sysconfig.get_config_var("EXT_SUFFIX") or "").strip()
     cands: list[Path] = []
     if suffix:
@@ -26,6 +35,15 @@ def _module_candidates(pkg_dir: Path) -> list[Path]:
 
 
 def build_extension(*, force: bool = False, verbose: bool = False) -> Path:
+    """`extension`を構築する。
+
+    Args:
+        force (bool): 有効化フラグ。
+        verbose (bool): 有効化フラグ。
+
+    Returns:
+        Path: 計算結果。
+    """
     pkg_dir = Path(__file__).resolve().parent
     # opponent/ -> ppo/ -> reinforce/ -> ppo_cpp_ext/src/
     reinforce_dir = Path(__file__).resolve().parents[2]

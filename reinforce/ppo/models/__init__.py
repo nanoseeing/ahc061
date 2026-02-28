@@ -1,3 +1,4 @@
+"""`__init__` に関するモデル処理。"""
 from __future__ import annotations
 
 from .nets.discrete_board import DiscreteBoardAgent, DiscreteBoardCNNFCAgent, DiscreteBoardMLPAgent

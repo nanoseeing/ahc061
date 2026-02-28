@@ -1,3 +1,4 @@
+"""バッチ環境でのポリシー評価処理を提供するサービス層。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,6 +13,22 @@ from ..ppo.vecnorm import VecNormalize
 
 @dataclass
 class EpisodeStats:
+    """評価エピソードを集計した結果コンテナ。
+
+    Attributes:
+        obs_shape (tuple[int, ...]): 観測テンソル形状 `(C, N, N)`。
+        action_dim (int): 行動数。
+        episode_returns (list[float]): 各エピソードの累積報酬。
+        episode_lengths (list[int]): 各エピソードの長さ。
+        episode_terminal_game_scores (list[float]): 各エピソードの最終公式スコア。
+        episode_m (list[int]): 問題インスタンスの M 値。
+        episode_u (list[int]): 問題インスタンスの U 値。
+        episode_game_score_self (list[float]): 自チーム側スコア。
+        episode_game_score_enemy_max (list[float]): 相手最大スコア。
+        aux_move_dist (torch.Tensor | None): 収集した行動分布教師信号。
+        aux_opp_param (torch.Tensor | None): 収集した相手推定教師信号。
+        aux_opp_valid (torch.Tensor | None): 補助教師信号の有効マスク。
+    """
     obs_shape: tuple[int, ...]
     action_dim: int
     episode_returns: list[float]
@@ -27,6 +44,7 @@ class EpisodeStats:
 
 
 def _resolve_batch_size(*, episodes: int, num_envs: int) -> int:
+    """評価エピソード数と `num_envs` から実行バッチサイズを決める。"""
     if int(episodes) <= 0:
         return 0
     requested = int(num_envs)
@@ -48,6 +66,7 @@ def _build_eval_vecnorm(
     epsilon: float,
     gamma: float,
 ) -> VecNormalize | None:
+    """評価専用 `VecNormalize` を構築し、必要なら状態を復元する。"""
     if not bool(enabled):
         return None
     vecnorm = VecNormalize(
@@ -68,6 +87,7 @@ def _build_eval_vecnorm(
 
 
 def _sample_random_actions(mask: torch.Tensor, action_dim: int, rng: np.random.Generator, *, use_action_mask: bool) -> torch.Tensor:
+    """ランダム方策の行動を生成する。"""
     bsz = int(mask.size(0))
     if not bool(use_action_mask):
         return torch.as_tensor(
@@ -100,6 +120,7 @@ def _policy_actions(
     action_dim: int,
     rng: np.random.Generator,
 ) -> torch.Tensor:
+    """指定方策（random/model）に応じて 1 ステップ分の行動を返す。"""
     if policy_name == "random":
         return _sample_random_actions(mask, int(action_dim), rng, use_action_mask=bool(use_action_mask)).contiguous()
 
@@ -157,6 +178,7 @@ def _collect_chunk(
     torch.Tensor | None,
     torch.Tensor | None,
 ]:
+    """`seed_begin` から連続 seed を使って評価チャンクを収集する。"""
     bsz = int(env.batch_size)
     c = int(env.feature_channels)
     n = int(env.board_size)
@@ -298,6 +320,43 @@ def run_policy_episodes(
     collect_score_breakdown: bool = False,
     collect_aux_targets: bool = False,
 ) -> EpisodeStats:
+    """指定ポリシーで複数エピソードを実行し統計量を返す。
+
+    Args:
+        env_id (str): 実行環境 ID（現在は `AHC061Local-v0` のみ）。
+        episodes (int): 評価エピソード数。
+        num_envs (int): 同時実行する環境数。
+        seed (int): 評価開始シード。
+        feature_id (str): 観測特徴量 ID。
+        pf_enabled (bool): PF ベイズ推定を有効化するか。
+        policy (str): `random` / `model_stochastic` / `model_greedy`。
+        agent (torch.nn.Module | None): モデルポリシー利用時のエージェント。
+        device (torch.device): 推論デバイス。
+        use_action_mask (bool): 合法手マスクを使うか。
+        amp (bool): CUDA 上で AMP 推論を使うか。
+        max_steps_per_episode (int): 1 エピソードあたりの最大ステップ。
+        vecnorm_enabled (bool): VecNormalize を有効化するか。
+        vecnorm_state (dict[str, Any] | None): 復元する正規化状態。
+        vecnorm_norm_obs (bool): 観測正規化を有効化するか。
+        vecnorm_norm_reward (bool): 報酬正規化を有効化するか。
+        vecnorm_clip_obs (float): 観測クリップ上限。
+        vecnorm_clip_reward (float): 報酬クリップ上限。
+        vecnorm_epsilon (float): 正規化の数値安定化係数。
+        vecnorm_gamma (float): 走行平均更新用割引率。
+        on_env_ready (Callable[[tuple[int, ...], int], None] | None):
+            環境準備完了時のコールバック。
+        on_episode_end (Callable[[int, float, int], None] | None):
+            各エピソード終了時のコールバック。
+        collect_score_breakdown (bool): self/enemy スコア内訳を収集するか。
+        collect_aux_targets (bool): 補助教師信号を収集するか。
+
+    Returns:
+        EpisodeStats: 評価結果の集計。
+
+    Raises:
+        ValueError: 引数整合性が崩れている場合。
+        RuntimeError: 実行中に不正アクション等で環境側が失敗した場合。
+    """
     if str(env_id) != "AHC061Local-v0":
         raise ValueError(
             "cpp runner supports only env_id='AHC061Local-v0'; "

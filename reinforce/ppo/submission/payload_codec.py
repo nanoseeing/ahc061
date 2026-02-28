@@ -1,3 +1,4 @@
+"""`payload_codec` に関する提出用処理。"""
 from __future__ import annotations
 
 import heapq
@@ -24,6 +25,14 @@ PAYLOAD_CODEC_HUFF91 = 1091
 
 
 def _encode_base91(data: bytes) -> str:
+    """内部ヘルパー: `encode_base91` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        str: 計算結果。
+    """
     b = 0
     n = 0
     out: list[str] = []
@@ -49,6 +58,14 @@ def _encode_base91(data: bytes) -> str:
 
 
 def _decode_base91(text: str) -> bytes:
+    """内部ヘルパー: `decode_base91` を実行する。
+
+    Args:
+        text (str): text の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     v = -1
     b = 0
     n = 0
@@ -74,12 +91,25 @@ def _decode_base91(text: str) -> bytes:
 
 
 def _encode_base122(data: bytes) -> str:
+    """内部ヘルパー: `encode_base122` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        str: 計算結果。
+    """
     cur_index = 0
     cur_bit = 0
     n = len(data)
     out = bytearray()
 
     def get7() -> int | None:
+        """`get7` を実行する。
+
+        Returns:
+            int | None: 計算結果。
+        """
         nonlocal cur_index, cur_bit
         if cur_index >= n:
             return None
@@ -122,6 +152,14 @@ def _encode_base122(data: bytes) -> str:
 
 
 def _decode_base122(text: str) -> bytes:
+    """内部ヘルパー: `decode_base122` を実行する。
+
+    Args:
+        text (str): text の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     illegals = _BASE122_ILLEGALS
     shortened = _BASE122_SHORTENED
     encoded = text.encode("utf-8")
@@ -130,6 +168,11 @@ def _decode_base122(text: str) -> bytes:
     bit_of_byte = 0
 
     def push7(seven: int) -> None:
+        """`push7` を実行する。
+
+        Args:
+            seven (int): seven の値。
+        """
         nonlocal cur_byte, bit_of_byte
         byte = (seven & 0x7F) << 1
         cur_byte |= (byte >> bit_of_byte) & 0xFF
@@ -166,6 +209,14 @@ def _decode_base122(text: str) -> bytes:
 
 
 def _huff_code_lengths(data: bytes) -> list[int]:
+    """内部ヘルパー: `huff_code_lengths` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        list[int]: 計算結果。
+    """
     lengths = [0] * 256
     if not data:
         return lengths
@@ -203,6 +254,14 @@ def _huff_code_lengths(data: bytes) -> list[int]:
 
 
 def _huff_canonical_codes(lengths: list[int]) -> list[tuple[int, int]]:
+    """内部ヘルパー: `huff_canonical_codes` を実行する。
+
+    Args:
+        lengths (list[int]): lengths の値。
+
+    Returns:
+        list[tuple[int, int]]: 計算結果。
+    """
     syms = sorted((ln, sym) for sym, ln in enumerate(lengths) if ln > 0)
     codes: list[tuple[int, int]] = [(0, 0)] * 256
     code = 0
@@ -218,6 +277,14 @@ def _huff_canonical_codes(lengths: list[int]) -> list[tuple[int, int]]:
 
 
 def _huff122_compress(data: bytes) -> bytes:
+    """内部ヘルパー: `huff122_compress` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     lengths = _huff_code_lengths(data)
     codes = _huff_canonical_codes(lengths)
     out = bytearray(lengths)
@@ -238,6 +305,15 @@ def _huff122_compress(data: bytes) -> bytes:
 
 
 def _huff122_decompress(blob: bytes, *, expected_size: int) -> bytes:
+    """内部ヘルパー: `huff122_decompress` を実行する。
+
+    Args:
+        blob (bytes): blob の値。
+        expected_size (int): expected_size の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     if expected_size == 0:
         return b""
     if len(blob) < 256:
@@ -290,6 +366,15 @@ def _huff122_decompress(blob: bytes, *, expected_size: int) -> bytes:
 
 
 def encode_model_payload(blob: bytes, *, encoding: str) -> tuple[str, int]:
+    """`encode_model_payload` を実行する。
+
+    Args:
+        blob (bytes): blob の値。
+        encoding (str): encoding の値。
+
+    Returns:
+        tuple[str, int]: 計算結果。
+    """
     enc = str(encoding).strip().lower()
     if enc == "base91":
         payload = _encode_base91(blob)

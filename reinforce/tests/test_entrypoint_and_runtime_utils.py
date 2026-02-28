@@ -1,3 +1,4 @@
+"""`test_entrypoint_and_runtime_utils` のテストモジュール。"""
 from __future__ import annotations
 
 import importlib
@@ -14,6 +15,7 @@ from reinforce.ppo.utils.runtime import parse_json_object
 
 
 def test_cfg_to_namespace_applies_path_coercion_and_defaults() -> None:
+    """`cfg_to_namespace_applies_path_coercion_and_defaults` の振る舞いを検証する。"""
     cfg = OmegaConf.create(
         {
             "run_root": "",
@@ -36,11 +38,13 @@ def test_cfg_to_namespace_applies_path_coercion_and_defaults() -> None:
 
 
 def test_parse_json_object_rejects_non_object() -> None:
+    """`parse_json_object_rejects_non_object` の振る舞いを検証する。"""
     with pytest.raises(ValueError):
         parse_json_object("[]", field_name="env_kwargs_json")
 
 
 def test_ppo_config_from_source_builds_expected_fields() -> None:
+    """`ppo_config_from_source_builds_expected_fields` の振る舞いを検証する。"""
     src = SimpleNamespace(
         seed=3,
         total_iterations=400,
@@ -85,6 +89,11 @@ def test_ppo_config_from_source_builds_expected_fields() -> None:
 
 
 def test_entrypoints_default_force_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`entrypoints_default_force_color` の振る舞いを検証する。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): monkeypatch の値。
+    """
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     import reinforce.ppo.entrypoints as entrypoints_pkg
 

@@ -1,3 +1,4 @@
+"""`test_ppo_trainer` のテストモジュール。"""
 from __future__ import annotations
 
 from unittest import mock
@@ -14,7 +15,9 @@ from reinforce.ppo.ppo.trainer import PPOTrainer
 
 
 class _DummyAgent(nn.Module):
+    """`_DummyAgent` を表すクラス。"""
     def __init__(self) -> None:
+        """インスタンスを初期化する。"""
         super().__init__()
         self.theta = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
 
@@ -25,6 +28,17 @@ class _DummyAgent(nn.Module):
         action_mask: torch.Tensor | None = None,
         return_aux_opp_param: bool = False,
     ):
+        """`forward` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action (torch.Tensor | None): action の値。
+            action_mask (torch.Tensor | None): action_mask の値。
+            return_aux_opp_param (bool): 有効化フラグ。
+
+        Returns:
+            Any: 計算結果。
+        """
         base = obs[:, 0] * self.theta
         logits = torch.stack([base, torch.zeros_like(base)], dim=1)
         if action_mask is not None:
@@ -48,6 +62,20 @@ def _build_buffer(
     returns: list[float],
     values: list[float],
 ) -> RolloutBuffer:
+    """内部ヘルパー: `build_buffer` を実行する。
+
+    Args:
+        cfg (PPOConfig): 設定オブジェクト。
+        obs_rows (list[list[float]]): obs_rows の値。
+        actions (list[int]): actions の値。
+        logprobs (list[float]): logprobs の値。
+        advantages (list[float]): advantages の値。
+        returns (list[float]): returns の値。
+        values (list[float]): values の値。
+
+    Returns:
+        RolloutBuffer: 計算結果。
+    """
     device = torch.device("cpu")
     buf = RolloutBuffer(
         num_steps=cfg.num_steps,
@@ -68,7 +96,9 @@ def _build_buffer(
 
 
 class TestPPOTrainer:
+    """`TestPPOTrainer` のテストケース。"""
     def test_target_kl_uses_epoch_mean(self) -> None:
+        """`target_kl_uses_epoch_mean` の振る舞いを検証する。"""
         cfg = PPOConfig(
             num_envs=2,
             num_steps=2,
@@ -108,6 +138,7 @@ class TestPPOTrainer:
         assert (stats.target_kl_threshold or 0.0) == pytest.approx(1.5 * cfg.target_kl, abs=1e-12)
 
     def test_runtime_clip_coef_overrides_cfg(self) -> None:
+        """`runtime_clip_coef_overrides_cfg` の振る舞いを検証する。"""
         cfg = PPOConfig(
             num_envs=2,
             num_steps=2,
@@ -151,6 +182,7 @@ class TestPPOTrainer:
         assert np.isnan(stats_runtime.value_clipfrac)
 
     def test_runtime_clip_range_vf_overrides_cfg(self) -> None:
+        """`runtime_clip_range_vf_overrides_cfg` の振る舞いを検証する。"""
         cfg = PPOConfig(
             num_envs=2,
             num_steps=2,

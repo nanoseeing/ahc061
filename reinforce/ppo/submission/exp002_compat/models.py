@@ -1,3 +1,4 @@
+"""`models` に関する提出用処理。"""
 from __future__ import annotations
 
 from typing import Any
@@ -11,6 +12,14 @@ M_MAX = 8
 
 
 def _pick_gn_groups(channels: int) -> int:
+    """内部ヘルパー: GroupNorm の分割数を選択する。
+
+    Args:
+        channels (int): 整数引数。
+
+    Returns:
+        int: 計算結果。
+    """
     for g in (8, 4, 2, 1):
         if channels % g == 0:
             return g
@@ -18,6 +27,17 @@ def _pick_gn_groups(channels: int) -> int:
 
 
 def _coord_grid(device: torch.device, dtype: torch.dtype, height: int, width: int) -> torch.Tensor:
+    """内部ヘルパー: 正規化座標グリッドを生成する。
+
+    Args:
+        device (torch.device): 実行デバイス。
+        dtype (torch.dtype): dtype の値。
+        height (int): 整数引数。
+        width (int): 整数引数。
+
+    Returns:
+        torch.Tensor: 計算結果。
+    """
     yy = torch.linspace(-1.0, 1.0, steps=height, device=device, dtype=dtype)
     xx = torch.linspace(-1.0, 1.0, steps=width, device=device, dtype=dtype)
     gy = yy.view(1, 1, height, 1).expand(1, 1, height, width)
@@ -26,23 +46,47 @@ def _coord_grid(device: torch.device, dtype: torch.dtype, height: int, width: in
 
 
 class CoordEmbed2d(nn.Module):
+    """CoordEmbed2d の実装クラス。"""
     def __init__(self):
+        """インスタンスを初期化する。"""
         super().__init__()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         bsz, _, h, w = x.shape
         coord = _coord_grid(x.device, x.dtype, h, w).expand(bsz, -1, -1, -1)
         return torch.cat((x, coord), dim=1)
 
 
 class GlobalFiLM(nn.Module):
+    """GlobalFiLM の実装クラス。"""
     def __init__(self, channels: int):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+        """
         super().__init__()
         hidden = max(16, channels)
         self.fc1 = nn.Linear(channels, hidden)
         self.fc2 = nn.Linear(hidden, channels * 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         pooled = x.mean(dim=(2, 3))
         h = F.silu(self.fc1(pooled))
         gamma_beta = self.fc2(h)
@@ -52,13 +96,28 @@ class GlobalFiLM(nn.Module):
 
 
 class SEBlock(nn.Module):
+    """SEBlock の実装クラス。"""
     def __init__(self, channels: int, *, se_ratio: float = 0.25):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+            se_ratio (float): 浮動小数点引数。
+        """
         super().__init__()
         hidden = max(8, int(channels * se_ratio))
         self.fc1 = nn.Linear(channels, hidden)
         self.fc2 = nn.Linear(hidden, channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         pooled = x.mean(dim=(2, 3))
         gate = F.silu(self.fc1(pooled))
         gate = torch.sigmoid(self.fc2(gate))
@@ -66,7 +125,13 @@ class SEBlock(nn.Module):
 
 
 class ResidualBlock(nn.Module):
+    """ResidualBlock の実装クラス。"""
     def __init__(self, channels: int):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+        """
         super().__init__()
         g = _pick_gn_groups(channels)
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
@@ -75,6 +140,14 @@ class ResidualBlock(nn.Module):
         self.gn2 = nn.GroupNorm(g, channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         y = self.conv1(x)
         y = self.gn1(y)
         y = F.silu(y)
@@ -84,7 +157,13 @@ class ResidualBlock(nn.Module):
 
 
 class DWResidualBlock(nn.Module):
+    """DWResidualBlock の実装クラス。"""
     def __init__(self, channels: int):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+        """
         super().__init__()
         g = _pick_gn_groups(channels)
         self.dw = nn.Conv2d(
@@ -100,6 +179,14 @@ class DWResidualBlock(nn.Module):
         self.gn2 = nn.GroupNorm(g, channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         y = self.dw(x)
         y = self.gn1(y)
         y = F.silu(y)
@@ -109,7 +196,13 @@ class DWResidualBlock(nn.Module):
 
 
 class Full3x3PWResidualBlock(nn.Module):
+    """Full3x3PWResidualBlock の実装クラス。"""
     def __init__(self, channels: int):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+        """
         super().__init__()
         g = _pick_gn_groups(channels)
         self.conv3x3 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
@@ -118,6 +211,14 @@ class Full3x3PWResidualBlock(nn.Module):
         self.gn2 = nn.GroupNorm(g, channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         y = self.conv3x3(x)
         y = self.gn1(y)
         y = F.silu(y)
@@ -127,6 +228,7 @@ class Full3x3PWResidualBlock(nn.Module):
 
 
 class PlayerSetAttentionBlock(nn.Module):
+    """PlayerSetAttentionBlock の実装クラス。"""
     def __init__(
         self,
         channels: int,
@@ -135,6 +237,14 @@ class PlayerSetAttentionBlock(nn.Module):
         ff_mult: float = 2.0,
         dropout: float = 0.0,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+            heads (int): 整数引数。
+            ff_mult (float): 浮動小数点引数。
+            dropout (float): 浮動小数点引数。
+        """
         super().__init__()
         if heads <= 0:
             raise ValueError(f"heads must be >= 1, got {int(heads)}")
@@ -165,6 +275,15 @@ class PlayerSetAttentionBlock(nn.Module):
 
     def forward(self, tokens: torch.Tensor, present_mask: torch.Tensor | None = None) -> torch.Tensor:
         # tokens: [B, P, C], present_mask: [B, P] bool
+        """順伝播を行う。
+
+        Args:
+            tokens (torch.Tensor): 入力テンソル。
+            present_mask (torch.Tensor | None): 任意テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         key_padding_mask = None if present_mask is None else (~present_mask)
         y = self.norm1(tokens)
         # NOTE:
@@ -181,6 +300,7 @@ class PlayerSetAttentionBlock(nn.Module):
 
 
 class MainEnemyCrossAttentionBlock(nn.Module):
+    """MainEnemyCrossAttentionBlock の実装クラス。"""
     def __init__(
         self,
         query_channels: int,
@@ -190,6 +310,15 @@ class MainEnemyCrossAttentionBlock(nn.Module):
         ff_mult: float = 2.0,
         dropout: float = 0.0,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            query_channels (int): 整数引数。
+            kv_channels (int): 整数引数。
+            heads (int): 整数引数。
+            ff_mult (float): 浮動小数点引数。
+            dropout (float): 浮動小数点引数。
+        """
         super().__init__()
         if heads <= 0:
             raise ValueError(f"heads must be >= 1, got {int(heads)}")
@@ -228,6 +357,16 @@ class MainEnemyCrossAttentionBlock(nn.Module):
         kv_valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # q_tokens: [B, Nq, Cq], kv_tokens: [B, Nk, Ckv], kv_valid_mask: [B, Nk] bool
+        """順伝播を行う。
+
+        Args:
+            q_tokens (torch.Tensor): 入力テンソル。
+            kv_tokens (torch.Tensor): 入力テンソル。
+            kv_valid_mask (torch.Tensor | None): 任意テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         key_padding_mask = None if kv_valid_mask is None else (~kv_valid_mask)
         q = self.q_norm(q_tokens)
         kv = self.kv_norm(kv_tokens)
@@ -240,7 +379,14 @@ class MainEnemyCrossAttentionBlock(nn.Module):
 
 
 class PixelPlayerSelfAttentionDWBlock(nn.Module):
+    """PixelPlayerSelfAttentionDWBlock の実装クラス。"""
     def __init__(self, channels: int, *, heads: int = 4):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+            heads (int): 整数引数。
+        """
         super().__init__()
         if channels % heads != 0:
             raise ValueError(f"channels ({channels}) must be divisible by heads ({heads})")
@@ -258,6 +404,15 @@ class PixelPlayerSelfAttentionDWBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, player_present: torch.Tensor | None = None) -> torch.Tensor:
         # x: [B, P, C, H, W], attention is only across players at each pixel.
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+            player_present (torch.Tensor | None): 任意テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         bsz, pnum, channels, h, w = x.shape
         tokens = x.permute(0, 3, 4, 1, 2).reshape(bsz * h * w, pnum, channels)  # [BHW, P, C]
 
@@ -291,6 +446,7 @@ class PixelPlayerSelfAttentionDWBlock(nn.Module):
 
 
 class PlayerAxisMixResidualBlock(nn.Module):
+    """PlayerAxisMixResidualBlock の実装クラス。"""
     def __init__(
         self,
         player_count: int,
@@ -299,6 +455,14 @@ class PlayerAxisMixResidualBlock(nn.Module):
         use_channel_gate: bool = True,
         alpha_scale: float = 0.2,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            player_count (int): 整数引数。
+            channels (int): 整数引数。
+            use_channel_gate (bool): 有効化フラグ。
+            alpha_scale (float): 浮動小数点引数。
+        """
         super().__init__()
         if int(player_count) <= 0:
             raise ValueError(f"player_count must be >= 1, got {int(player_count)}")
@@ -324,16 +488,43 @@ class PlayerAxisMixResidualBlock(nn.Module):
 
     @staticmethod
     def _normalize_rowwise_abs(w: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
+        """内部ヘルパー: 行方向の絶対値和で正規化する。
+
+        Args:
+            w (torch.Tensor): 入力テンソル。
+            eps (float): 浮動小数点引数。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         den = w.abs().sum(dim=-1, keepdim=True).clamp_min(float(eps))
         return w / den
 
     def _masked_weight(self, w: torch.Tensor, present_f: torch.Tensor) -> torch.Tensor:
         # w: [P, P], present_f: [B, P] in {0,1}
+        """内部ヘルパー: 有効プレイヤーに応じた重みを作る。
+
+        Args:
+            w (torch.Tensor): 入力テンソル。
+            present_f (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         w_eff = w.unsqueeze(0) * present_f.unsqueeze(1)  # mask key-side (source players)
         return self._normalize_rowwise_abs(w_eff)
 
     def forward(self, x: torch.Tensor, present_mask: torch.Tensor | None) -> torch.Tensor:
         # x: [B, P, C, H, W], present_mask: [B, P] bool
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+            present_mask (torch.Tensor | None): 任意テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         bsz, pnum, channels, _, _ = x.shape
         if pnum != self.player_count:
             raise RuntimeError(f"player axis mismatch: expected {self.player_count}, got {pnum}")
@@ -363,7 +554,15 @@ class PlayerAxisMixResidualBlock(nn.Module):
 
 
 class MBConvSEBlock(nn.Module):
+    """MBConvSEBlock の実装クラス。"""
     def __init__(self, channels: int, *, expand_ratio: int = 2, se_ratio: float = 0.25):
+        """インスタンスを初期化する。
+
+        Args:
+            channels (int): 整数引数。
+            expand_ratio (int): 整数引数。
+            se_ratio (float): 浮動小数点引数。
+        """
         super().__init__()
         mid_channels = max(channels, channels * int(expand_ratio))
         g_mid = _pick_gn_groups(mid_channels)
@@ -385,6 +584,14 @@ class MBConvSEBlock(nn.Module):
         self.gn_project = nn.GroupNorm(g_out, channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """順伝播を行う。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         y = self.expand(x)
         y = self.gn_expand(y)
         y = F.silu(y)
@@ -398,7 +605,13 @@ class MBConvSEBlock(nn.Module):
 
 
 class PolicyValueBase(nn.Module):
+    """PolicyValueBase の実装クラス。"""
     def __init__(self, hidden_channels: int):
+        """インスタンスを初期化する。
+
+        Args:
+            hidden_channels (int): 整数引数。
+        """
         super().__init__()
         self.policy_head = nn.Conv2d(hidden_channels, 1, kernel_size=1, padding=0, bias=True)
         self.value_head = nn.Sequential(
@@ -415,13 +628,37 @@ class PolicyValueBase(nn.Module):
         self.register_buffer("_dummy_aux0", torch.empty(0), persistent=False)
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         raise NotImplementedError
 
     def _forward_policy_only(self, board: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: 方策用特徴量のみを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x_policy, _ = self._forward_features(board)
         return x_policy
 
     def forward_policy(self, board: torch.Tensor) -> torch.Tensor:
+        """方策ヘッドの順伝播を行う。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x_policy = self._forward_policy_only(board)
         return self.policy_head(x_policy).flatten(1)
 
@@ -431,6 +668,15 @@ class PolicyValueBase(nn.Module):
         *,
         with_aux: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """順伝播を行う。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+            with_aux (bool): 有効化フラグ。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x_policy, x_value = self._forward_features(board)
         logits = self.policy_head(x_policy).flatten(1)  # [B, 100]
         pooled = x_value.mean(dim=(2, 3))  # [B, H]
@@ -445,7 +691,15 @@ class PolicyValueBase(nn.Module):
 
 
 class PolicyValueNet(PolicyValueBase):
+    """PolicyValueNet の実装クラス。"""
     def __init__(self, in_channels: int, hidden_channels: int = 64, blocks: int = 6):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         g = _pick_gn_groups(hidden_channels)
         self.stem = nn.Sequential(
@@ -456,13 +710,29 @@ class PolicyValueNet(PolicyValueBase):
         self.blocks = nn.Sequential(*[ResidualBlock(hidden_channels) for _ in range(blocks)])
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x = self.stem(board)
         x = self.blocks(x)
         return x, x
 
 
 class PolicyValueDWNet(PolicyValueBase):
+    """PolicyValueDWNet の実装クラス。"""
     def __init__(self, in_channels: int, hidden_channels: int = 64, blocks: int = 6):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         g = _pick_gn_groups(hidden_channels)
         self.stem = nn.Sequential(
@@ -473,6 +743,14 @@ class PolicyValueDWNet(PolicyValueBase):
         self.blocks = nn.Sequential(*[DWResidualBlock(hidden_channels) for _ in range(blocks)])
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x = self.stem(board)
         x = self.blocks(x)
         return x, x
@@ -483,6 +761,7 @@ class PolicyValueDWPlayerConcatNet(PolicyValueBase):
     #   global  : 19ch [0:19]
     #   player  : 128ch [19:147] as (8 players x 16ch)
     #   pos0    : 2ch  [147:149]
+    """PolicyValueDWPlayerConcatNet の実装クラス。"""
     R4_GLOBAL_C = 19
     R4_PLAYER_PER_C = 16
     R4_PLAYER_BLOCK_C = M_MAX * R4_PLAYER_PER_C
@@ -512,6 +791,25 @@ class PolicyValueDWPlayerConcatNet(PolicyValueBase):
         player_mix_channel_gate: bool = False,
         player_mix_alpha_scale: float = 0.2,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+            feature_id (str | None): 任意の文字列。
+            player_hidden_channels (int | None): 任意の整数。
+            use_full3x3_blocks (bool): 有効化フラグ。
+            player_set_layers (int): 整数引数。
+            player_set_heads (int): 整数引数。
+            player_set_ff_mult (float): 浮動小数点引数。
+            player_set_dropout (float): 浮動小数点引数。
+            player_set_every (int): 整数引数。
+            player_mix_layers (int): 整数引数。
+            player_mix_every (int): 整数引数。
+            player_mix_channel_gate (bool): 有効化フラグ。
+            player_mix_alpha_scale (float): 浮動小数点引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         if in_channels != self.R4_TOTAL_C:
             raise ValueError(
@@ -609,6 +907,14 @@ class PolicyValueDWPlayerConcatNet(PolicyValueBase):
         self.register_buffer("enemy_player_index", torch.arange(1, M_MAX, dtype=torch.int64), persistent=False)
 
     def _split_research_v4(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: research_v4 観測を global/player に分割する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, _, h, w = board.shape
         g = board[:, : self.R4_GLOBAL_C, :, :]
         p = board[:, self.R4_GLOBAL_C : self.R4_GLOBAL_C + self.R4_PLAYER_BLOCK_C, :, :]
@@ -616,6 +922,14 @@ class PolicyValueDWPlayerConcatNet(PolicyValueBase):
         return g, p
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, c, h, w = board.shape
         if c != self.R4_TOTAL_C:
             raise RuntimeError(f"dwres_ppconcat_v1 expects C={self.R4_TOTAL_C}, got {int(c)}")
@@ -694,6 +1008,7 @@ class PolicyValueDWPlayerConcatPCatOnlyNet(PolicyValueBase):
     #   global  : 19ch [0:19]
     #   player  : 128ch [19:147] as (8 players x 16ch)
     #   pos0    : 2ch  [147:149]
+    """PolicyValueDWPlayerConcatPCatOnlyNet の実装クラス。"""
     R4_GLOBAL_C = 19
     R4_PLAYER_PER_C = 16
     R4_PLAYER_BLOCK_C = M_MAX * R4_PLAYER_PER_C
@@ -722,6 +1037,25 @@ class PolicyValueDWPlayerConcatPCatOnlyNet(PolicyValueBase):
         player_mix_channel_gate: bool = False,
         player_mix_alpha_scale: float = 0.2,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+            feature_id (str | None): 任意の文字列。
+            player_hidden_channels (int | None): 任意の整数。
+            use_full3x3_blocks (bool): 有効化フラグ。
+            player_set_layers (int): 整数引数。
+            player_set_heads (int): 整数引数。
+            player_set_ff_mult (float): 浮動小数点引数。
+            player_set_dropout (float): 浮動小数点引数。
+            player_set_every (int): 整数引数。
+            player_mix_layers (int): 整数引数。
+            player_mix_every (int): 整数引数。
+            player_mix_channel_gate (bool): 有効化フラグ。
+            player_mix_alpha_scale (float): 浮動小数点引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         if in_channels != self.R4_TOTAL_C:
             raise ValueError(
@@ -808,6 +1142,14 @@ class PolicyValueDWPlayerConcatPCatOnlyNet(PolicyValueBase):
         self.register_buffer("enemy_player_index", torch.arange(1, M_MAX, dtype=torch.int64), persistent=False)
 
     def _split_research_v4(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: research_v4 観測を global/player に分割する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, _, h, w = board.shape
         g = board[:, : self.R4_GLOBAL_C, :, :]
         p = board[:, self.R4_GLOBAL_C : self.R4_GLOBAL_C + self.R4_PLAYER_BLOCK_C, :, :]
@@ -815,6 +1157,14 @@ class PolicyValueDWPlayerConcatPCatOnlyNet(PolicyValueBase):
         return g, p
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, c, h, w = board.shape
         if c != self.R4_TOTAL_C:
             raise RuntimeError(f"dwres_ppconcat_full_pcatonly_v1 expects C={self.R4_TOTAL_C}, got {int(c)}")
@@ -889,6 +1239,7 @@ class PolicyValueDWRelMixDualAttnNet(PolicyValueBase):
     #   global  : 19ch [0:19]
     #   player  : 128ch [19:147] as (8 players x 16ch)
     #   pos0    : 2ch  [147:149]
+    """PolicyValueDWRelMixDualAttnNet の実装クラス。"""
     R4_GLOBAL_C = 19
     R4_PLAYER_PER_C = 16
     R4_PLAYER_BLOCK_C = M_MAX * R4_PLAYER_PER_C
@@ -915,6 +1266,23 @@ class PolicyValueDWRelMixDualAttnNet(PolicyValueBase):
         relmix_ff_mult: float = 3.0,
         relmix_dropout: float = 0.0,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+            feature_id (str | None): 任意の文字列。
+            player_hidden_channels (int | None): 任意の整数。
+            relmix_layers (int): 整数引数。
+            relmix_every (int): 整数引数。
+            relmix_coarse_size (int): 整数引数。
+            relmix_set_heads (int): 整数引数。
+            relmix_spatial_heads (int): 整数引数。
+            relmix_cross_heads (int): 整数引数。
+            relmix_ff_mult (float): 浮動小数点引数。
+            relmix_dropout (float): 浮動小数点引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         if in_channels != self.R4_TOTAL_C:
             raise ValueError(
@@ -1023,6 +1391,14 @@ class PolicyValueDWRelMixDualAttnNet(PolicyValueBase):
         self.register_buffer("enemy_player_index", torch.arange(1, M_MAX, dtype=torch.int64), persistent=False)
 
     def _split_research_v4(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: research_v4 観測を global/player に分割する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, _, h, w = board.shape
         g = board[:, : self.R4_GLOBAL_C, :, :]
         p = board[:, self.R4_GLOBAL_C : self.R4_GLOBAL_C + self.R4_PLAYER_BLOCK_C, :, :]
@@ -1030,12 +1406,29 @@ class PolicyValueDWRelMixDualAttnNet(PolicyValueBase):
         return g, p
 
     def _enemy_present_mask(self, board: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: 敵プレイヤー存在マスクを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         m_onehot = board[:, self.R4_M2_ONEHOT_OFFSET : self.R4_M2_ONEHOT_OFFSET + 7, 0, 0]
         m_each = torch.argmax(m_onehot, dim=1).to(torch.int64) + 2
         return self.enemy_player_index.view(1, self.PLAYER_BRANCH_N) < m_each.view(-1, 1)
 
     @staticmethod
     def _masked_enemy_mean(py_all: torch.Tensor, enemy_present_f: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: 有効敵のみで平均特徴を計算する。
+
+        Args:
+            py_all (torch.Tensor): 入力テンソル。
+            enemy_present_f (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         den = enemy_present_f.sum(dim=1).clamp_min(1.0)
         return (py_all * enemy_present_f).sum(dim=1) / den
 
@@ -1047,6 +1440,18 @@ class PolicyValueDWRelMixDualAttnNet(PolicyValueBase):
         enemy_present: torch.Tensor,
         enemy_present_f: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: RelMix レイヤーを 1 段適用する。
+
+        Args:
+            rel_idx (int): 整数引数。
+            x_main (torch.Tensor): 入力テンソル。
+            py_all (torch.Tensor): 入力テンソル。
+            enemy_present (torch.Tensor): 入力テンソル。
+            enemy_present_f (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, pnum, hid, h, w = py_all.shape
         cs = int(self.relmix_coarse_size)
 
@@ -1096,6 +1501,14 @@ class PolicyValueDWRelMixDualAttnNet(PolicyValueBase):
         return x_main, py_all
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, c, h, w = board.shape
         if c != self.R4_TOTAL_C:
             raise RuntimeError(f"dwres_relmix_dualattn_v3 expects C={self.R4_TOTAL_C}, got {int(c)}")
@@ -1147,6 +1560,7 @@ class PolicyValueDWPixelPlayerAttnNoFFNNet(PolicyValueBase):
     #   global  : 19ch [0:19]
     #   player  : 128ch [19:147] as (8 players x 16ch)
     #   pos0    : 2ch  [147:149]
+    """PolicyValueDWPixelPlayerAttnNoFFNNet の実装クラス。"""
     R4_GLOBAL_C = 19
     R4_PLAYER_PER_C = 16
     R4_PLAYER_BLOCK_C = M_MAX * R4_PLAYER_PER_C
@@ -1163,6 +1577,15 @@ class PolicyValueDWPixelPlayerAttnNoFFNNet(PolicyValueBase):
         feature_id: str | None = None,
         attention_heads: int = 4,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+            feature_id (str | None): 任意の文字列。
+            attention_heads (int): 整数引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         if in_channels != self.R4_TOTAL_C:
             raise ValueError(
@@ -1185,6 +1608,14 @@ class PolicyValueDWPixelPlayerAttnNoFFNNet(PolicyValueBase):
         self.register_buffer("player_index", torch.arange(M_MAX, dtype=torch.int64), persistent=False)
 
     def _split_research_v4(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: research_v4 観測を global/player に分割する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, _, h, w = board.shape
         g = board[:, : self.R4_GLOBAL_C, :, :]
         p = board[:, self.R4_GLOBAL_C : self.R4_GLOBAL_C + self.R4_PLAYER_BLOCK_C, :, :]
@@ -1193,11 +1624,27 @@ class PolicyValueDWPixelPlayerAttnNoFFNNet(PolicyValueBase):
 
     def _player_present_mask(self, board: torch.Tensor) -> torch.Tensor:
         # m_onehot starts at ch7 and encodes m=2..8
+        """内部ヘルパー: プレイヤー存在マスクを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         m_onehot = board[:, self.R4_M2_ONEHOT_OFFSET : self.R4_M2_ONEHOT_OFFSET + 7, 0, 0]
         m_each = torch.argmax(m_onehot, dim=1).to(torch.int64) + 2
         return self.player_index.view(1, M_MAX) < m_each.view(-1, 1)
 
     def _forward_trunk(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 共有トランク特徴を計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: 計算結果。
+        """
         bsz, c, h, w = board.shape
         if c != self.R4_TOTAL_C:
             raise RuntimeError(f"dwres_pxattn_noffn_v1 expects C={self.R4_TOTAL_C}, got {int(c)}")
@@ -1216,10 +1663,26 @@ class PolicyValueDWPixelPlayerAttnNoFFNNet(PolicyValueBase):
         return x0, x, present
 
     def _forward_policy_only(self, board: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: 方策用特徴量のみを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x0, _, _ = self._forward_trunk(board)
         return x0
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x0, _, _ = self._forward_trunk(board)
         return x0, x0
 
@@ -1230,6 +1693,15 @@ class PolicyValueDWPixelPlayerAttnNoFFNNet(PolicyValueBase):
         with_aux: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # Policy/value use player0 map. Aux uses per-player hidden states.
+        """順伝播を行う。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+            with_aux (bool): 有効化フラグ。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x0, x_all, present = self._forward_trunk(board)
         logits = self.policy_head(x0).flatten(1)  # [B, 100]
         pooled0 = x0.mean(dim=(2, 3))  # [B, H]
@@ -1258,7 +1730,15 @@ class PolicyValueDWPixelPlayerAttnNoFFNNet(PolicyValueBase):
 
 
 class PolicyValueDWGlobalCoordNet(PolicyValueBase):
+    """PolicyValueDWGlobalCoordNet の実装クラス。"""
     def __init__(self, in_channels: int, hidden_channels: int = 64, blocks: int = 6):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         g = _pick_gn_groups(hidden_channels)
         self.coord = CoordEmbed2d()
@@ -1271,6 +1751,14 @@ class PolicyValueDWGlobalCoordNet(PolicyValueBase):
         self.global_film = GlobalFiLM(hidden_channels)
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x = self.coord(board)
         x = self.stem(x)
         x = self.blocks(x)
@@ -1279,7 +1767,15 @@ class PolicyValueDWGlobalCoordNet(PolicyValueBase):
 
 
 class PolicyValueMBConvSEGlobalCoordNet(PolicyValueBase):
+    """PolicyValueMBConvSEGlobalCoordNet の実装クラス。"""
     def __init__(self, in_channels: int, hidden_channels: int = 64, blocks: int = 6):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         g = _pick_gn_groups(hidden_channels)
         self.coord = CoordEmbed2d()
@@ -1292,6 +1788,14 @@ class PolicyValueMBConvSEGlobalCoordNet(PolicyValueBase):
         self.global_film = GlobalFiLM(hidden_channels)
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x = self.coord(board)
         x = self.stem(x)
         x = self.blocks(x)
@@ -1300,7 +1804,15 @@ class PolicyValueMBConvSEGlobalCoordNet(PolicyValueBase):
 
 
 class PolicyValueMBConvSEGlobalCoordSplitNet(PolicyValueBase):
+    """PolicyValueMBConvSEGlobalCoordSplitNet の実装クラス。"""
     def __init__(self, in_channels: int, hidden_channels: int = 64, blocks: int = 6):
+        """インスタンスを初期化する。
+
+        Args:
+            in_channels (int): 整数引数。
+            hidden_channels (int): 整数引数。
+            blocks (int): 整数引数。
+        """
         super().__init__(hidden_channels=hidden_channels)
         g = _pick_gn_groups(hidden_channels)
         self.coord = CoordEmbed2d()
@@ -1324,16 +1836,40 @@ class PolicyValueMBConvSEGlobalCoordSplitNet(PolicyValueBase):
         self.value_film = GlobalFiLM(hidden_channels)
 
     def _forward_shared(self, board: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: 共有バックボーン特徴を計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x = self.coord(board)
         x = self.stem(x)
         return self.shared_blocks(x)
 
     def _forward_policy_only(self, board: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: 方策用特徴量のみを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x = self._forward_shared(board)
         x = self.policy_blocks(x)
         return self.policy_film(x)
 
     def _forward_features(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """内部ヘルパー: 特徴量テンソルを計算する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 計算結果。
+        """
         x = self._forward_shared(board)
         x_policy = self.policy_blocks(x)
         x_value = self.value_blocks(x)
@@ -1351,7 +1887,26 @@ def build_policy_value_model(
     feature_id: str | None = None,
     arch_kwargs: dict[str, Any] | None = None,
 ) -> nn.Module:
+    """`policy_value_model`を構築する。
+
+    Args:
+        arch_name (str): 文字列引数。
+        in_channels (int): 整数引数。
+        hidden_channels (int): 整数引数。
+        blocks (int): 整数引数。
+        feature_id (str | None): 任意の文字列。
+        arch_kwargs (dict[str, Any] | None): 設定辞書。
+
+    Returns:
+        nn.Module: 計算結果。
+    """
     def _reject_unused(kwargs: dict[str, Any], target: str) -> None:
+        """内部ヘルパー: 未使用 arch_kwargs を検出する。
+
+        Args:
+            kwargs (dict[str, Any]): 設定辞書。
+            target (str): 文字列引数。
+        """
         if kwargs:
             keys = ", ".join(sorted(str(k) for k in kwargs.keys()))
             raise ValueError(f"{target} does not use arch_kwargs keys: {keys}")
@@ -1366,6 +1921,20 @@ def build_policy_value_model(
         default_mix_channel_gate: bool = False,
         default_mix_alpha_scale: float = 0.2,
     ) -> nn.Module:
+        """内部ヘルパー: ppconcat 系モデルを構築する。
+
+        Args:
+            default_player_hidden (int | None): 任意の整数。
+            default_use_full3x3 (bool): 有効化フラグ。
+            default_set_layers (int): 整数引数。
+            default_mix_layers (int): 整数引数。
+            default_mix_every (int): 整数引数。
+            default_mix_channel_gate (bool): 有効化フラグ。
+            default_mix_alpha_scale (float): 浮動小数点引数。
+
+        Returns:
+            nn.Module: 計算結果。
+        """
         kwargs = dict(arch_kwargs or {})
         player_hidden = kwargs.pop("player_hidden_channels", default_player_hidden)
         if player_hidden is not None:
@@ -1409,6 +1978,20 @@ def build_policy_value_model(
         default_mix_channel_gate: bool = False,
         default_mix_alpha_scale: float = 0.2,
     ) -> nn.Module:
+        """内部ヘルパー: pcatonly 版 ppconcat モデルを構築する。
+
+        Args:
+            default_player_hidden (int | None): 任意の整数。
+            default_use_full3x3 (bool): 有効化フラグ。
+            default_set_layers (int): 整数引数。
+            default_mix_layers (int): 整数引数。
+            default_mix_every (int): 整数引数。
+            default_mix_channel_gate (bool): 有効化フラグ。
+            default_mix_alpha_scale (float): 浮動小数点引数。
+
+        Returns:
+            nn.Module: 計算結果。
+        """
         kwargs = dict(arch_kwargs or {})
         player_hidden = kwargs.pop("player_hidden_channels", default_player_hidden)
         if player_hidden is not None:
@@ -1446,6 +2029,14 @@ def build_policy_value_model(
         *,
         default_player_hidden: int | None,
     ) -> nn.Module:
+        """内部ヘルパー: relmix 系モデルを構築する。
+
+        Args:
+            default_player_hidden (int | None): 任意の整数。
+
+        Returns:
+            nn.Module: 計算結果。
+        """
         kwargs = dict(arch_kwargs or {})
         player_hidden = kwargs.pop("player_hidden_channels", default_player_hidden)
         if player_hidden is not None:
@@ -1595,6 +2186,15 @@ def build_policy_value_model(
 
 
 def masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """行動マスクを用いて logits を無効化する。
+
+    Args:
+        logits (torch.Tensor): 入力テンソル。
+        mask (torch.Tensor): 入力テンソル。
+
+    Returns:
+        torch.Tensor: 計算結果。
+    """
     if mask.dtype == torch.uint8:
         # Fast path for uint8 masks from C++ env: 1=valid, 0=invalid.
         m = mask.to(dtype=logits.dtype)

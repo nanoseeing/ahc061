@@ -1,3 +1,4 @@
+"""`discrete_board` に関するモデル処理。"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -13,6 +14,16 @@ from ..utils.nn_init import layer_init, to_int_tuple
 
 
 def _broadcast_tuple(v: tuple[int, ...], n: int, name: str) -> tuple[int, ...]:
+    """内部ヘルパー: `broadcast_tuple` を実行する。
+
+    Args:
+        v (tuple[int, ...]): v の値。
+        n (int): n の値。
+        name (str): name の値。
+
+    Returns:
+        tuple[int, ...]: 計算結果。
+    """
     if len(v) == n:
         return v
     if len(v) == 1 and n > 1:
@@ -21,6 +32,17 @@ def _broadcast_tuple(v: tuple[int, ...], n: int, name: str) -> tuple[int, ...]:
 
 
 def _build_mlp(in_dim: int, hidden_dims: tuple[int, ...], out_dim: int, *, out_std: float) -> nn.Sequential:
+    """内部ヘルパー: `build_mlp` を実行する。
+
+    Args:
+        in_dim (int): in_dim の値。
+        hidden_dims (tuple[int, ...]): hidden_dims の値。
+        out_dim (int): out_dim の値。
+        out_std (float): out_std の値。
+
+    Returns:
+        nn.Sequential: 計算結果。
+    """
     layers: list[nn.Module] = []
     cur = in_dim
     for h in hidden_dims:
@@ -34,15 +56,7 @@ def _build_mlp(in_dim: int, hidden_dims: tuple[int, ...], out_dim: int, *, out_s
 
 
 class DiscreteBoardAgentBase(nn.Module, ABC):
-    """Shared forward interface for all discrete-board actor-critic agents.
-
-    Concrete subclasses must implement `_encode(obs)` and expose:
-      - `action_dim: int`
-      - `actor: nn.Module`
-      - `critic: nn.Module`
-      - `aux_opp_param_head: nn.Module | None`
-      - `use_aux_opp_param_head: bool`
-    """
+    """`DiscreteBoardAgentBase` を表すクラス。"""
 
     action_dim: int
     actor: nn.Module
@@ -52,21 +66,61 @@ class DiscreteBoardAgentBase(nn.Module, ABC):
 
     def _flatten_obs(self, obs: torch.Tensor) -> torch.Tensor:
         # reshape handles non-standard strides (e.g., channels_last) safely.
+        """内部ヘルパー: `flatten_obs` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         return obs.reshape(obs.shape[0], -1)
 
     @abstractmethod
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `encode` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         ...
 
     def get_logits(self, obs: torch.Tensor) -> torch.Tensor:
+        """`logits`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         feat = self._encode(obs)
         return self.actor(feat)
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
+        """`value`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         feat = self._encode(obs)
         return self.critic(feat)
 
     def get_aux_opp_param(self, obs: torch.Tensor) -> torch.Tensor:
+        """`aux_opp_param`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         if self.aux_opp_param_head is None:
             raise RuntimeError("aux_opp_param_head is disabled for this model")
         feat = self._encode(obs)
@@ -80,6 +134,17 @@ class DiscreteBoardAgentBase(nn.Module, ABC):
         action_mask: torch.Tensor | None = None,
         return_aux_opp_param: bool = False,
     ):
+        """`action_and_value`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action (torch.Tensor | None): action の値。
+            action_mask (torch.Tensor | None): action_mask の値。
+            return_aux_opp_param (bool): 有効化フラグ。
+
+        Returns:
+            Any: 計算結果。
+        """
         feat = self._encode(obs)
         logits = self.actor(feat)
 
@@ -109,6 +174,17 @@ class DiscreteBoardAgentBase(nn.Module, ABC):
         return_aux_opp_param: bool = False,
     ):
         # Keep PPO update path on module forward so DDP hooks are triggered.
+        """`forward` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action (torch.Tensor | None): action の値。
+            action_mask (torch.Tensor | None): action_mask の値。
+            return_aux_opp_param (bool): 有効化フラグ。
+
+        Returns:
+            Any: 計算結果。
+        """
         return self.get_action_and_value(
             obs,
             action=action,
@@ -122,6 +198,16 @@ class DiscreteBoardAgentBase(nn.Module, ABC):
         action_mask: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> torch.Tensor:
+        """`act` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action_mask (torch.Tensor | None): action_mask の値。
+            deterministic (bool): 有効化フラグ。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         logits = self.get_logits(obs)
         if action_mask is not None:
             if action_mask.ndim == 1:
@@ -134,7 +220,7 @@ class DiscreteBoardAgentBase(nn.Module, ABC):
 
 
 class DiscreteBoardMLPAgent(DiscreteBoardAgentBase):
-    """Flat MLP actor-critic for discrete board-game actions."""
+    """`DiscreteBoardMLPAgent` を表すクラス。"""
 
     model_type: str = "mlp"
 
@@ -149,6 +235,17 @@ class DiscreteBoardMLPAgent(DiscreteBoardAgentBase):
         aux_opp_param_head: bool = False,
         aux_opp_param_hidden_dim: int = 64,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            obs_shape (tuple[int, ...]): obs_shape の値。
+            action_dim (int): action_dim の値。
+            hidden_dim (int): hidden_dim の値。
+            hidden_layers (int): hidden_layers の値。
+            mlp_hidden_dims (tuple[int, ...] | list[int] | str | None): mlp_hidden_dims の値。
+            aux_opp_param_head (bool): 有効化フラグ。
+            aux_opp_param_hidden_dim (int): aux_opp_param_hidden_dim の値。
+        """
         super().__init__()
         if action_dim <= 0:
             raise ValueError("action_dim must be positive")
@@ -187,11 +284,19 @@ class DiscreteBoardMLPAgent(DiscreteBoardAgentBase):
         }
 
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `encode` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         return self._flatten_obs(obs)
 
 
 class DiscreteBoardCNNFCAgent(DiscreteBoardAgentBase):
-    """Board CNN + global FC fusion actor-critic for discrete board-game actions."""
+    """`DiscreteBoardCNNFCAgent` を表すクラス。"""
 
     model_type: str = "cnn_fc"
 
@@ -213,6 +318,24 @@ class DiscreteBoardCNNFCAgent(DiscreteBoardAgentBase):
         aux_opp_param_head: bool = False,
         aux_opp_param_hidden_dim: int = 64,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            obs_shape (tuple[int, ...]): obs_shape の値。
+            action_dim (int): action_dim の値。
+            board_channels (int): board_channels の値。
+            board_size (int): board_size の値。
+            global_dim (int): global_dim の値。
+            cnn_channels (tuple[int, ...] | list[int] | str): cnn_channels の値。
+            cnn_kernels (tuple[int, ...] | list[int] | str): cnn_kernels の値。
+            cnn_strides (tuple[int, ...] | list[int] | str): cnn_strides の値。
+            cnn_paddings (tuple[int, ...] | list[int] | str): cnn_paddings の値。
+            trunk_hidden_dims (tuple[int, ...] | list[int] | str): trunk_hidden_dims の値。
+            actor_head_hidden_dims (tuple[int, ...] | list[int] | str): actor_head_hidden_dims の値。
+            critic_head_hidden_dims (tuple[int, ...] | list[int] | str): critic_head_hidden_dims の値。
+            aux_opp_param_head (bool): 有効化フラグ。
+            aux_opp_param_hidden_dim (int): aux_opp_param_hidden_dim の値。
+        """
         super().__init__()
         if action_dim <= 0:
             raise ValueError("action_dim must be positive")
@@ -307,6 +430,14 @@ class DiscreteBoardCNNFCAgent(DiscreteBoardAgentBase):
         }
 
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `encode` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x = self._flatten_obs(obs)
         if x.shape[1] < self.board_dim:
             raise ValueError(f"obs width too small: {x.shape[1]} < board_dim={self.board_dim}")
@@ -324,16 +455,7 @@ class DiscreteBoardCNNFCAgent(DiscreteBoardAgentBase):
 
 
 class DiscreteBoardAgent(DiscreteBoardAgentBase):
-    """Auto-selecting actor-critic for discrete board-game actions.
-
-    Dispatches to MLP or CNN+FC based on `model_type`. Use
-    `DiscreteBoardMLPAgent` or `DiscreteBoardCNNFCAgent` directly for new code.
-
-    Supported model_type values:
-    - "auto": selects "cnn_fc" when obs_dim > board_dim, else "mlp"
-    - "mlp": flat MLP actor / critic
-    - "cnn_fc": board CNN + global FC fusion, actor / critic heads
-    """
+    """`DiscreteBoardAgent` を表すクラス。"""
 
     def __init__(
         self,
@@ -357,6 +479,28 @@ class DiscreteBoardAgent(DiscreteBoardAgentBase):
         aux_opp_param_head: bool = False,
         aux_opp_param_hidden_dim: int = 64,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            obs_shape (tuple[int, ...]): obs_shape の値。
+            action_dim (int): action_dim の値。
+            hidden_dim (int): hidden_dim の値。
+            hidden_layers (int): hidden_layers の値。
+            model_type (str): model_type の値。
+            mlp_hidden_dims (tuple[int, ...] | list[int] | str | None): mlp_hidden_dims の値。
+            board_channels (int): board_channels の値。
+            board_size (int): board_size の値。
+            global_dim (int): global_dim の値。
+            cnn_channels (tuple[int, ...] | list[int] | str): cnn_channels の値。
+            cnn_kernels (tuple[int, ...] | list[int] | str): cnn_kernels の値。
+            cnn_strides (tuple[int, ...] | list[int] | str): cnn_strides の値。
+            cnn_paddings (tuple[int, ...] | list[int] | str): cnn_paddings の値。
+            trunk_hidden_dims (tuple[int, ...] | list[int] | str): trunk_hidden_dims の値。
+            actor_head_hidden_dims (tuple[int, ...] | list[int] | str): actor_head_hidden_dims の値。
+            critic_head_hidden_dims (tuple[int, ...] | list[int] | str): critic_head_hidden_dims の値。
+            aux_opp_param_head (bool): 有効化フラグ。
+            aux_opp_param_hidden_dim (int): aux_opp_param_hidden_dim の値。
+        """
         super().__init__()
         if action_dim <= 0:
             raise ValueError("action_dim must be positive")
@@ -487,6 +631,14 @@ class DiscreteBoardAgent(DiscreteBoardAgentBase):
             )
 
     def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        """内部ヘルパー: `encode` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         x = self._flatten_obs(obs)
         if self.model_type == "mlp":
             return x

@@ -1,3 +1,7 @@
+"""PPO 学習設定を定義するコンフィグモジュール。
+
+Pydantic モデルで型と制約を管理し、学習開始前に不整合を検出する。
+"""
 from __future__ import annotations
 
 from typing import Literal, Optional
@@ -6,10 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class PPOConfig(BaseModel):
-    """Default PPO hyperparameters for discrete board games.
+    """PPO 実験で使用するハイパーパラメータ群。
 
-    The defaults are intentionally close to CleanRL's ppo.py and can be tuned
-    per contest environment later.
+    バッチサイズ整合性や係数レンジをバリデーションし、学習実行時の
+    設定ミスを早期に検出する。
     """
 
     model_config = ConfigDict(frozen=False)
@@ -56,6 +60,14 @@ class PPOConfig(BaseModel):
     @field_validator("clip_range_vf")
     @classmethod
     def _validate_clip_range_vf(cls, v: Optional[float]) -> Optional[float]:
+        """`clip_range_vf` が設定されている場合に正値かを検証する。
+
+        Args:
+            v (Optional[float]): 検証指定値。
+
+        Returns:
+            Optional[float]: 検証済みの値。
+        """
         if v is not None and float(v) <= 0.0:
             raise ValueError(f"clip_range_vf must be positive when set: {v}")
         return v
@@ -63,6 +75,14 @@ class PPOConfig(BaseModel):
     @field_validator("clip_range_vf_final", "ent_coef_final", "clip_coef_final")
     @classmethod
     def _validate_optional_final_nonneg(cls, v: Optional[float]) -> Optional[float]:
+        """スケジュール終端係数が設定されている場合に非負かを検証する。
+
+        Args:
+            v (Optional[float]): 検証指定値。
+
+        Returns:
+            Optional[float]: 検証済みの値。
+        """
         if v is not None and float(v) < 0.0:
             raise ValueError(f"final coefficient must be >= 0 when set: {v}")
         return v
@@ -70,12 +90,28 @@ class PPOConfig(BaseModel):
     @field_validator("target_kl")
     @classmethod
     def _validate_target_kl(cls, v: Optional[float]) -> Optional[float]:
+        """`target_kl` が設定されている場合に正値かを検証する。
+
+        Args:
+            v (Optional[float]): 検証指定値。
+
+        Returns:
+            Optional[float]: 検証済みの値。
+        """
         if v is not None and float(v) <= 0.0:
             raise ValueError(f"target_kl must be positive when set: {v}")
         return v
 
     @model_validator(mode="after")
     def _validate_batch_config(self) -> PPOConfig:
+        """バッチ構成の整合性を検証する。
+
+        `batch_size = num_envs * num_steps` が `num_minibatches` で割り切れること、
+        かつ `norm_adv=True` 時にミニバッチサイズが極端に小さくないことを確認する。
+
+        Returns:
+            PPOConfig: 検証済みの設定自身。
+        """
         batch_size = int(self.num_envs) * int(self.num_steps)
         if batch_size % int(self.num_minibatches) != 0:
             raise ValueError(
@@ -92,12 +128,27 @@ class PPOConfig(BaseModel):
 
     @property
     def batch_size(self) -> int:
+        """1 イテレーションで収集するサンプル数（`num_envs * num_steps`）を返す。
+
+        Returns:
+            int: バッチサイズ。
+        """
         return int(self.num_envs * self.num_steps)
 
     @property
     def minibatch_size(self) -> int:
+        """1 ミニバッチあたりのサンプル数を返す。
+
+        Returns:
+            int: ミニバッチサイズ。
+        """
         return int(self.batch_size // self.num_minibatches)
 
     @property
     def num_iterations(self) -> int:
+        """学習イテレーション数を返す。互換性維持のための別名プロパティ。
+
+        Returns:
+            int: 学習イテレーション数。
+        """
         return int(self.total_iterations)

@@ -1,4 +1,4 @@
-"""AHC061 game-specific constants shared across modules."""
+"""`game_constants` に関するモジュール。"""
 from __future__ import annotations
 
 BOARD_SIZE: int = 10

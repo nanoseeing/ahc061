@@ -1,3 +1,4 @@
+"""`ckpt` に関する提出用処理。"""
 from __future__ import annotations
 
 import json
@@ -13,6 +14,15 @@ CKPT_VERSION = 1
 
 
 def _torch_load(path: Path, *, weights_only: bool) -> dict[str, Any]:
+    """内部ヘルパー: `torch_load` を実行する。
+
+    Args:
+        path (Path): 対象パス。
+        weights_only (bool): 有効化フラグ。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     kwargs = {"map_location": "cpu"}
     try:
         return torch.load(path, weights_only=weights_only, **kwargs)
@@ -21,6 +31,14 @@ def _torch_load(path: Path, *, weights_only: bool) -> dict[str, Any]:
 
 
 def torch_load_maybe_weights_only(path: Path) -> dict[str, Any]:
+    """`torch_load_maybe_weights_only` を実行する。
+
+    Args:
+        path (Path): 対象パス。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     try:
         return _torch_load(path, weights_only=True)
     except pickle.UnpicklingError:
@@ -28,10 +46,23 @@ def torch_load_maybe_weights_only(path: Path) -> dict[str, Any]:
 
 
 def ensure_dir(path: Path) -> None:
+    """`dir`を保証する。
+
+    Args:
+        path (Path): 対象パス。
+    """
     path.mkdir(parents=True, exist_ok=True)
 
 
 def normalize_state_dict_keys(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """`state_dict_keys`を正規化する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     prefixes = ("_orig_mod.", "module.")
     # Backward compatibility for legacy key names.
     rename_prefixes = (
@@ -59,6 +90,7 @@ def normalize_state_dict_keys(state_dict: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class ModelSpec:
+    """`ModelSpec` を表すクラス。"""
     arch_name: str
     feature_id: str
     in_channels: int
@@ -69,6 +101,7 @@ class ModelSpec:
 
 @dataclass(frozen=True)
 class TrainSpec:
+    """`TrainSpec` を表すクラス。"""
     algo: str
     seed: int
     batch_size: int
@@ -90,6 +123,7 @@ class TrainSpec:
 
 @dataclass(frozen=True)
 class CkptMeta:
+    """`CkptMeta` を表すクラス。"""
     ckpt_version: int
     upd: int
     env_steps: int
@@ -100,10 +134,24 @@ class CkptMeta:
 
 
 def write_json(path: Path, obj: Any) -> None:
+    """`write_json` を実行する。
+
+    Args:
+        path (Path): 対象パス。
+        obj (Any): obj の値。
+    """
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def read_json(path: Path) -> Any:
+    """`read_json` を実行する。
+
+    Args:
+        path (Path): 対象パス。
+
+    Returns:
+        Any: 計算結果。
+    """
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -117,6 +165,20 @@ def ckpt_model_dict(
     wandb_run_id: str | None = None,
     run_dir: str | None = None,
 ) -> dict[str, Any]:
+    """`ckpt_model_dict` を実行する。
+
+    Args:
+        model_state (dict[str, Any]): model_state の値。
+        upd (int): upd の値。
+        env_steps (int): 環境関連の値。
+        model (ModelSpec): model の値。
+        train (TrainSpec | None): train の値。
+        wandb_run_id (str | None): wandb_run_id の値。
+        run_dir (str | None): 対象パス。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     out: dict[str, Any] = {
         "ckpt_version": int(CKPT_VERSION),
         "kind": "model",
@@ -145,6 +207,22 @@ def ckpt_full_dict(
     wandb_run_id: str | None,
     run_dir: str | None,
 ) -> dict[str, Any]:
+    """`ckpt_full_dict` を実行する。
+
+    Args:
+        model_state (dict[str, Any]): model_state の値。
+        optimizer_state (dict[str, Any]): optimizer_state の値。
+        rng_state (dict[str, Any]): rng_state の値。
+        upd (int): upd の値。
+        env_steps (int): 環境関連の値。
+        model (ModelSpec): model の値。
+        train (TrainSpec): train の値。
+        wandb_run_id (str | None): wandb_run_id の値。
+        run_dir (str | None): 対象パス。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     return {
         "ckpt_version": int(CKPT_VERSION),
         "kind": "full",
@@ -162,11 +240,35 @@ def ckpt_full_dict(
 
 
 def is_full_ckpt(ckpt: dict[str, Any]) -> bool:
+    """`full_ckpt`かどうかを判定する。
+
+    Args:
+        ckpt (dict[str, Any]): ckpt の値。
+
+    Returns:
+        bool: 判定結果。
+    """
     return bool(ckpt.get("kind") == "full") or ("optimizer" in ckpt and "rng" in ckpt)
 
 
 def model_spec_from_ckpt(ckpt: dict[str, Any]) -> ModelSpec:
+    """`model_spec_from_ckpt` を実行する。
+
+    Args:
+        ckpt (dict[str, Any]): ckpt の値。
+
+    Returns:
+        ModelSpec: 計算結果。
+    """
     def _normalize_arch_kwargs(v: Any) -> dict[str, Any]:
+        """内部ヘルパー: `normalize_arch_kwargs` を実行する。
+
+        Args:
+            v (Any): v の値。
+
+        Returns:
+            dict[str, Any]: 計算結果。
+        """
         if v is None:
             return {}
         if not isinstance(v, dict):
@@ -196,6 +298,14 @@ def model_spec_from_ckpt(ckpt: dict[str, Any]) -> ModelSpec:
 
 
 def train_spec_from_ckpt(ckpt: dict[str, Any]) -> TrainSpec | None:
+    """`train_spec_from_ckpt` を実行する。
+
+    Args:
+        ckpt (dict[str, Any]): ckpt の値。
+
+    Returns:
+        TrainSpec | None: 計算結果。
+    """
     ts = ckpt.get("train_spec") or ckpt.get("train")
     if ts is None:
         return None
@@ -221,6 +331,14 @@ def train_spec_from_ckpt(ckpt: dict[str, Any]) -> TrainSpec | None:
 
 
 def wandb_run_id_from_ckpt(ckpt: dict[str, Any]) -> str | None:
+    """`wandb_run_id_from_ckpt` を実行する。
+
+    Args:
+        ckpt (dict[str, Any]): ckpt の値。
+
+    Returns:
+        str | None: 計算結果。
+    """
     w = ckpt.get("wandb", {})
     rid = w.get("run_id")
     return str(rid) if rid is not None else None

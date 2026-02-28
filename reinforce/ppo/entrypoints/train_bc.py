@@ -1,3 +1,4 @@
+"""オンライン BC 学習を起動する CLI エントリーポイント。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,11 +15,24 @@ _CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
 @hydra.main(version_base="1.3", config_path=_CONF_DIR, config_name="train_bc/default")
 def main(cfg: DictConfig) -> None:
+    """Hydra 設定を読み込み online BC を開始する。
+
+    Args:
+        cfg (DictConfig): `train_bc/default` から解決された実行設定。
+    """
     args = _cfg_to_ns(cfg)
     raise SystemExit(_run(args))
 
 
 def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
+    """`train_bc` 用に設定を `SimpleNamespace` へ変換する。
+
+    Args:
+        cfg (DictConfig): Hydra が解決した設定。
+
+    Returns:
+        SimpleNamespace: パス正規化済み引数。
+    """
     return cfg_to_namespace(
         cfg,
         optional_paths={
@@ -32,6 +46,14 @@ def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
 
 
 def _run(args: SimpleNamespace) -> int:
+    """設定値を検証し online BC 学習サービスを実行する。
+
+    Args:
+        args (SimpleNamespace): 実行時引数。
+
+    Returns:
+        int: プロセス終了コード。
+    """
     if args.teacher_model_path is None:
         raise ValueError("teacher_model_path is required")
     if args.output_model is None and args.run_root is None:

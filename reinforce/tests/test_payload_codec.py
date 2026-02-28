@@ -1,3 +1,4 @@
+"""`test_payload_codec` のテストモジュール。"""
 from __future__ import annotations
 
 import os
@@ -15,6 +16,7 @@ from reinforce.ppo.submission.payload_codec import (
 
 
 def test_payload_codec_roundtrip() -> None:
+    """`payload_codec_roundtrip` の振る舞いを検証する。"""
     blob = os.urandom(2048)
 
     text, codec = encode_model_payload(blob, encoding="base91")

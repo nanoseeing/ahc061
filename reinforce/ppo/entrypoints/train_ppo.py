@@ -1,3 +1,4 @@
+"""AHC061 の PPO 学習を起動する CLI エントリーポイント。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,11 +24,24 @@ _CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
 @hydra.main(version_base="1.3", config_path=_CONF_DIR, config_name="train_ppo/default")
 def main(cfg: DictConfig) -> None:
+    """Hydra 設定を読み込み PPO 学習ジョブを開始する。
+
+    Args:
+        cfg (DictConfig): `train_ppo/default` から解決された実行設定。
+    """
     args = _cfg_to_ns(cfg)
     raise SystemExit(_run(args))
 
 
 def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
+    """`train_ppo` 用に設定オブジェクトを `SimpleNamespace` 化する。
+
+    Args:
+        cfg (DictConfig): Hydra が解決した設定。
+
+    Returns:
+        SimpleNamespace: パス正規化済みの引数セット。
+    """
     return cfg_to_namespace(
         cfg,
         optional_paths={
@@ -40,10 +54,26 @@ def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
 
 
 def _ns_to_ppo_cfg(args: SimpleNamespace) -> PPOConfig:
+    """CLI 引数相当の名前空間から `PPOConfig` を生成する。
+
+    Args:
+        args (SimpleNamespace): 学習関連の引数群。
+
+    Returns:
+        PPOConfig: 検証済み PPO ハイパーパラメータ。
+    """
     return ppo_config_from_source(args)
 
 
 def _run(args: SimpleNamespace) -> int:
+    """前処理検証を行ったうえで PPO 学習本体を実行する。
+
+    Args:
+        args (SimpleNamespace): 実行時引数。
+
+    Returns:
+        int: プロセス終了コード。
+    """
     cfg = _ns_to_ppo_cfg(args)
     validate_schedule_args(cfg)
     validate_vecnorm_config(
@@ -64,6 +94,16 @@ def _run(args: SimpleNamespace) -> int:
 
 
 def _run_backend(*, args: SimpleNamespace, cfg: PPOConfig, device: torch.device) -> int:
+    """サービス層リクエストを組み立てて PPO 学習を委譲する。
+
+    Args:
+        args (SimpleNamespace): 実行時引数。
+        cfg (PPOConfig): 学習設定。
+        device (torch.device): 学習実行デバイス。
+
+    Returns:
+        int: プロセス終了コード。
+    """
     from ..train.ppo_service import TrainPPORequest, run_ppo_from_train_request
 
     env_kwargs = parse_json_object(str(args.env_kwargs_json), field_name="env_kwargs_json")

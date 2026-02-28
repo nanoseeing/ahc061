@@ -1,9 +1,4 @@
-"""Discrete-board PPO framework scaffold.
-
-This package defines reusable modules for building a contest-specific PPO trainer.
-It intentionally mirrors CleanRL's PPO decomposition while separating environment-
-specific logic from generic algorithm code.
-"""
+"""`__init__` に関するモジュール。"""
 
 from .ppo.config import PPOConfig
 from .ppo.rollout_buffer import RolloutBuffer

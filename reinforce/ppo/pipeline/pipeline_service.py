@@ -1,3 +1,4 @@
+"""BC・PPO・最終評価を連結実行するパイプラインサービス。"""
 from __future__ import annotations
 
 import importlib
@@ -31,6 +32,7 @@ logger = get_logger("run_pipeline")
 
 
 def _attach_file_handler(log: logging.Logger, path: Path) -> logging.FileHandler | None:
+    """同一パスの重複登録を避けつつファイルハンドラを追加する。"""
     abs_path = str(path.resolve())
     for h in log.handlers:
         if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == abs_path:
@@ -42,6 +44,7 @@ def _attach_file_handler(log: logging.Logger, path: Path) -> logging.FileHandler
 
 
 def _module_version(name: str) -> str:
+    """モジュール名からバージョン文字列を取得する。"""
     try:
         return str(importlib.metadata.version(name))
     except Exception:
@@ -54,6 +57,7 @@ def _module_version(name: str) -> str:
 
 
 def _runtime_env_snapshot() -> dict[str, Any]:
+    """実行環境（Python/依存ライブラリ/CUDA）情報を収集する。"""
     info: dict[str, Any] = {
         "python": sys.version.split()[0],
         "executable": sys.executable,
@@ -89,6 +93,7 @@ def _runtime_env_snapshot() -> dict[str, Any]:
 
 
 def _stream_subprocess(cmd: list[str], *, tee_fp: TextIO | None) -> None:
+    """子プロセス出力を標準出力とログファイルへ逐次転送する。"""
     with subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -117,6 +122,17 @@ def run(
     stage: str | None = None,
     tee_fp: TextIO | None = None,
 ) -> None:
+    """サブプロセスを実行し、必要に応じてステージ計測を記録する。
+
+    Args:
+        cmd (list[str]): 実行するコマンド。
+        tracker (MetricTracker | None): メトリクストラッカー。
+        stage (str | None): ステージ名。
+        tee_fp (TextIO | None): 標準出力を追記するログファイル。
+
+    Raises:
+        subprocess.CalledProcessError: サブプロセスが非 0 で終了した場合。
+    """
     cmd_text = " ".join(cmd)
     logger.info("run: %s", cmd_text)
     t0 = time.time()
@@ -135,6 +151,7 @@ def run(
 
 
 def latest_dir(root: Path) -> Path:
+    """最終更新時刻が最新のサブディレクトリを返す。"""
     cands = [p for p in root.iterdir() if p.is_dir()]
     if not cands:
         raise FileNotFoundError(f"no subdirs under: {root}")
@@ -143,6 +160,7 @@ def latest_dir(root: Path) -> Path:
 
 
 def maybe_latest_dir(root: Path) -> Path | None:
+    """サブディレクトリがあれば最新ディレクトリを返す。"""
     cands = [p for p in root.iterdir() if p.is_dir()]
     if not cands:
         return None
@@ -151,6 +169,7 @@ def maybe_latest_dir(root: Path) -> Path | None:
 
 
 def resolve_ppo_model(ppo_run_dir: Path) -> Path:
+    """PPO 実行ディレクトリから利用可能な学習済みモデルを探す。"""
     candidates = [
         ppo_run_dir / "models" / "best.pt",
         ppo_run_dir / "models" / "last.pt",
@@ -164,6 +183,7 @@ def resolve_ppo_model(ppo_run_dir: Path) -> Path:
 
 
 def read_ppo_final_iteration(ppo_run_dir: Path) -> int | None:
+    """PPO サマリから最終イテレーション番号を読み取る。"""
     candidates = [
         ppo_run_dir / "reports" / "train_summary.json",
         ppo_run_dir / "summary.json",
@@ -181,6 +201,7 @@ def read_ppo_final_iteration(ppo_run_dir: Path) -> int | None:
 
 
 def _validate_backend_combinations(args: PipelineArgs) -> None:
+    """環境 ID と分散設定の組み合わせ制約を検証する。"""
     env_id = str(args.env_id).strip()
     if env_id != "AHC061Local-v0":
         raise ValueError("run_pipeline supports only env_id=AHC061Local-v0")
@@ -193,6 +214,7 @@ def _validate_backend_combinations(args: PipelineArgs) -> None:
 
 
 def _normalize_bayes_backend_name(x: Any) -> str:
+    """Bayes backend 指定文字列を正規化し妥当性を検証する。"""
     b = str(x).strip().lower()
     if not b:
         b = "auto"
@@ -207,6 +229,7 @@ def _normalize_bayes_backend_name(x: Any) -> str:
 
 
 def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any], eval_env_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """必要な場合に C++ Bayes backend をビルド/検証して状態を返す。"""
     if str(env_id) != "AHC061Local-v0":
         return {"enabled": False, "prepared": False, "train_backend": "", "eval_backend": ""}
 
@@ -230,6 +253,7 @@ def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any],
 
 @dataclass
 class _PipelineRuntime:
+    """パイプライン各ステージで共有する実行時状態。"""
     args: PipelineArgs
     run_name: str
     layout: Any
@@ -254,10 +278,17 @@ class _PipelineRuntime:
 
 
 class _PipelineRunner:
+    """`run_pipeline` の実処理を段階実行するオーケストレータ。"""
     def __init__(self, args: PipelineArgs) -> None:
+        """パイプライン引数を保持してランナーを初期化する。"""
         self.args = args
 
     def run(self) -> int:
+        """BC 学習・PPO 学習・最終評価を順番に実行する。
+
+        Returns:
+            int: プロセス終了コード。
+        """
         rt = self._prepare_runtime()
         try:
             self._run_bc_stage(rt)
@@ -271,6 +302,7 @@ class _PipelineRunner:
             self._close_runtime(rt)
 
     def _prepare_runtime(self) -> _PipelineRuntime:
+        """実行時状態（ログ/追跡/パス/モデル初期値）を準備する。"""
         args = self.args
         _validate_backend_combinations(args)
         base_env_kwargs = parse_json_object(str(args.env_kwargs_json), field_name="--env-kwargs-json")
@@ -403,6 +435,7 @@ class _PipelineRunner:
             raise
 
     def _run_bc_stage(self, rt: _PipelineRuntime) -> None:
+        """必要なら BC ステージを実行して初期モデルを作成する。"""
         args = rt.args
         if bool(args.skip_bc) or rt.bc_teacher_model_path is None:
             return
@@ -427,6 +460,7 @@ class _PipelineRunner:
         rt.stage_result["bc"]["target_iterations"] = int(target_bc_iterations)
 
     def _run_ppo_stage(self, rt: _PipelineRuntime) -> None:
+        """必要なら PPO ステージを実行し最終モデルを確定する。"""
         args = rt.args
         if bool(args.skip_ppo):
             return
@@ -497,6 +531,7 @@ class _PipelineRunner:
         rt.stage_result["ppo"]["consolidated_model"] = str(rt.consolidated_model)
 
     def _run_eval_stage(self, rt: _PipelineRuntime) -> None:
+        """必要なら最終モデルの評価ステージを実行する。"""
         args = rt.args
         if bool(args.skip_last_eval):
             return
@@ -522,6 +557,7 @@ class _PipelineRunner:
         rt.stage_result["eval"]["env_kwargs"] = to_jsonable(rt.eval_env_kwargs)
 
     def _finalize_success(self, rt: _PipelineRuntime) -> int:
+        """成功時サマリを保存し、完了イベントを記録して終了コードを返す。"""
         summary = {
             "run_name": rt.run_name,
             "run_dir": str(rt.layout.root),
@@ -536,10 +572,12 @@ class _PipelineRunner:
         return 0
 
     def _finalize_failure(self, rt: _PipelineRuntime, *, error: Exception) -> None:
+        """失敗情報を manifest と tracker に記録する。"""
         update_manifest(rt.layout, {"status": "failed", "error": str(error), "timestamps": {"failed_at": time.time()}})
         rt.tracker.log_event("pipeline_failed", {"error": str(error)})
 
     def _close_runtime(self, rt: _PipelineRuntime) -> None:
+        """オープン済みリソース（ログ/handler/tracker）をクローズする。"""
         rt.stdout_fp.close()
         if rt.file_handler is not None:
             logger.removeHandler(rt.file_handler)
@@ -548,4 +586,12 @@ class _PipelineRunner:
 
 
 def run_pipeline(args: PipelineArgs) -> int:
+    """パイプライン実行を開始して終了コードを返す。
+
+    Args:
+        args (PipelineArgs): パイプライン設定。
+
+    Returns:
+        int: プロセス終了コード。
+    """
     return int(_PipelineRunner(args).run())

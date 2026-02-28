@@ -1,10 +1,13 @@
+"""`test_export_submission_main_cpp` のテストモジュール。"""
 from __future__ import annotations
 
 from reinforce.ppo.entrypoints.export_submission_main_cpp import build_submission_source
 
 
 class TestExportSubmissionMainCpp:
+    """`TestExportSubmissionMainCpp` のテストケース。"""
     def test_build_submission_source_replaces_placeholders(self) -> None:
+        """`build_submission_source_replaces_placeholders` の振る舞いを検証する。"""
         src = build_submission_source(
             board_channels=7,
             board_size=10,

@@ -1,3 +1,4 @@
+"""`test_checkpoint_env_api_and_models` のテストモジュール。"""
 from __future__ import annotations
 
 import tempfile
@@ -19,7 +20,9 @@ from reinforce.ppo.train.ppo_service import _load_initial_weights
 
 
 class TestPPOCoreModelAndCheckpoint:
+    """`TestPPOCoreModelAndCheckpoint` のテストケース。"""
     def test_discrete_agent_deterministic_action_with_mask(self) -> None:
+        """`discrete_agent_deterministic_action_with_mask` の振る舞いを検証する。"""
         agent = DiscreteBoardAgent(
             obs_shape=(4,),
             action_dim=3,
@@ -32,6 +35,7 @@ class TestPPOCoreModelAndCheckpoint:
         assert int(act.item()) == 1
 
     def test_student_m_deterministic_action_with_mask(self) -> None:
+        """`student_m_deterministic_action_with_mask` の振る舞いを検証する。"""
         agent = StudentMBoardAgent(
             obs_shape=(4,),
             action_dim=4,
@@ -47,6 +51,7 @@ class TestPPOCoreModelAndCheckpoint:
         assert int(act.item()) == 2
 
     def test_build_agent_student_m(self) -> None:
+        """`build_agent_student_m` の振る舞いを検証する。"""
         agent, resolved = build_agent(
             obs_shape=(4,),
             action_dim=4,
@@ -65,6 +70,7 @@ class TestPPOCoreModelAndCheckpoint:
         assert resolved["type"] == "StudentMBoardAgent"
 
     def test_build_agent_teacher_p0_v1(self) -> None:
+        """`build_agent_teacher_p0_v1` の振る舞いを検証する。"""
         agent, resolved = build_agent(
             obs_shape=(88 * 10 * 10,),
             action_dim=100,
@@ -82,6 +88,7 @@ class TestPPOCoreModelAndCheckpoint:
         assert tuple(value.shape) == (2, 1)
 
     def test_build_agent_exp002_submit_v1_88ch(self) -> None:
+        """`build_agent_exp002_submit_v1_88ch` の振る舞いを検証する。"""
         model_cfg = get_model_config_from_preset("exp002_submit_v1_88ch")
         agent, resolved = build_agent(
             obs_shape=(88 * 10 * 10,),
@@ -97,6 +104,7 @@ class TestPPOCoreModelAndCheckpoint:
         assert tuple(value.shape) == (2, 1)
 
     def test_build_agent_exp002_submit_v1_88ch_with_submit_v1_obs(self) -> None:
+        """`build_agent_exp002_submit_v1_88ch_with_submit_v1_obs` の振る舞いを検証する。"""
         model_cfg = get_model_config_from_preset("exp002_submit_v1_88ch")
         agent, resolved = build_agent(
             obs_shape=(46 * 10 * 10,),
@@ -114,6 +122,7 @@ class TestPPOCoreModelAndCheckpoint:
         assert tuple(value.shape) == (2, 1)
 
     def test_checkpoint_roundtrip(self) -> None:
+        """`checkpoint_roundtrip` の振る舞いを検証する。"""
         agent, _resolved = build_agent(
             obs_shape=(4,),
             action_dim=3,
@@ -150,12 +159,27 @@ class TestPPOCoreModelAndCheckpoint:
             np.testing.assert_allclose(p1, p2, rtol=1e-7, atol=1e-7)
 
     def test_load_initial_weights_accepts_compile_wrapped_module(self) -> None:
+        """`load_initial_weights_accepts_compile_wrapped_module` の振る舞いを検証する。"""
         class _CompileLikeWrapper(torch.nn.Module):
+            """`_CompileLikeWrapper` を表すクラス。"""
             def __init__(self, mod: torch.nn.Module) -> None:
+                """インスタンスを初期化する。
+
+                Args:
+                    mod (torch.nn.Module): mod の値。
+                """
                 super().__init__()
                 self._orig_mod = mod
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
+                """`forward` を実行する。
+
+                Args:
+                    x (torch.Tensor): 入力テンソル。
+
+                Returns:
+                    torch.Tensor: 計算結果。
+                """
                 return self._orig_mod(x)
 
         base = torch.nn.Linear(4, 3)

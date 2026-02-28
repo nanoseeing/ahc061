@@ -1,3 +1,4 @@
+"""Student-M チェックポイントから提出用 `main.cpp` を生成する CLI。"""
 from __future__ import annotations
 
 import argparse
@@ -964,6 +965,11 @@ int main() {
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """エクスポート用 CLI 引数パーサーを構築する。
+
+    Returns:
+        argparse.ArgumentParser: コマンドライン引数定義済みパーサー。
+    """
     p = argparse.ArgumentParser(description="Export AHC061 Student-M checkpoint to single-file submission main.cpp (policy-only + C++ bayes).")
     p.add_argument("--checkpoint", type=Path, required=True, help="path to checkpoint (*.pt)")
     p.add_argument("--output", type=Path, default=Path("submission_main.cpp"), help="output main.cpp path")
@@ -978,6 +984,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _activation_id(name: str) -> int:
+    """内部ヘルパー: `activation_id` を実行する。
+
+    Args:
+        name (str): name の値。
+
+    Returns:
+        int: 計算結果。
+    """
     k = str(name).strip().lower()
     if k in ("", "tanh"):
         return 0
@@ -989,6 +1003,14 @@ def _activation_id(name: str) -> int:
 
 
 def _normalize_state_dict_keys(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """内部ヘルパー: `normalize_state_dict_keys` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     prefixes = ("_orig_mod.", "module.")
     out: dict[str, Any] = {}
     changed = False
@@ -1005,6 +1027,15 @@ def _normalize_state_dict_keys(state_dict: dict[str, Any]) -> dict[str, Any]:
 
 
 def _as_f16_array(state_dict: dict[str, Any], key: str) -> np.ndarray:
+    """内部ヘルパー: `as_f16_array` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+        key (str): key の値。
+
+    Returns:
+        np.ndarray: 計算結果。
+    """
     v = state_dict.get(key)
     if v is None or not torch.is_tensor(v):
         raise KeyError(f"missing tensor in checkpoint state_dict: {key}")
@@ -1015,6 +1046,18 @@ def _as_f16_array(state_dict: dict[str, Any], key: str) -> np.ndarray:
 
 
 def _collect_policy_tensors(*, state_dict: dict[str, Any], num_blocks: int, global_dim: int, use_global_film: bool, use_global_policy_bias: bool) -> list[np.ndarray]:
+    """内部ヘルパー: `collect_policy_tensors` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+        num_blocks (int): num_blocks の値。
+        global_dim (int): global_dim の値。
+        use_global_film (bool): 有効化フラグ。
+        use_global_policy_bias (bool): 有効化フラグ。
+
+    Returns:
+        list[np.ndarray]: 計算結果。
+    """
     out: list[np.ndarray] = []
     out.append(_as_f16_array(state_dict, "stem.0.weight"))
     out.append(_as_f16_array(state_dict, "stem.0.bias"))
@@ -1040,6 +1083,14 @@ def _collect_policy_tensors(*, state_dict: dict[str, Any], num_blocks: int, glob
 
 
 def _pack_policy_blob_base64(tensors: list[np.ndarray]) -> tuple[str, list[int]]:
+    """内部ヘルパー: `pack_policy_blob_base64` を実行する。
+
+    Args:
+        tensors (list[np.ndarray]): tensors の値。
+
+    Returns:
+        tuple[str, list[int]]: 計算結果。
+    """
     counts: list[int] = []
     half_chunks: list[np.ndarray] = []
     for t in tensors:
@@ -1075,6 +1126,30 @@ def build_submission_source(
     tensor_half_counts: list[int],
     model_blob_b64: str,
 ) -> str:
+    """重み埋め込み済み提出用 C++ ソース文字列を生成する。
+
+    Args:
+        board_channels (int): 入力特徴チャネル数。
+        board_size (int): 盤面サイズ。
+        global_dim (int): グローバル特徴次元。
+        width (int): モデル内部チャネル幅。
+        num_blocks (int): 残差ブロック数。
+        global_hidden_dim (int): グローバル MLP 隠れ次元。
+        action_dim (int): 行動数。
+        activation_id (int): 活性化関数 ID。
+        use_global_film (bool): FiLM 層を有効化するか。
+        use_global_policy_bias (bool): グローバル依存バイアスを有効化するか。
+        deterministic (bool): 決定論的行動選択を使うか。
+        use_action_mask (bool): 合法手マスクを使うか。
+        bayes_num_particles (int): ベイズ推定の粒子数。
+        bayes_seed (int): ベイズ推定の乱数シード。
+        bayes_resample_ess_frac (float): リサンプリング閾値。
+        tensor_half_counts (list[int]): テンソルごとの FP16 要素数。
+        model_blob_b64 (str): Base64 エンコード済み重みバイト列。
+
+    Returns:
+        str: 置換済み提出用 `main.cpp` ソース。
+    """
     b64_lines = textwrap.wrap(model_blob_b64, width=120)
     blob_literal = "\n".join(f'    "{ln}"' for ln in b64_lines)
     src = TEMPLATE_MAIN_CPP
@@ -1104,6 +1179,7 @@ def build_submission_source(
 
 
 def main() -> None:
+    """CLI 引数を解釈して提出用 `main.cpp` を出力する。"""
     args = build_parser().parse_args()
     ckpt = Path(args.checkpoint)
     payload = torch.load(ckpt, map_location="cpu", weights_only=False)

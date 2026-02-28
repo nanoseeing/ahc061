@@ -1,3 +1,4 @@
+"""圧縮埋め込み形式の提出用 `main.cpp` を生成する CLI。"""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +25,14 @@ DEFAULT_MAX_SOURCE_BYTES = 512 * 1024
 
 
 def _normalize_state_dict_keys(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """内部ヘルパー: `normalize_state_dict_keys` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     prefixes = ("_orig_mod.", "module.")
     out: dict[str, Any] = {}
     changed = False
@@ -40,6 +49,15 @@ def _normalize_state_dict_keys(state_dict: dict[str, Any]) -> dict[str, Any]:
 
 
 def _as_f16_array(state_dict: dict[str, Any], key: str) -> np.ndarray:
+    """内部ヘルパー: `as_f16_array` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+        key (str): key の値。
+
+    Returns:
+        np.ndarray: 計算結果。
+    """
     v = state_dict.get(key)
     if v is None or not torch.is_tensor(v):
         raise KeyError(f"missing tensor in checkpoint state_dict: {key}")
@@ -50,6 +68,14 @@ def _as_f16_array(state_dict: dict[str, Any], key: str) -> np.ndarray:
 
 
 def _pack_f16_blob(tensors: list[np.ndarray]) -> tuple[bytes, list[int]]:
+    """内部ヘルパー: `pack_f16_blob` を実行する。
+
+    Args:
+        tensors (list[np.ndarray]): tensors の値。
+
+    Returns:
+        tuple[bytes, list[int]]: 計算結果。
+    """
     counts: list[int] = []
     chunks: list[np.ndarray] = []
     for t in tensors:
@@ -61,6 +87,15 @@ def _pack_f16_blob(tensors: list[np.ndarray]) -> tuple[bytes, list[int]]:
 
 
 def _collect_exp002_resnet_policy_tensors(state_dict: dict[str, Any], *, blocks: int) -> list[np.ndarray]:
+    """内部ヘルパー: `collect_exp002_resnet_policy_tensors` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+        blocks (int): blocks の値。
+
+    Returns:
+        list[np.ndarray]: 計算結果。
+    """
     out: list[np.ndarray] = []
     out.append(_as_f16_array(state_dict, "stem.0.weight"))
     out.append(_as_f16_array(state_dict, "stem.1.weight"))
@@ -78,6 +113,15 @@ def _collect_exp002_resnet_policy_tensors(state_dict: dict[str, Any], *, blocks:
 
 
 def _collect_teacher_p0_policy_tensors(state_dict: dict[str, Any], *, num_blocks: int) -> list[np.ndarray]:
+    """内部ヘルパー: `collect_teacher_p0_policy_tensors` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+        num_blocks (int): num_blocks の値。
+
+    Returns:
+        list[np.ndarray]: 計算結果。
+    """
     out: list[np.ndarray] = []
     out.append(_as_f16_array(state_dict, "stem.0.weight"))
     out.append(_as_f16_array(state_dict, "stem.0.bias"))
@@ -92,6 +136,15 @@ def _collect_teacher_p0_policy_tensors(state_dict: dict[str, Any], *, num_blocks
 
 
 def _cpp_raw_lit(s: str, *, prefix: str = "") -> str:
+    """内部ヘルパー: `cpp_raw_lit` を実行する。
+
+    Args:
+        s (str): s の値。
+        prefix (str): prefix の値。
+
+    Returns:
+        str: 計算結果。
+    """
     for delim in ("", "_", "x", "X", "q", "Q", "r", "R", "z", "Z"):
         marker = ")" + delim + '"'
         if marker not in s:
@@ -105,6 +158,15 @@ def _cpp_raw_lit(s: str, *, prefix: str = "") -> str:
 
 
 def _emit_payload_literal(encoded: str, *, chunk: int = 16384) -> str:
+    """内部ヘルパー: `emit_payload_literal` を実行する。
+
+    Args:
+        encoded (str): encoded の値。
+        chunk (int): chunk の値。
+
+    Returns:
+        str: 計算結果。
+    """
     if not encoded:
         return '""'
     lines: list[str] = []
@@ -1732,6 +1794,18 @@ std::vector<std::uint8_t> decode_payload(std::string_view encoded) {
 
 
 def _replace_once(src: str, pattern: str, repl: str, *, desc: str, flags: int = 0) -> str:
+    """内部ヘルパー: `replace_once` を実行する。
+
+    Args:
+        src (str): src の値。
+        pattern (str): pattern の値。
+        repl (str): repl の値。
+        desc (str): desc の値。
+        flags (int): flags の値。
+
+    Returns:
+        str: 計算結果。
+    """
     out, n = re.subn(pattern, lambda _m: repl, src, count=1, flags=flags)
     if n != 1:
         raise RuntimeError(f"failed to patch student source for {desc}: count={n}")
@@ -1745,6 +1819,17 @@ def _rewrite_student_source_with_payload(
     codec_id: int,
     model_blob_bytes: int,
 ) -> str:
+    """内部ヘルパー: `rewrite_student_source_with_payload` を実行する。
+
+    Args:
+        src (str): src の値。
+        payload_text (str): payload_text の値。
+        codec_id (int): codec_id の値。
+        model_blob_bytes (int): model_blob_bytes の値。
+
+    Returns:
+        str: 計算結果。
+    """
     if "#include <string_view>" not in src:
         src = _replace_once(
             src,
@@ -1792,6 +1877,14 @@ def _rewrite_student_source_with_payload(
 
 
 def _strip_cpp_comments(src: str) -> str:
+    """内部ヘルパー: `strip_cpp_comments` を実行する。
+
+    Args:
+        src (str): src の値。
+
+    Returns:
+        str: 計算結果。
+    """
     out: list[str] = []
     i = 0
     n = len(src)
@@ -1863,6 +1956,14 @@ def _strip_cpp_comments(src: str) -> str:
 
 
 def _compact_layout_safe(src: str) -> str:
+    """内部ヘルパー: `compact_layout_safe` を実行する。
+
+    Args:
+        src (str): src の値。
+
+    Returns:
+        str: 計算結果。
+    """
     aliases = [
         ("std::array", "A_"),
         ("std::vector", "V_"),
@@ -1921,16 +2022,42 @@ def _compact_layout_safe(src: str) -> str:
 
 
 def _apply_compact_layout(src: str) -> str:
+    """内部ヘルパー: `apply_compact_layout` を実行する。
+
+    Args:
+        src (str): src の値。
+
+    Returns:
+        str: 計算結果。
+    """
     return _compact_layout_safe(src)
 
 
 def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
+    """内部ヘルパー: `bundle_cpp` を実行する。
+
+    Args:
+        entry (Path): entry の値。
+        include_dirs (list[Path]): include_dirs の値。
+
+    Returns:
+        str: 計算結果。
+    """
     include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"\s*$')
     include_sys_re = re.compile(r"^\s*#\s*include\s+<([^>]+)>\s*$")
     seen_local: set[Path] = set()
     seen_sys: set[str] = set()
 
     def resolve_include(cur: Path, name: str) -> Path | None:
+        """`include`を解決する。
+
+        Args:
+            cur (Path): cur の値。
+            name (str): name の値。
+
+        Returns:
+            Path | None: 計算結果。
+        """
         for d in include_dirs:
             cand = (d / name).resolve()
             if cand.is_file():
@@ -1941,6 +2068,14 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
         return None
 
     def rec(path: Path) -> list[str]:
+        """`rec` を実行する。
+
+        Args:
+            path (Path): 対象パス。
+
+        Returns:
+            list[str]: 計算結果。
+        """
         out: list[str] = []
         text = path.read_text(encoding="utf-8")
         for line in text.splitlines(keepends=True):
@@ -1988,6 +2123,26 @@ def _build_exp002_source(
     tta_auto_off_ms: int,
     repo_root: Path,
 ) -> str:
+    """内部ヘルパー: `build_exp002_source` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+        board_channels (int): board_channels の値。
+        board_size (int): board_size の値。
+        hidden_channels (int): hidden_channels の値。
+        num_blocks (int): num_blocks の値。
+        action_dim (int): action_dim の値。
+        feature_id (str): feature_id の値。
+        pf_enabled (bool): 有効化フラグ。
+        payload_encoding (str): payload_encoding の値。
+        tta_mode (int): tta_mode の値。
+        tta_k (int): tta_k の値。
+        tta_auto_off_ms (int): tta_auto_off_ms の値。
+        repo_root (Path): repo_root の値。
+
+    Returns:
+        str: 計算結果。
+    """
     tensors = _collect_exp002_resnet_policy_tensors(state_dict, blocks=int(num_blocks))
     raw_blob, counts = _pack_f16_blob(tensors)
     payload_text, codec_id = encode_model_payload(raw_blob, encoding=payload_encoding)
@@ -2040,6 +2195,24 @@ def _build_teacher_source(
     payload_encoding: str,
     repo_root: Path,
 ) -> str:
+    """内部ヘルパー: `build_teacher_source` を実行する。
+
+    Args:
+        state_dict (dict[str, Any]): state_dict の値。
+        board_channels (int): board_channels の値。
+        board_size (int): board_size の値。
+        width (int): width の値。
+        num_blocks (int): num_blocks の値。
+        action_dim (int): action_dim の値。
+        activation_id (int): activation_id の値。
+        feature_id (str): feature_id の値。
+        pf_enabled (bool): 有効化フラグ。
+        payload_encoding (str): payload_encoding の値。
+        repo_root (Path): repo_root の値。
+
+    Returns:
+        str: 計算結果。
+    """
     tensors = _collect_teacher_p0_policy_tensors(state_dict, num_blocks=int(num_blocks))
     raw_blob, counts = _pack_f16_blob(tensors)
     payload_text, codec_id = encode_model_payload(raw_blob, encoding=payload_encoding)
@@ -2077,6 +2250,14 @@ def _build_teacher_source(
 
 
 def _load_checkpoint(path: Path) -> dict[str, Any]:
+    """内部ヘルパー: `load_checkpoint` を実行する。
+
+    Args:
+        path (Path): 対象パス。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise ValueError("checkpoint payload must be dict")
@@ -2084,6 +2265,15 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
 
 
 def _detect_feature_id(payload: dict[str, Any], default: str) -> str:
+    """内部ヘルパー: `detect_feature_id` を実行する。
+
+    Args:
+        payload (dict[str, Any]): payload の値。
+        default (str): default の値。
+
+    Returns:
+        str: 計算結果。
+    """
     meta = payload.get("meta")
     if isinstance(meta, dict):
         fid = meta.get("feature_id")
@@ -2093,6 +2283,15 @@ def _detect_feature_id(payload: dict[str, Any], default: str) -> str:
 
 
 def _detect_pf_enabled(payload: dict[str, Any], default: bool) -> bool:
+    """内部ヘルパー: `detect_pf_enabled` を実行する。
+
+    Args:
+        payload (dict[str, Any]): payload の値。
+        default (bool): 有効化フラグ。
+
+    Returns:
+        bool: 計算結果。
+    """
     meta = payload.get("meta")
     if isinstance(meta, dict):
         v = meta.get("pf_enabled")
@@ -2102,6 +2301,11 @@ def _detect_pf_enabled(payload: dict[str, Any], default: bool) -> bool:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """`make_submit_compact` 用 CLI 引数パーサーを構築する。
+
+    Returns:
+        argparse.ArgumentParser: コマンドライン引数定義済みパーサー。
+    """
     p = argparse.ArgumentParser(description="Build compact single-file main.cpp from reinforce checkpoint")
     p.add_argument(
         "--exp002-full",
@@ -2135,6 +2339,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _build_student_source(payload: dict[str, Any], args: argparse.Namespace) -> str:
+    """チェックポイント内容に応じて提出用 C++ ソースを生成する。
+
+    Args:
+        payload (dict[str, Any]): 読み込み済みチェックポイント。
+        args (argparse.Namespace): CLI 引数。
+
+    Returns:
+        str: 生成済み提出用 C++ ソース。
+    """
     if int(args.tta_mode) != 0:
         raise ValueError("TTA is currently supported only for Exp002ResNetBoardAgent export")
 
@@ -2201,6 +2414,7 @@ def _build_student_source(payload: dict[str, Any], args: argparse.Namespace) -> 
 
 
 def main() -> None:
+    """CLI 引数を解釈し compact 形式の提出ソースを生成する。"""
     parser = build_parser()
     args, passthrough = parser.parse_known_args()
 

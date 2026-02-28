@@ -1,3 +1,4 @@
+"""`trainer` に関するモジュール。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,6 +13,20 @@ from .rollout_buffer import RolloutBuffer
 
 @dataclass
 class UpdateStats:
+    """`UpdateStats` を表すデータクラス。
+
+    Attributes:
+        policy_loss (float): フィールド値。
+        value_loss (float): フィールド値。
+        entropy (float): フィールド値。
+        approx_kl (float): フィールド値。
+        clipfrac (float): フィールド値。
+        value_clipfrac (float): フィールド値。
+        update_epochs_used (int): フィールド値。
+        early_stop_by_kl (bool): フィールド値。
+        target_kl_threshold (float | None): フィールド値。
+        aux_opp_param_loss (float): フィールド値。
+    """
     policy_loss: float
     value_loss: float
     entropy: float
@@ -31,6 +46,17 @@ def aux_opp_param_mse(
     *,
     use_valid_mask: bool = True,
 ) -> torch.Tensor:
+    """`aux_opp_param_mse` を実行する。
+
+    Args:
+        pred (torch.Tensor): pred の値。
+        target (torch.Tensor): target の値。
+        valid (torch.Tensor): valid の値。
+        use_valid_mask (bool): 有効化フラグ。
+
+    Returns:
+        torch.Tensor: 計算結果。
+    """
     if pred.ndim != 3 or target.ndim != 3:
         raise ValueError(f"aux opp tensors must be rank-3: pred={tuple(pred.shape)} target={tuple(target.shape)}")
     if tuple(pred.shape) != tuple(target.shape):
@@ -46,11 +72,7 @@ def aux_opp_param_mse(
 
 
 class PPOTrainer:
-    """PPO optimizer step implementation for discrete board agent.
-
-    Rollout collection is intentionally left environment-specific; this class
-    focuses on update logic and reuses CleanRL-compatible equations.
-    """
+    """`PPOTrainer` を表すクラス。"""
 
     def __init__(
         self,
@@ -60,6 +82,14 @@ class PPOTrainer:
         *,
         use_channels_last: bool = False,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            cfg (PPOConfig): 設定オブジェクト。
+            agent (nn.Module): agent の値。
+            optimizer (torch.optim.Optimizer): optimizer の値。
+            use_channels_last (bool): 有効化フラグ。
+        """
         self.cfg = cfg
         self.agent = agent
         self.optimizer = optimizer
@@ -71,6 +101,11 @@ class PPOTrainer:
         self.use_channels_last = bool(use_channels_last)
 
     def _model_device(self) -> torch.device:
+        """内部ヘルパー: `model_device` を実行する。
+
+        Returns:
+            torch.device: 計算結果。
+        """
         try:
             p = next(self.agent.parameters())
             return p.device
@@ -78,6 +113,11 @@ class PPOTrainer:
             return torch.device("cpu")
 
     def _target_kl_threshold(self) -> float | None:
+        """内部ヘルパー: `target_kl_threshold` を実行する。
+
+        Returns:
+            float | None: 計算結果。
+        """
         if self.cfg.target_kl is None:
             return None
         # SB3-compatible semantics: early-stop when approx_kl > 1.5 * target_kl.
@@ -92,6 +132,15 @@ class PPOTrainer:
         aux_opp_param_loss_coef: float | None = None,
         aux_opp_param_use_valid_mask: bool | None = None,
     ) -> None:
+        """`runtime_coefficients`を設定する。
+
+        Args:
+            ent_coef (float | None): ent_coef の値。
+            clip_coef (float | None): clip_coef の値。
+            clip_range_vf (float | None): clip_range_vf の値。
+            aux_opp_param_loss_coef (float | None): aux_opp_param_loss_coef の値。
+            aux_opp_param_use_valid_mask (bool | None): 有効化フラグ。
+        """
         self.runtime_ent_coef = None if ent_coef is None else float(ent_coef)
         self.runtime_clip_coef = None if clip_coef is None else float(clip_coef)
         self.runtime_clip_range_vf = None if clip_range_vf is None else float(clip_range_vf)
@@ -103,6 +152,14 @@ class PPOTrainer:
         )
 
     def update(self, buffer: RolloutBuffer) -> UpdateStats:
+        """`update` を実行する。
+
+        Args:
+            buffer (RolloutBuffer): buffer の値。
+
+        Returns:
+            UpdateStats: 計算結果。
+        """
         batch = buffer.flatten()
         b_inds = buffer.shuffled_indices()
         model_device = self._model_device()

@@ -1,3 +1,4 @@
+"""`test_eval_policy_summary` のテストモジュール。"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ from reinforce.ppo.entrypoints.eval_policy import _build_summary
 
 
 def test_build_summary_emits_score_summary_and_episode_seed() -> None:
+    """`build_summary_emits_score_summary_and_episode_seed` の振る舞いを検証する。"""
     args = SimpleNamespace(
         env_id="AHC061Local-v0",
         episodes=2,

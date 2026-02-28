@@ -1,3 +1,4 @@
+"""`test_train_ppo_schedule` のテストモジュール。"""
 from __future__ import annotations
 
 import pytest
@@ -13,13 +14,16 @@ from reinforce.ppo.train.schedule import (
 
 
 class TestTrainPPOSchedule:
+    """`TestTrainPPOSchedule` のテストケース。"""
     def test_schedule_progress_bounds(self) -> None:
+        """`schedule_progress_bounds` の振る舞いを検証する。"""
         assert schedule_progress(1, 1) == 1.0
         assert schedule_progress(1, 2) == 0.0
         assert schedule_progress(2, 2) == 1.0
         assert schedule_progress(3, 5) == pytest.approx(0.5, abs=1e-6)
 
     def test_parse_piecewise_expr_interpolates(self) -> None:
+        """`parse_piecewise_expr_interpolates` の振る舞いを検証する。"""
         fn, desc = parse_schedule_expr(
             "piecewise(0:1.0,0.5:0.0,1.0:2.0)",
             default_kind="constant",
@@ -33,6 +37,7 @@ class TestTrainPPOSchedule:
         assert fn(1.0) == pytest.approx(2.0, abs=1e-6)
 
     def test_schedule_set_requires_clip_range_vf(self) -> None:
+        """`schedule_set_requires_clip_range_vf` の振る舞いを検証する。"""
         cfg = PPOConfig(
             clip_range_vf=None,
             clip_range_vf_schedule_expr="linear(0.2,0.1)",
@@ -41,6 +46,7 @@ class TestTrainPPOSchedule:
             PPOScheduleSet.from_config(cfg)
 
     def test_validate_schedule_rejects_negative_entropy_coef(self) -> None:
+        """`validate_schedule_rejects_negative_entropy_coef` の振る舞いを検証する。"""
         cfg = PPOConfig(
             ent_coef=0.01,
             ent_coef_schedule_expr="constant(-0.1)",
@@ -49,6 +55,7 @@ class TestTrainPPOSchedule:
             validate_schedule_args(cfg)
 
     def test_build_schedule_with_vf_clip_schedule(self) -> None:
+        """`build_schedule_with_vf_clip_schedule` の振る舞いを検証する。"""
         cfg = PPOConfig(
             clip_range_vf=0.2,
             clip_range_vf_schedule="linear",
@@ -62,6 +69,7 @@ class TestTrainPPOSchedule:
         assert vf_fn(1.0) == pytest.approx(0.05, abs=1e-6)
 
     def test_runtime_schedule_resolver_applies_warmup(self) -> None:
+        """`runtime_schedule_resolver_applies_warmup` の振る舞いを検証する。"""
         cfg = PPOConfig(
             total_iterations=5,
             num_envs=2,
@@ -93,6 +101,7 @@ class TestTrainPPOSchedule:
         assert c2.learning_rate == pytest.approx(1.0, abs=1e-6)
 
     def test_runtime_schedule_resolver_starts_lr_anneal_after_warmup(self) -> None:
+        """`runtime_schedule_resolver_starts_lr_anneal_after_warmup` の振る舞いを検証する。"""
         cfg = PPOConfig(
             total_iterations=5,
             num_envs=2,
@@ -127,6 +136,7 @@ class TestTrainPPOSchedule:
         assert c5.learning_rate == pytest.approx(0.0, abs=1e-6)
 
     def test_runtime_schedule_resolver_validates_inputs(self) -> None:
+        """`runtime_schedule_resolver_validates_inputs` の振る舞いを検証する。"""
         cfg = PPOConfig(
             total_iterations=10,
             num_envs=2,
@@ -148,6 +158,7 @@ class TestTrainPPOSchedule:
             )
 
     def test_runtime_schedule_resolver_clamps_warmup_to_total_iterations(self) -> None:
+        """`runtime_schedule_resolver_clamps_warmup_to_total_iterations` の振る舞いを検証する。"""
         cfg = PPOConfig(
             total_iterations=3,
             num_envs=2,

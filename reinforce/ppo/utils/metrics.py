@@ -1,3 +1,4 @@
+"""`metrics` に関するユーティリティ。"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -9,6 +10,18 @@ import numpy as np
 
 @dataclass
 class ScalarSummary:
+    """`ScalarSummary` を表すデータクラス。
+
+    Attributes:
+        count (int): フィールド値。
+        mean (float): フィールド値。
+        std (float): フィールド値。
+        min (float): フィールド値。
+        p25 (float): フィールド値。
+        p50 (float): フィールド値。
+        p75 (float): フィールド値。
+        max (float): フィールド値。
+    """
     count: int
     mean: float
     std: float
@@ -19,6 +32,11 @@ class ScalarSummary:
     max: float
 
     def as_dict(self) -> dict[str, float | int]:
+        """`as_dict` を実行する。
+
+        Returns:
+            dict[str, float | int]: 計算結果。
+        """
         return {
             "count": self.count,
             "mean": self.mean,
@@ -32,6 +50,14 @@ class ScalarSummary:
 
 
 def summarize(values: Iterable[float]) -> ScalarSummary:
+    """`summarize` を実行する。
+
+    Args:
+        values (Iterable[float]): values の値。
+
+    Returns:
+        ScalarSummary: 計算結果。
+    """
     arr = np.asarray(list(values), dtype=np.float64)
     if arr.size == 0:
         nan = float("nan")
@@ -49,6 +75,14 @@ def summarize(values: Iterable[float]) -> ScalarSummary:
 
 
 def summarize_mean_variance(values: Sequence[float] | Iterable[float]) -> dict[str, float | int]:
+    """`summarize_mean_variance` を実行する。
+
+    Args:
+        values (Sequence[float] | Iterable[float]): values の値。
+
+    Returns:
+        dict[str, float | int]: 計算結果。
+    """
     arr = np.asarray(list(values), dtype=np.float64)
     if arr.size == 0:
         nan = float("nan")
@@ -72,6 +106,18 @@ def group_score_mean_variance_by_m_u(
     m_key: str = "m",
     u_key: str = "u",
 ) -> dict[str, list[dict[str, float | int]]]:
+    """`group_score_mean_variance_by_m_u` を実行する。
+
+    Args:
+        scores (Sequence[float]): scores の値。
+        m_values (Sequence[int]): m_values の値。
+        u_values (Sequence[int]): u_values の値。
+        m_key (str): m_key の値。
+        u_key (str): u_key の値。
+
+    Returns:
+        dict[str, list[dict[str, float | int]]]: 計算結果。
+    """
     if not (len(scores) == len(m_values) == len(u_values)):
         raise ValueError(
             "grouped score length mismatch: "

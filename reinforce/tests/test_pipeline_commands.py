@@ -1,4 +1,4 @@
-"""Tests for reinforce.ppo.pipeline.pipeline_commands."""
+"""`test_pipeline_commands` のテストモジュール。"""
 
 from __future__ import annotations
 
@@ -20,19 +20,21 @@ from reinforce.ppo.pipeline.pipeline_commands import (
 
 
 def test_append_bool_flag_true() -> None:
+    """`append_bool_flag_true` の振る舞いを検証する。"""
     cmd: list[str] = []
     append_bool_flag(cmd, "pf_enabled", True)
     assert cmd == ["pf_enabled=true"]
 
 
 def test_append_bool_flag_false() -> None:
+    """`append_bool_flag_false` の振る舞いを検証する。"""
     cmd: list[str] = []
     append_bool_flag(cmd, "pf_enabled", False)
     assert cmd == ["pf_enabled=false"]
 
 
 def test_append_bool_flag_hyphen_converted() -> None:
-    """Hyphens in name are converted to underscores."""
+    """`append_bool_flag_hyphen_converted` の振る舞いを検証する。"""
     cmd: list[str] = []
     append_bool_flag(cmd, "pf-enabled", True)
     assert cmd == ["pf_enabled=true"]
@@ -44,6 +46,14 @@ def test_append_bool_flag_hyphen_converted() -> None:
 
 
 def _make_train_bc_args(**kwargs) -> SimpleNamespace:
+    """内部ヘルパー: `make_train_bc_args` を実行する。
+
+    Args:
+        **kwargs (Any): 追加のキーワード引数。
+
+    Returns:
+        SimpleNamespace: 計算結果。
+    """
     defaults = dict(
         env_id="AHC061Local-v0",
         seed=7,
@@ -69,6 +79,11 @@ def _make_train_bc_args(**kwargs) -> SimpleNamespace:
 
 
 def test_build_train_bc_cmd_basic(tmp_path: Path) -> None:
+    """`build_train_bc_cmd_basic` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     teacher = tmp_path / "teacher.pt"
     out = tmp_path / "student.pt"
     args = _make_train_bc_args()
@@ -92,6 +107,11 @@ def test_build_train_bc_cmd_basic(tmp_path: Path) -> None:
 
 
 def test_build_train_bc_cmd_pf_disabled(tmp_path: Path) -> None:
+    """`build_train_bc_cmd_pf_disabled` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     teacher = tmp_path / "teacher.pt"
     out = tmp_path / "student.pt"
     args = _make_train_bc_args(ppo_pf_enabled=False, use_action_mask=False)
@@ -106,6 +126,14 @@ def test_build_train_bc_cmd_pf_disabled(tmp_path: Path) -> None:
 
 
 def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
+    """内部ヘルパー: `make_train_ppo_args` を実行する。
+
+    Args:
+        **kwargs (Any): 追加のキーワード引数。
+
+    Returns:
+        SimpleNamespace: 計算結果。
+    """
     defaults = dict(
         env_id="AHC061Local-v0",
         seed=1,
@@ -180,6 +208,11 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
 
 
 def test_build_train_ppo_cmd_basic(tmp_path: Path) -> None:
+    """`build_train_ppo_cmd_basic` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_train_ppo_args()
     run_dir = tmp_path / "runs"
     cmd = build_train_ppo_cmd(
@@ -206,6 +239,11 @@ def test_build_train_ppo_cmd_basic(tmp_path: Path) -> None:
 
 
 def test_build_train_ppo_cmd_with_target_kl(tmp_path: Path) -> None:
+    """`build_train_ppo_cmd_with_target_kl` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_train_ppo_args(ppo_target_kl=0.02)
     cmd = build_train_ppo_cmd(
         py="python",
@@ -218,6 +256,11 @@ def test_build_train_ppo_cmd_with_target_kl(tmp_path: Path) -> None:
 
 
 def test_build_train_ppo_cmd_uses_iteration_intervals_verbatim(tmp_path: Path) -> None:
+    """`build_train_ppo_cmd_uses_iteration_intervals_verbatim` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_train_ppo_args(
         ppo_num_envs=8,
         ppo_num_steps=100,
@@ -236,6 +279,11 @@ def test_build_train_ppo_cmd_uses_iteration_intervals_verbatim(tmp_path: Path) -
 
 
 def test_build_train_ppo_cmd_with_init_model(tmp_path: Path) -> None:
+    """`build_train_ppo_cmd_with_init_model` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_train_ppo_args()
     init = tmp_path / "init.pt"
     cmd = build_train_ppo_cmd(
@@ -251,6 +299,11 @@ def test_build_train_ppo_cmd_with_init_model(tmp_path: Path) -> None:
 
 
 def test_build_train_ppo_cmd_with_resume(tmp_path: Path) -> None:
+    """`build_train_ppo_cmd_with_resume` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_train_ppo_args()
     resume_path = tmp_path / "last.pt"
     cmd = build_train_ppo_cmd(
@@ -268,6 +321,11 @@ def test_build_train_ppo_cmd_with_resume(tmp_path: Path) -> None:
 
 
 def test_build_train_ppo_cmd_no_resume_without_run_name(tmp_path: Path) -> None:
+    """`build_train_ppo_cmd_no_resume_without_run_name` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_train_ppo_args()
     resume_path = tmp_path / "last.pt"
     # resume_from provided but no resume_run_name → no resume flags
@@ -289,6 +347,14 @@ def test_build_train_ppo_cmd_no_resume_without_run_name(tmp_path: Path) -> None:
 
 
 def _make_eval_args(**kwargs) -> SimpleNamespace:
+    """内部ヘルパー: `make_eval_args` を実行する。
+
+    Args:
+        **kwargs (Any): 追加のキーワード引数。
+
+    Returns:
+        SimpleNamespace: 計算結果。
+    """
     defaults = dict(
         env_id="AHC061Local-v0",
         eval_episodes=20,
@@ -308,6 +374,11 @@ def _make_eval_args(**kwargs) -> SimpleNamespace:
 
 
 def test_build_eval_policy_cmd_basic(tmp_path: Path) -> None:
+    """`build_eval_policy_cmd_basic` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_eval_args()
     model = tmp_path / "best.pt"
     out_json = tmp_path / "eval.json"
@@ -333,6 +404,11 @@ def test_build_eval_policy_cmd_basic(tmp_path: Path) -> None:
 
 
 def test_build_eval_policy_cmd_with_mlflow(tmp_path: Path) -> None:
+    """`build_eval_policy_cmd_with_mlflow` の振る舞いを検証する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+    """
     args = _make_eval_args(
         mlflow_tracking_uri="file:./mlruns",
         mlflow_experiment="ahc061",

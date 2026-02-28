@@ -1,3 +1,4 @@
+"""exp002 互換 compact 提出コードを生成する CLI。"""
 from __future__ import annotations
 
 import argparse
@@ -44,6 +45,14 @@ _PAYLOAD_CODEC_HUFF91 = 1091
 
 
 def _encode_base91(data: bytes) -> str:
+    """内部ヘルパー: `encode_base91` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        str: 計算結果。
+    """
     b = 0
     n = 0
     out: list[str] = []
@@ -69,6 +78,14 @@ def _encode_base91(data: bytes) -> str:
 
 
 def _decode_base91(text: str) -> bytes:
+    """内部ヘルパー: `decode_base91` を実行する。
+
+    Args:
+        text (str): text の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     v = -1
     b = 0
     n = 0
@@ -94,12 +111,25 @@ def _decode_base91(text: str) -> bytes:
 
 
 def _encode_base122(data: bytes) -> str:
+    """内部ヘルパー: `encode_base122` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        str: 計算結果。
+    """
     cur_index = 0
     cur_bit = 0
     n = len(data)
     out = bytearray()
 
     def get7() -> int | None:
+        """`get7` を実行する。
+
+        Returns:
+            int | None: 計算結果。
+        """
         nonlocal cur_index, cur_bit
         if cur_index >= n:
             return None
@@ -144,6 +174,14 @@ def _encode_base122(data: bytes) -> str:
 
 
 def _decode_base122(text: str) -> bytes:
+    """内部ヘルパー: `decode_base122` を実行する。
+
+    Args:
+        text (str): text の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     illegals = _BASE122_ILLEGALS
     shortened = _BASE122_SHORTENED
     encoded = text.encode("utf-8")
@@ -152,6 +190,11 @@ def _decode_base122(text: str) -> bytes:
     bit_of_byte = 0
 
     def push7(seven: int) -> None:
+        """`push7` を実行する。
+
+        Args:
+            seven (int): seven の値。
+        """
         nonlocal cur_byte, bit_of_byte
         byte = (seven & 0x7F) << 1
         cur_byte |= (byte >> bit_of_byte) & 0xFF
@@ -188,6 +231,14 @@ def _decode_base122(text: str) -> bytes:
 
 
 def _huff_code_lengths(data: bytes) -> list[int]:
+    """内部ヘルパー: `huff_code_lengths` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        list[int]: 計算結果。
+    """
     lengths = [0] * 256
     if not data:
         return lengths
@@ -230,6 +281,14 @@ def _huff_code_lengths(data: bytes) -> list[int]:
 
 
 def _huff_canonical_codes(lengths: list[int]) -> list[tuple[int, int]]:
+    """内部ヘルパー: `huff_canonical_codes` を実行する。
+
+    Args:
+        lengths (list[int]): lengths の値。
+
+    Returns:
+        list[tuple[int, int]]: 計算結果。
+    """
     syms = sorted((ln, sym) for sym, ln in enumerate(lengths) if ln > 0)
     codes: list[tuple[int, int]] = [(0, 0)] * 256
     code = 0
@@ -245,6 +304,14 @@ def _huff_canonical_codes(lengths: list[int]) -> list[tuple[int, int]]:
 
 
 def _huff122_compress(data: bytes) -> bytes:
+    """内部ヘルパー: `huff122_compress` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     lengths = _huff_code_lengths(data)
     if max(lengths, default=0) > 63:
         raise RuntimeError("[ENC] huff122 max code length exceeded 63 bits")
@@ -267,6 +334,15 @@ def _huff122_compress(data: bytes) -> bytes:
 
 
 def _huff122_decompress(blob: bytes, *, expected_size: int) -> bytes:
+    """内部ヘルパー: `huff122_decompress` を実行する。
+
+    Args:
+        blob (bytes): blob の値。
+        expected_size (int): expected_size の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     if expected_size < 0:
         raise RuntimeError("[ENC] huff122 expected_size must be non-negative")
     if expected_size == 0:
@@ -323,6 +399,14 @@ def _huff122_decompress(blob: bytes, *, expected_size: int) -> bytes:
 
 
 def _huff15_compress(data: bytes) -> bytes:
+    """内部ヘルパー: `huff15_compress` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     lengths = _huff_code_lengths(data)
     if max(lengths, default=0) > 15:
         raise RuntimeError("[ENC] huff15 max code length exceeded 15 bits")
@@ -348,6 +432,15 @@ def _huff15_compress(data: bytes) -> bytes:
 
 
 def _huff15_decompress(blob: bytes, *, expected_size: int) -> bytes:
+    """内部ヘルパー: `huff15_decompress` を実行する。
+
+    Args:
+        blob (bytes): blob の値。
+        expected_size (int): expected_size の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     if expected_size < 0:
         raise RuntimeError("[ENC] huff15 expected_size must be non-negative")
     if expected_size == 0:
@@ -407,6 +500,16 @@ def _huff15_decompress(blob: bytes, *, expected_size: int) -> bytes:
 
 
 def _encode_model_payload(blob: bytes, *, encoding: str, use_huff15_for_huff91: bool = False) -> str:
+    """内部ヘルパー: `encode_model_payload` を実行する。
+
+    Args:
+        blob (bytes): blob の値。
+        encoding (str): encoding の値。
+        use_huff15_for_huff91 (bool): 有効化フラグ。
+
+    Returns:
+        str: 計算結果。
+    """
     if encoding == "base91":
         payload = _encode_base91(blob)
         if _decode_base91(payload) != blob:
@@ -440,6 +543,15 @@ def _encode_model_payload(blob: bytes, *, encoding: str, use_huff15_for_huff91: 
 
 
 def _quantize_per_output_channel(weight: torch.Tensor, *, qmax: int = 127) -> tuple[torch.Tensor, torch.Tensor]:
+    """内部ヘルパー: `quantize_per_output_channel` を実行する。
+
+    Args:
+        weight (torch.Tensor): weight の値。
+        qmax (int): qmax の値。
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: 計算結果。
+    """
     if weight.ndim < 1:
         raise ValueError(f"weight must have at least 1 dim, got shape={tuple(weight.shape)}")
     if qmax <= 0:
@@ -453,11 +565,27 @@ def _quantize_per_output_channel(weight: torch.Tensor, *, qmax: int = 127) -> tu
 
 
 def _tensor_to_i8_bytes(t: torch.Tensor) -> bytes:
+    """内部ヘルパー: `tensor_to_i8_bytes` を実行する。
+
+    Args:
+        t (torch.Tensor): t の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     a = t.detach().to(torch.int8).contiguous().view(-1).cpu().numpy().astype(np.int8, copy=False)
     return a.tobytes()
 
 
 def _tensor_to_i4_packed_bytes(t: torch.Tensor) -> bytes:
+    """内部ヘルパー: `tensor_to_i4_packed_bytes` を実行する。
+
+    Args:
+        t (torch.Tensor): t の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     a = t.detach().to(torch.int16).contiguous().view(-1).cpu().numpy().astype(np.int16, copy=False)
     if np.any(a < -8) or np.any(a > 7):
         raise RuntimeError("[ENC] int4 tensor out of range [-8, 7]")
@@ -469,11 +597,27 @@ def _tensor_to_i4_packed_bytes(t: torch.Tensor) -> bytes:
 
 
 def _tensor_to_f16_bytes(t: torch.Tensor) -> bytes:
+    """内部ヘルパー: `tensor_to_f16_bytes` を実行する。
+
+    Args:
+        t (torch.Tensor): t の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     a = t.detach().to(torch.float16).contiguous().view(-1).cpu().numpy().astype("<f2", copy=False)
     return a.tobytes()
 
 
 def _tensor_to_fp8e4m3_bytes(t: torch.Tensor) -> bytes:
+    """内部ヘルパー: `tensor_to_fp8e4m3_bytes` を実行する。
+
+    Args:
+        t (torch.Tensor): t の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     a = (
         t.detach()
         .to(torch.float32)
@@ -488,6 +632,14 @@ def _tensor_to_fp8e4m3_bytes(t: torch.Tensor) -> bytes:
 
 
 def _tensor9_mxfp8e4m3_per_row_bytes(t: torch.Tensor) -> tuple[bytes, bytes]:
+    """内部ヘルパー: `tensor9_mxfp8e4m3_per_row_bytes` を実行する。
+
+    Args:
+        t (torch.Tensor): t の値。
+
+    Returns:
+        tuple[bytes, bytes]: 計算結果。
+    """
     if t.ndim != 2 or t.shape[1] != 9:
         raise ValueError(f"expected tensor shape [rows, 9], got {tuple(t.shape)}")
     w = t.detach().to(torch.float32).contiguous()
@@ -507,12 +659,37 @@ def _write_compact_inc(
     meta: dict[str, int | str],
     short_names: bool = False,
 ) -> None:
+    """圧縮済みモデル payload を `.inc` ヘッダとして書き出す。
+
+    Args:
+        out_path (Path): 出力先 `.inc` ファイル。
+        encoded_payload (str): エンコード済みモデル文字列。
+        meta (dict): 埋め込むメタ情報。
+    """
     def cpp_escaped_lit(s: str, *, prefix: str) -> str:
+        """`cpp_escaped_lit` を実行する。
+
+        Args:
+            s (str): s の値。
+            prefix (str): prefix の値。
+
+        Returns:
+            str: 計算結果。
+        """
         esc = s.replace("\\", "\\\\").replace('"', '\\"')
         return f'{prefix}"{esc}"'
 
     def cpp_raw_lit(s: str, *, prefix: str) -> str:
         # Prefer short delimiters to reduce source size overhead.
+        """`cpp_raw_lit` を実行する。
+
+        Args:
+            s (str): s の値。
+            prefix (str): prefix の値。
+
+        Returns:
+            str: 計算結果。
+        """
         for delim in ("", "_", "x", "X", "q", "Q", "r", "R", "z", "Z"):
             marker = ")" + delim + '"'
             if marker not in s:
@@ -594,6 +771,15 @@ def _write_compact_inc(
 
 
 def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
+    """内部ヘルパー: `bundle_cpp` を実行する。
+
+    Args:
+        entry (Path): entry の値。
+        include_dirs (list[Path]): include_dirs の値。
+
+    Returns:
+        str: 計算結果。
+    """
     include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"\s*$')
     include_sys_re = re.compile(r"^\s*#\s*include\s+<([^>]+)>\s*$")
     seen: set[Path] = set()
@@ -602,6 +788,14 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
     def strip_trailing_line_comment(line: str) -> str:
         # Raw string literal lines (R"delim(... )delim") may contain `//` payload.
         # Keep them untouched to avoid truncating encoded model blobs.
+        """`strip_trailing_line_comment` を実行する。
+
+        Args:
+            line (str): line の値。
+
+        Returns:
+            str: 計算結果。
+        """
         if 'R"' in line:
             return line
         keep_nl = line.endswith("\n")
@@ -638,6 +832,15 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
         return line
 
     def should_drop_line(line: str, *, in_block_comment: bool) -> tuple[bool, bool]:
+        """`should_drop_line` を実行する。
+
+        Args:
+            line (str): line の値。
+            in_block_comment (bool): 有効化フラグ。
+
+        Returns:
+            tuple[bool, bool]: 計算結果。
+        """
         s = line.lstrip()
         if in_block_comment:
             if "*/" in s:
@@ -654,6 +857,15 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
         return False, False
 
     def resolve_include(cur: Path, name: str) -> Path | None:
+        """`include`を解決する。
+
+        Args:
+            cur (Path): cur の値。
+            name (str): name の値。
+
+        Returns:
+            Path | None: 計算結果。
+        """
         for d in include_dirs:
             cand = (d / name).resolve()
             if cand.is_file():
@@ -664,6 +876,14 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
         return None
 
     def rec(path: Path) -> list[str]:
+        """`rec` を実行する。
+
+        Args:
+            path (Path): 対象パス。
+
+        Returns:
+            list[str]: 計算結果。
+        """
         out: list[str] = []
         in_block_comment = False
         text = path.read_text(encoding="utf-8")
@@ -704,6 +924,14 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
 
 
 def _compact_cpp_layout(src: str) -> str:
+    """内部ヘルパー: `compact_cpp_layout` を実行する。
+
+    Args:
+        src (str): src の値。
+
+    Returns:
+        str: 計算結果。
+    """
     multi_punct = [
         "<<=",
         ">>=",
@@ -1099,6 +1327,14 @@ def _compact_cpp_layout(src: str) -> str:
         src = "\n".join(inc_lines + kept_lines)
 
     def tokenize(code: str) -> list[str]:
+        """`tokenize` を実行する。
+
+        Args:
+            code (str): code の値。
+
+        Returns:
+            list[str]: 計算結果。
+        """
         out_toks: list[str] = []
         i = 0
         n = len(code)
@@ -1176,6 +1412,14 @@ def _compact_cpp_layout(src: str) -> str:
         return out_toks
 
     def is_atom(tok: str) -> bool:
+        """`atom`かどうかを判定する。
+
+        Args:
+            tok (str): tok の値。
+
+        Returns:
+            bool: 判定結果。
+        """
         if not tok:
             return False
         if tok[0].isalpha() or tok[0] == "_" or tok[0].isdigit():
@@ -1189,6 +1433,15 @@ def _compact_cpp_layout(src: str) -> str:
         return False
 
     def need_sep(prev: str, cur: str) -> bool:
+        """`need_sep` を実行する。
+
+        Args:
+            prev (str): prev の値。
+            cur (str): cur の値。
+
+        Returns:
+            bool: 計算結果。
+        """
         if not prev or not cur:
             return False
         if is_atom(prev) and is_atom(cur):
@@ -1204,6 +1457,7 @@ def _compact_cpp_layout(src: str) -> str:
     needs_global_std_using = False
 
     def flush_code() -> None:
+        """`flush_code` を実行する。"""
         nonlocal needs_global_std_using
         if not code_lines:
             return
@@ -1315,6 +1569,15 @@ def _compact_cpp_layout(src: str) -> str:
 
 
 def _find_matching_brace(src: str, open_brace_pos: int) -> int:
+    """内部ヘルパー: `find_matching_brace` を実行する。
+
+    Args:
+        src (str): src の値。
+        open_brace_pos (int): open_brace_pos の値。
+
+    Returns:
+        int: 計算結果。
+    """
     depth = 0
     for i in range(open_brace_pos, len(src)):
         ch = src[i]
@@ -1328,6 +1591,15 @@ def _find_matching_brace(src: str, open_brace_pos: int) -> int:
 
 
 def _remove_optional_function(src: str, signature: str) -> tuple[str, bool]:
+    """内部ヘルパー: `remove_optional_function` を実行する。
+
+    Args:
+        src (str): src の値。
+        signature (str): signature の値。
+
+    Returns:
+        tuple[str, bool]: 計算結果。
+    """
     pos = src.find(signature)
     if pos < 0:
         return src, False
@@ -1346,6 +1618,15 @@ def _remove_optional_function(src: str, signature: str) -> tuple[str, bool]:
 
 
 def _remove_optional_struct(src: str, signature: str) -> tuple[str, bool]:
+    """内部ヘルパー: `remove_optional_struct` を実行する。
+
+    Args:
+        src (str): src の値。
+        signature (str): signature の値。
+
+    Returns:
+        tuple[str, bool]: 計算結果。
+    """
     pos = src.find(signature)
     if pos < 0:
         return src, False
@@ -1368,6 +1649,15 @@ def _remove_optional_struct(src: str, signature: str) -> tuple[str, bool]:
 
 
 def _remove_optional_exact_line(src: str, line: str) -> tuple[str, bool]:
+    """内部ヘルパー: `remove_optional_exact_line` を実行する。
+
+    Args:
+        src (str): src の値。
+        line (str): line の値。
+
+    Returns:
+        tuple[str, bool]: 計算結果。
+    """
     pat = line + "\n"
     if pat in src:
         return src.replace(pat, "", 1), True
@@ -1375,6 +1665,15 @@ def _remove_optional_exact_line(src: str, line: str) -> tuple[str, bool]:
 
 
 def _ensure_system_include(src: str, header: str) -> str:
+    """内部ヘルパー: `ensure_system_include` を実行する。
+
+    Args:
+        src (str): src の値。
+        header (str): header の値。
+
+    Returns:
+        str: 計算結果。
+    """
     inc = f"#include <{header}>"
     if inc in src:
         return src
@@ -1386,6 +1685,16 @@ def _ensure_system_include(src: str, header: str) -> str:
 
 
 def _replace_required_function(src: str, signature: str, replacement: str) -> str:
+    """内部ヘルパー: `replace_required_function` を実行する。
+
+    Args:
+        src (str): src の値。
+        signature (str): signature の値。
+        replacement (str): replacement の値。
+
+    Returns:
+        str: 計算結果。
+    """
     pos = src.find(signature)
     if pos < 0:
         raise RuntimeError(f"[TTA] function not found: {signature}")
@@ -1407,6 +1716,11 @@ def _replace_required_function(src: str, signature: str, replacement: str) -> st
 
 
 def _build_select_action_mode0() -> str:
+    """内部ヘルパー: `build_select_action_mode0` を実行する。
+
+    Returns:
+        str: 計算結果。
+    """
     return textwrap.dedent(
         """
         static int select_action(
@@ -1444,6 +1758,11 @@ def _build_select_action_mode0() -> str:
 
 
 def _build_sa0_mode0() -> str:
+    """内部ヘルパー: `build_sa0_mode0` を実行する。
+
+    Returns:
+        str: 計算結果。
+    """
     return textwrap.dedent(
         """
         static int sa0(
@@ -1480,6 +1799,16 @@ def _build_sa0_mode0() -> str:
 
 
 def _build_sa0_tta(*, mode: int, k: int, auto_off_ms: int) -> str:
+    """内部ヘルパー: `build_sa0_tta` を実行する。
+
+    Args:
+        mode (int): mode の値。
+        k (int): k の値。
+        auto_off_ms (int): auto_off_ms の値。
+
+    Returns:
+        str: 計算結果。
+    """
     if mode not in (1, 2):
         raise RuntimeError(f"[TTA] unsupported mode for TTA body: {mode}")
     if k not in (2, 4, 8):
@@ -1673,6 +2002,16 @@ def _build_sa0_tta(*, mode: int, k: int, auto_off_ms: int) -> str:
 
 
 def _build_select_action_tta(*, mode: int, k: int, auto_off_ms: int) -> str:
+    """内部ヘルパー: `build_select_action_tta` を実行する。
+
+    Args:
+        mode (int): mode の値。
+        k (int): k の値。
+        auto_off_ms (int): auto_off_ms の値。
+
+    Returns:
+        str: 計算結果。
+    """
     if mode not in (1, 2):
         raise RuntimeError(f"[TTA] unsupported mode for TTA body: {mode}")
     if k not in (2, 4, 8):
@@ -1865,6 +2204,17 @@ def _build_select_action_tta(*, mode: int, k: int, auto_off_ms: int) -> str:
 
 
 def _apply_tta_specialization(src: str, *, mode: int, k: int, auto_off_ms: int) -> str:
+    """内部ヘルパー: `apply_tta_specialization` を実行する。
+
+    Args:
+        src (str): src の値。
+        mode (int): mode の値。
+        k (int): k の値。
+        auto_off_ms (int): auto_off_ms の値。
+
+    Returns:
+        str: 計算結果。
+    """
     if mode not in (0, 1, 2):
         raise RuntimeError(f"[TTA] mode must be 0/1/2, got {mode}")
     if k not in (2, 4, 8):
@@ -1908,6 +2258,7 @@ def _apply_tta_specialization(src: str, *, mode: int, k: int, auto_off_ms: int) 
 
 
 def main() -> None:
+    """CLI 引数を解釈し exp002 互換提出アセットを生成する。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str, required=True)
     parser.add_argument("--out-dir", type=str, default="reinforce/outputs/submission/exp002")
@@ -2019,16 +2370,40 @@ def main() -> None:
         )
 
     def feature_cpp_header(fid: str) -> str:
+        """`feature_cpp_header` を実行する。
+
+        Args:
+            fid (str): fid の値。
+
+        Returns:
+            str: 計算結果。
+        """
         if fid == "submit_v1":
             return "ahc061/core/features.hpp"
         return f"ahc061/core/features_{fid}.hpp"
 
     def feature_channels_expr(fid: str) -> str:
+        """`feature_channels_expr` を実行する。
+
+        Args:
+            fid (str): fid の値。
+
+        Returns:
+            str: 計算結果。
+        """
         if fid == "submit_v1":
             return "FEATURE_C"
         return "FEATURE_" + fid.upper() + "_C"
 
     def feature_writer_name(fid: str) -> str:
+        """`feature_writer_name` を実行する。
+
+        Args:
+            fid (str): fid の値。
+
+        Returns:
+            str: 計算結果。
+        """
         if fid == "submit_v1":
             return "write_features_submit_v1_from_common"
         return f"write_features_{fid}_from_common"
@@ -2069,18 +2444,33 @@ def main() -> None:
     use_dwpp_c7_huff91_special_minimal = False
 
     def append_i8_1x1_weight(name: str) -> None:
+        """`append_i8_1x1_weight` を実行する。
+
+        Args:
+            name (str): name の値。
+        """
         w = st[name].squeeze(-1).squeeze(-1)
         q, scale = _quantize_per_output_channel(w, qmax=127)
         q_parts.append(_tensor_to_i8_bytes(q))
         h_parts.append(_tensor_to_f16_bytes(scale))
 
     def append_i4_1x1_weight(name: str) -> None:
+        """`append_i4_1x1_weight` を実行する。
+
+        Args:
+            name (str): name の値。
+        """
         w = st[name].squeeze(-1).squeeze(-1)
         q, scale = _quantize_per_output_channel(w, qmax=7)
         q_parts.append(_tensor_to_i4_packed_bytes(q))
         h_parts.append(_tensor_to_f16_bytes(scale))
 
     def append_i8_vector(name: str) -> None:
+        """`append_i8_vector` を実行する。
+
+        Args:
+            name (str): name の値。
+        """
         v = st[name].detach().to(torch.float32).contiguous().view(-1)
         max_abs = torch.abs(v).amax()
         if float(max_abs) > 0.0:
@@ -2092,20 +2482,40 @@ def main() -> None:
         h_parts.append(_tensor_to_f16_bytes(scale.view(1)))
 
     def append_f16_transposed_1x1_weight(name: str) -> None:
+        """`append_f16_transposed_1x1_weight` を実行する。
+
+        Args:
+            name (str): name の値。
+        """
         w = st[name].squeeze(-1).squeeze(-1).detach().to(torch.float32).contiguous()  # [out, in]
         wt = w.transpose(0, 1).contiguous()  # [in, out]
         h_parts.append(_tensor_to_f16_bytes(wt))
 
     def append_f16_flat(name: str) -> None:
+        """`append_f16_flat` を実行する。
+
+        Args:
+            name (str): name の値。
+        """
         v = st[name].detach().to(torch.float32).contiguous().view(-1)
         h_parts.append(_tensor_to_f16_bytes(v))
 
     def append_fp8_transposed_1x1_weight(name: str) -> None:
+        """`append_fp8_transposed_1x1_weight` を実行する。
+
+        Args:
+            name (str): name の値。
+        """
         w = st[name].squeeze(-1).squeeze(-1).detach().to(torch.float32).contiguous()  # [out, in]
         wt = w.transpose(0, 1).contiguous()  # [in, out]
         q_parts.append(_tensor_to_fp8e4m3_bytes(wt))
 
     def append_fp8_flat(name: str) -> None:
+        """`append_fp8_flat` を実行する。
+
+        Args:
+            name (str): name の値。
+        """
         v = st[name].detach().to(torch.float32).contiguous().view(-1)
         q_parts.append(_tensor_to_fp8e4m3_bytes(v))
 
@@ -2287,6 +2697,7 @@ def main() -> None:
         # Backward compatibility for historical key rename:
         # player_front.* -> player_front_blocks.*
         def resolve_player_front_prefix() -> str:
+            """Resolve player-front block prefix across renamed checkpoints."""
             preferred = "player_front_blocks"
             legacy = "player_front"
             probe = ".0.dw.weight"
@@ -2303,11 +2714,13 @@ def main() -> None:
         player_front_prefix = resolve_player_front_prefix()
 
         def player_front_key(block_idx: int, suffix: str) -> str:
+            """Build a checkpoint key under the resolved player-front prefix."""
             return f"{player_front_prefix}.{block_idx}.{suffix}"
 
         f16_one = _tensor_to_f16_bytes(torch.ones(1, dtype=torch.float32))
 
         def append_i8_1x1_weight_or_zero(name: str, out_c: int, in_c: int) -> None:
+            """Append int8-quantized 1x1 weights or an all-zero fallback."""
             if name in st:
                 append_i8_1x1_weight(name)
                 return
@@ -2317,6 +2730,7 @@ def main() -> None:
             h_parts.append(_tensor_to_f16_bytes(scale))
 
         def append_i4_1x1_weight_or_zero(name: str, out_c: int, in_c: int) -> None:
+            """Append int4-packed 1x1 weights or an all-zero fallback."""
             if name in st:
                 append_i4_1x1_weight(name)
                 return
@@ -2326,6 +2740,7 @@ def main() -> None:
             h_parts.append(_tensor_to_f16_bytes(scale))
 
         def append_i8_vector_or_zero(name: str, n: int) -> None:
+            """Append int8 vector payload or a zero/identity fallback."""
             if name in st:
                 append_i8_vector(name)
                 return
@@ -2425,21 +2840,25 @@ def main() -> None:
         fp8_aux_mask &= 0x7F
 
         def use_fp8(bit: int) -> bool:
+            """Return whether the auxiliary payload slot uses FP8 encoding."""
             return ((fp8_aux_mask >> bit) & 1) != 0
 
         def append_aux_transposed(name: str, fp8_bit: int) -> None:
+            """Append a transposed auxiliary tensor in FP8 or FP16 format."""
             if use_fp8(fp8_bit):
                 append_fp8_transposed_1x1_weight(name)
             else:
                 append_f16_transposed_1x1_weight(name)
 
         def append_aux_flat(name: str, fp8_bit: int) -> None:
+            """Append a flat auxiliary tensor in FP8 or FP16 format."""
             if use_fp8(fp8_bit):
                 append_fp8_flat(name)
             else:
                 append_f16_flat(name)
 
         def append_aux_transposed_or_zero(name: str, fp8_bit: int, out_c: int, in_c: int) -> None:
+            """Append transposed auxiliary weights or a shape-matched zero payload."""
             if name in st:
                 append_aux_transposed(name, fp8_bit)
                 return
@@ -2450,6 +2869,7 @@ def main() -> None:
                 h_parts.append(bytes(n * 2))
 
         def append_aux_flat_or_zero(name: str, fp8_bit: int, n: int) -> None:
+            """Append flat auxiliary weights or a length-matched zero payload."""
             if name in st:
                 append_aux_flat(name, fp8_bit)
                 return
@@ -2459,6 +2879,7 @@ def main() -> None:
                 h_parts.append(bytes(n * 2))
 
         def append_aux_dw_kernel(name: str, channels: int, fp8_bit: int) -> None:
+            """Append depthwise-kernel payload in FP8 or FP16 format."""
             dw = st[name].view(channels, 9).detach().to(torch.float32).contiguous().view(-1)
             if use_fp8(fp8_bit):
                 q_parts.append(_tensor_to_fp8e4m3_bytes(dw))
@@ -2466,6 +2887,7 @@ def main() -> None:
                 h_parts.append(_tensor_to_f16_bytes(dw))
 
         def append_aux_dw_kernel_or_zero(name: str, channels: int, fp8_bit: int) -> None:
+            """Append depthwise-kernel payload or an all-zero fallback."""
             if name in st:
                 append_aux_dw_kernel(name, channels, fp8_bit)
                 return
@@ -2476,12 +2898,14 @@ def main() -> None:
                 h_parts.append(bytes(n * 2))
 
         def append_mxfp8_dw_kernel(name: str, channels: int) -> None:
+            """Append per-row MXFP8 depthwise-kernel payload and row scales."""
             dw = st[name].view(channels, 9)
             q_b, s_b = _tensor9_mxfp8e4m3_per_row_bytes(dw)
             q_parts.append(q_b)
             h_parts.append(s_b)
 
         def append_mxfp8_dw_kernel_or_zero(name: str, channels: int) -> None:
+            """Append MXFP8 depthwise kernel payload or an all-zero fallback."""
             if name in st:
                 append_mxfp8_dw_kernel(name, channels)
                 return

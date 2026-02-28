@@ -1,3 +1,4 @@
+"""`cpp_ext` に関する環境処理。"""
 from __future__ import annotations
 
 import os
@@ -11,6 +12,14 @@ _EXT: Optional[object] = None
 
 
 def load_ext(*, verbose: bool = False):
+    """`ext`を読み込む。
+
+    Args:
+        verbose (bool): 有効化フラグ。
+
+    Returns:
+        Any: 計算結果。
+    """
     global _EXT
     if _EXT is not None:
         return _EXT

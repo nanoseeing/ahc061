@@ -1,3 +1,4 @@
+"""`test_make_submit_compact` のテストモジュール。"""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +17,7 @@ from reinforce.ppo.submission.payload_codec import PAYLOAD_CODEC_BASE91
 
 
 def test_rewrite_student_source_with_payload_replaces_base64_path() -> None:
+    """`rewrite_student_source_with_payload_replaces_base64_path` の振る舞いを検証する。"""
     src = student_export.build_submission_source(
         board_channels=7,
         board_size=10,
@@ -50,6 +52,7 @@ def test_rewrite_student_source_with_payload_replaces_base64_path() -> None:
 
 
 def test_compact_layout_safe_applies_alias_macros() -> None:
+    """`compact_layout_safe_applies_alias_macros` の振る舞いを検証する。"""
     src = "#include <array>\n#include <vector>\nstd::array<int, 2> a; std::vector<int> b;\n"
     out = _compact_layout_safe(src)
     assert "#define A_ std::array" in out
@@ -58,6 +61,7 @@ def test_compact_layout_safe_applies_alias_macros() -> None:
 
 
 def test_student_tta_mode_nonzero_raises() -> None:
+    """`student_tta_mode_nonzero_raises` の振る舞いを検証する。"""
     args = argparse.Namespace(payload_encoding="huff91", tta_mode=1)
     payload: dict[str, object] = {}
     try:
@@ -70,6 +74,7 @@ def test_student_tta_mode_nonzero_raises() -> None:
 
 
 def test_collect_teacher_p0_policy_tensors_order_and_count() -> None:
+    """`collect_teacher_p0_policy_tensors_order_and_count` の振る舞いを検証する。"""
     state_dict = {
         "stem.0.weight": torch.zeros((64, 88, 3, 3), dtype=torch.float32),
         "stem.0.bias": torch.zeros((64,), dtype=torch.float32),
@@ -89,6 +94,7 @@ def test_collect_teacher_p0_policy_tensors_order_and_count() -> None:
 
 
 def test_build_parser_has_no_legacy_exp002_flags() -> None:
+    """`build_parser_has_no_legacy_exp002_flags` の振る舞いを検証する。"""
     parser = build_parser()
     dests = {a.dest for a in parser._actions}  # noqa: SLF001
     assert "legacy_exp002" not in dests

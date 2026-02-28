@@ -1,3 +1,4 @@
+"""学習済みポリシーを評価する CLI エントリーポイント。"""
 from __future__ import annotations
 
 import json
@@ -31,11 +32,24 @@ _CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
 @hydra.main(version_base="1.3", config_path=_CONF_DIR, config_name="eval_policy/default")
 def main(cfg: DictConfig) -> None:
+    """Hydra 設定を読み込みポリシー評価を開始する。
+
+    Args:
+        cfg (DictConfig): `eval_policy/default` から解決された実行設定。
+    """
     args = _cfg_to_ns(cfg)
     raise SystemExit(_run(args))
 
 
 def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
+    """`eval_policy` 用に設定を `SimpleNamespace` へ変換する。
+
+    Args:
+        cfg (DictConfig): Hydra が解決した設定。
+
+    Returns:
+        SimpleNamespace: 評価実行に必要な引数。
+    """
     return cfg_to_namespace(
         cfg,
         optional_paths={
@@ -47,6 +61,15 @@ def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
 
 
 def _prepare_run(args: SimpleNamespace) -> tuple[Any, MetricTracker | None]:
+    """評価ランの出力先とトラッキング環境を初期化する。
+
+    Args:
+        args (SimpleNamespace): 評価実行引数。
+
+    Returns:
+        tuple[Any, MetricTracker | None]:
+            `(layout, tracker)`。ラン管理を使わない場合は `(None, None)`。
+    """
     if args.run_root is None and (
         bool(getattr(args, "tensorboard", False)) or bool(str(getattr(args, "mlflow_tracking_uri", "")).strip())
     ):
@@ -100,6 +123,22 @@ def _build_summary(
     episode_self_scores: list[float],
     episode_enemy_max_scores: list[float],
 ) -> dict[str, Any]:
+    """エピソード評価結果を保存用サマリに整形する。
+
+    Args:
+        args (SimpleNamespace): 評価実行引数。
+        env_kwargs (dict[str, Any]): 評価時に渡した環境オプション。
+        model_meta (dict[str, Any] | Any): チェックポイントに保存されたメタ情報。
+        episode_returns (list[float]): 各エピソードの累積報酬。
+        episode_scores (list[float]): 各エピソードの最終公式スコア。
+        episode_m (list[int]): 各エピソードの M 値。
+        episode_u (list[int]): 各エピソードの U 値。
+        episode_self_scores (list[float]): 自チーム側スコア。
+        episode_enemy_max_scores (list[float]): 相手最大スコア。
+
+    Returns:
+        dict[str, Any]: JSON 出力可能な評価サマリ。
+    """
     if not (
         len(episode_scores)
         == len(episode_m)
@@ -159,6 +198,18 @@ def _run_eval(
     device: torch.device,
     env_kwargs: dict[str, Any],
 ) -> dict[str, Any]:
+    """評価サービスを呼び出し、集計済み評価結果を返す。
+
+    Args:
+        args (SimpleNamespace): 評価実行引数。
+        agent (torch.nn.Module): 評価対象ポリシーモデル。
+        model_meta (dict[str, Any] | Any): チェックポイントメタ情報。
+        device (torch.device): 推論実行デバイス。
+        env_kwargs (dict[str, Any]): 環境オプション。
+
+    Returns:
+        dict[str, Any]: 評価サマリ。
+    """
     ignored_kwargs = sorted(str(k) for k in env_kwargs.keys())
     if ignored_kwargs:
         logger.warning("cpp batch env ignores env_kwargs_json keys: %s", ", ".join(ignored_kwargs))
@@ -213,6 +264,16 @@ def _run_eval(
 
 
 def _run(args: SimpleNamespace) -> int:
+    """評価全体のオーケストレーションを実行する。
+
+    モデル読込、評価実行、レポート保存、トラッキング記録までを担当する。
+
+    Args:
+        args (SimpleNamespace): 評価実行引数。
+
+    Returns:
+        int: プロセス終了コード。
+    """
     if args.model_path is None:
         raise ValueError("model_path is required")
     if str(args.env_id).strip() != "AHC061Local-v0":

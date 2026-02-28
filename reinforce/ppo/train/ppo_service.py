@@ -1,3 +1,4 @@
+"""PPO 学習のセットアップと反復実行を統括するサービス層。"""
 from __future__ import annotations
 
 import json
@@ -48,10 +49,19 @@ logger = get_logger("train_ppo")
 
 
 def choose_device(name: str) -> torch.device:
+    """実行デバイス指定文字列を `torch.device` に解決する。
+
+    Args:
+        name (str): `auto` / `cpu` / `cuda` などの指定。
+
+    Returns:
+        torch.device: 解決済みデバイス。
+    """
     return choose_runtime_device(name)
 
 
 def _resolve_model_config(args: PPORequest) -> dict[str, Any]:
+    """`PPORequest` から最終的なモデル設定辞書を解決する。"""
     preset_cfg: dict[str, Any] | None = None
     preset_id = str(getattr(args, "model_preset", "")).strip()
     if preset_id:
@@ -73,6 +83,7 @@ def _resolve_model_config(args: PPORequest) -> dict[str, Any]:
 
 
 def _explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
+    """価値予測の explained variance（決定係数相当）を計算する。"""
     y_true_np = y_true.detach().reshape(-1).cpu().numpy()
     y_pred_np = y_pred.detach().reshape(-1).cpu().numpy()
     var_y = float(np.var(y_true_np))
@@ -82,22 +93,26 @@ def _explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
 
 
 def _dist_ready() -> bool:
+    """`torch.distributed` が利用可能かつ初期化済みかを返す。"""
     return dist.is_available() and dist.is_initialized()
 
 
 def _all_reduce_sum_tensor(x: torch.Tensor) -> torch.Tensor:
+    """分散実行時にテンソルを全 rank で加算集約する。"""
     if _dist_ready():
         dist.all_reduce(x, op=dist.ReduceOp.SUM)
     return x
 
 
 def _all_reduce_max_tensor(x: torch.Tensor) -> torch.Tensor:
+    """分散実行時にテンソルを全 rank で最大値集約する。"""
     if _dist_ready():
         dist.all_reduce(x, op=dist.ReduceOp.MAX)
     return x
 
 
 def _resolve_distributed_mode(mode: str) -> str:
+    """分散実行モード文字列を正規化し妥当性を検証する。"""
     m = str(mode).strip().lower()
     if m not in ("auto", "off", "on"):
         raise ValueError(f"unsupported distributed mode={mode!r}; expected auto|off|on")
@@ -105,6 +120,7 @@ def _resolve_distributed_mode(mode: str) -> str:
 
 
 def _seed_everything(seed: int, *, device: torch.device) -> None:
+    """Python・NumPy・PyTorch の乱数シードをまとめて設定する。"""
     random.seed(int(seed))
     np.random.seed(int(seed))
     torch.manual_seed(int(seed))
@@ -113,12 +129,14 @@ def _seed_everything(seed: int, *, device: torch.device) -> None:
 
 
 def _unwrap_ddp(model: torch.nn.Module) -> torch.nn.Module:
+    """`DDP` でラップされていれば元モデルを返す。"""
     if isinstance(model, DDP):
         return model.module
     return model
 
 
 def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    """`DDP` / `torch.compile` ラッパを外して実体モデルを返す。"""
     if isinstance(model, DDP):
         model = model.module
     if hasattr(model, "_orig_mod"):
@@ -127,6 +145,7 @@ def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
 
 
 def _resolve_use_channels_last(*, device: torch.device, mode: str) -> bool:
+    """`memory_format` 指定から channels-last 適用可否を解決する。"""
     m = str(mode).strip().lower()
     if m not in ("auto", "nchw", "channels_last"):
         raise ValueError(f"unsupported memory_format={mode!r}; expected auto|nchw|channels_last")
@@ -150,6 +169,7 @@ def _estimate_rollout_cache_nbytes(
     use_action_mask: bool,
     use_aux_opp_param_targets: bool,
 ) -> int:
+    """ロールアウトバッファに必要な概算メモリ量（bytes）を見積もる。"""
     t = int(num_steps)
     b = int(num_envs)
     n = int(board_size)
@@ -174,6 +194,7 @@ def _estimate_rollout_cache_nbytes(
 
 
 def _choose_rollout_cache_device(*, mode: str, train_device: torch.device, total_bytes: int) -> torch.device:
+    """ロールアウトキャッシュ配置先（CPU/GPU）を決定する。"""
     m = str(mode).strip().lower()
     if m not in ("auto", "cpu", "gpu"):
         raise ValueError(f"unsupported rollout_cache_device={mode!r}; expected auto|cpu|gpu")
@@ -196,6 +217,7 @@ def _choose_rollout_cache_device(*, mode: str, train_device: torch.device, total
 
 
 def _load_initial_weights(path: Path, agent: torch.nn.Module, device: torch.device) -> dict[str, Any]:
+    """初期重みチェックポイントを読み込み、モデルへ反映する。"""
     payload = torch.load(path, map_location=device, weights_only=False)
     if not isinstance(payload, dict) or "model_state_dict" not in payload:
         raise ValueError(f"invalid checkpoint format (missing model_state_dict): {path}")
@@ -207,11 +229,13 @@ def _load_initial_weights(path: Path, agent: torch.nn.Module, device: torch.devi
 
 
 def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    """JSONL ファイル末尾に 1 レコード追記する。"""
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(to_jsonable(row), ensure_ascii=True) + "\n")
 
 
 def _safe_int(x: Any, default: int = 0) -> int:
+    """`int()` 変換に失敗した場合は既定値を返す。"""
     try:
         return int(x)
     except Exception:
@@ -219,6 +243,7 @@ def _safe_int(x: Any, default: int = 0) -> int:
 
 
 def _resolve_train_seed_range(args: PPORequest) -> tuple[int, int]:
+    """学習時に使うランダム seed 範囲を検証して返す。"""
     i64_max = int(np.iinfo(np.int64).max)
     seed_min = int(_safe_int(getattr(args, "train_seed_min", 0), 0))
     seed_max_exclusive = int(_safe_int(getattr(args, "train_seed_max_exclusive", i64_max), i64_max))
@@ -234,6 +259,7 @@ def _resolve_train_seed_range(args: PPORequest) -> tuple[int, int]:
 
 
 def _vecnorm_state_or_none(vecnorm: VecNormalize | None) -> dict[str, Any] | None:
+    """`VecNormalize` の状態を安全に辞書化して返す。"""
     if vecnorm is None:
         return None
     try:
@@ -249,6 +275,7 @@ def _sync_rms_ddp_(
     *,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray, float]:
+    """RunningMeanStd 統計を DDP rank 間で合成する。"""
     if not _dist_ready():
         return rms_mean, rms_var, float(rms_count)
 
@@ -277,6 +304,7 @@ def _sync_rms_ddp_(
 
 
 def _sync_vecnorm_ddp_(vecnorm: VecNormalize | None, *, device: torch.device) -> None:
+    """`VecNormalize` の統計量を DDP rank 間で同期する。"""
     if vecnorm is None or not _dist_ready():
         return
     m, v, c = _sync_rms_ddp_(
@@ -320,6 +348,7 @@ def _run_periodic_val(
     vecnorm_epsilon: float = 1e-8,
     vecnorm_gamma: float = 0.99,
 ) -> dict[str, Any]:
+    """定期評価を 1 回実行し、集計済みメトリクス辞書を返す。"""
     stats = run_policy_episodes(
         env_id=str(env_id),
         episodes=int(episodes),
@@ -358,6 +387,19 @@ def _run_periodic_val(
 
 @dataclass
 class _RestoredTrainState:
+    """チェックポイント復元で得られた学習状態をまとめるデータクラス。
+
+    Attributes:
+        init_meta (dict[str, Any]): `init_model` から復元したメタ情報。
+        resume_meta (dict[str, Any]): `resume` チェックポイントのメタ情報。
+        global_step (int): 復元後の学習ステップ。
+        best_metric_value (float): ベストモデル判定に使う最大指標値。
+        best_metric_name (str): ベスト判定の指標名。
+        best_metric_source (str): ベスト値の更新元（評価/学習）。
+        restored_eval_round (int | None): 復元された評価ラウンド数。
+        restored_next_eval_iteration (int | None): 次回評価イテレーション。
+        restored_next_checkpoint_iteration (int | None): 次回チェックポイント保存イテレーション。
+    """
     init_meta: dict[str, Any]
     resume_meta: dict[str, Any]
     global_step: int
@@ -371,6 +413,7 @@ class _RestoredTrainState:
 
 @dataclass(frozen=True)
 class _IterationAggregateStats:
+    """1 イテレーション分の集約済み学習統計。"""
     policy_loss: float
     value_loss: float
     entropy: float
@@ -398,6 +441,7 @@ def _restore_training_state(
     best_metric_name: str,
     best_metric_source: str,
 ) -> _RestoredTrainState:
+    """初期重み/再開チェックポイントを読み込み学習状態を復元する。"""
     init_meta: dict[str, Any] = {}
     resume_meta: dict[str, Any] = {}
     global_step = 0
@@ -494,6 +538,7 @@ def _resolve_eval_checkpoint_state(
     restored_next_eval_iteration: int | None,
     restored_next_checkpoint_iteration: int | None,
 ) -> tuple[bool, bool, str, int, int, int, int]:
+    """評価・チェックポイントの次回実行タイミングを復元/初期化する。"""
     checkpoint_interval_iterations = int(max(0, _safe_int(args.checkpoint_interval_iterations, 0)))
     periodic_val_enabled = bool(
         _safe_int(getattr(args, "eval_interval_iterations", 0), 0) > 0
@@ -569,6 +614,7 @@ def _build_resume_meta_payload(
     rng: np.random.Generator,
     train_vecnorm: VecNormalize | None,
 ) -> dict[str, Any]:
+    """再開実行に必要なメタ情報ペイロードを組み立てる。"""
     return {
         "kind": "train_ppo",
         "run_name": str(run_name),
@@ -602,6 +648,17 @@ def run_ppo_from_train_request(
     device: torch.device,
     env_kwargs: Mapping[str, Any],
 ) -> int:
+    """`TrainPPORequest` を内部実行形式へ変換して PPO 学習を起動する。
+
+    Args:
+        train_req (TrainPPORequest): エントリーポイント/パイプラインから渡される学習要求。
+        cfg (PPOConfig): 検証済み PPO 設定。
+        device (torch.device): 学習実行デバイス。
+        env_kwargs (Mapping[str, Any]): 環境初期化オプション。
+
+    Returns:
+        int: プロセス終了コード。
+    """
     ppo_req = build_ppo_request(
         train_req=train_req,
         cfg=cfg,
@@ -619,7 +676,11 @@ def run_ppo_from_train_request(
 
 
 class PPORunner:
-    """Manages PPO training state across stages."""
+    """PPO 学習を段階実行する状態保持オーケストレータ。
+
+    デバイス初期化、環境/モデル構築、復元処理、学習ループ、
+    評価・チェックポイント保存、最終レポート出力を一貫して管理する。
+    """
 
     def __init__(
         self,
@@ -641,6 +702,7 @@ class PPORunner:
         aux_opp_param_use_valid_mask: bool,
         aux_opp_param_active: bool,
     ) -> None:
+        """学習実行に必要な設定と可変状態を初期化する。"""
         self.args = args
         self.cfg_global = cfg_global
         self.local_cfg = local_cfg
@@ -716,7 +778,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _setup_device_and_dist(self) -> None:
-        """Initialize distributed process group and select compute device."""
+        """分散設定を初期化し、実行デバイスを確定する。"""
         if self.is_distributed:
             if not torch.cuda.is_available():
                 raise RuntimeError("distributed training requires CUDA")
@@ -746,7 +808,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _setup_run_dir(self) -> None:
-        """Resolve run name, create layout, seed RNG, and write initial manifest."""
+        """実験ディレクトリとトラッキング初期状態を準備する。"""
         args = self.args
         if not self.run_name and self.resume_enabled and self.resume_from is None:
             raise ValueError("--resume requires --run-name or --resume-from for train_ppo")
@@ -839,7 +901,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _build_env_and_model(self) -> None:
-        """Create batch environment, build agent, set up optimizer."""
+        """環境・モデル・最適化器を構築して学習準備を整える。"""
         args = self.args
         local_cfg = self.local_cfg
 
@@ -954,7 +1016,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _restore_weights_and_infra(self) -> None:
-        """Load weights/vecnorm from checkpoint, build trainer and rollout infrastructure."""
+        """重み復元、VecNorm 復元、バッファ類の確保を行う。"""
         args = self.args
         local_cfg = self.local_cfg
 
@@ -1172,6 +1234,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _build_resume_meta(self, *, iteration: int) -> dict[str, Any]:
+        """現在状態をチェックポイント保存用メタ情報へ変換する。"""
         return _build_resume_meta_payload(
             iteration=int(iteration),
             run_name=str(self.run_name),
@@ -1197,7 +1260,7 @@ class PPORunner:
         )
 
     def _make_val_kwargs(self) -> dict[str, Any]:
-        """Common kwargs for _run_periodic_val calls (excludes seed_start)."""
+        """定期評価呼び出しに渡す共通引数辞書を作成する。"""
         return dict(
             env_id="AHC061Local-v0",
             feature_id=str(self.args.feature_id),
@@ -1218,6 +1281,7 @@ class PPORunner:
         )
 
     def _eval_seed_base(self) -> int:
+        """現在ラウンドで使う評価 seed の基準値を返す。"""
         if not bool(self.args.eval_fixed_seeds):
             return int(self.args.eval_seed_start) + int(self.eval_round) * int(self.args.eval_episodes)
         return int(self.args.eval_seed_start)
@@ -1227,7 +1291,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _run_eval_at_start(self) -> None:
-        """Run optional periodic validation before the first training iteration."""
+        """学習開始前評価が有効な場合に 1 回だけ評価を実行する。"""
         if not (self.eval_at_start_enabled and self.global_step == 0):
             return
         if self.is_distributed:
@@ -1277,6 +1341,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _apply_runtime_schedule(self, *, iteration: int) -> RuntimeScheduleCoefficients:
+        """現在イテレーションのスケジュール係数を optimizer/trainer に反映する。"""
         runtime = self.runtime_schedules.resolve(iteration=int(iteration))
         self.optimizer.param_groups[0]["lr"] = float(runtime.learning_rate)
         self.trainer.set_runtime_coefficients(
@@ -1289,6 +1354,7 @@ class PPORunner:
         return runtime
 
     def _collect_rollout_and_update(self) -> tuple[UpdateStats, float]:
+        """ロールアウト収集から PPO 更新までを 1 回実行する。"""
         args = self.args
         local_cfg = self.local_cfg
         seeds = torch.as_tensor(
@@ -1373,6 +1439,7 @@ class PPORunner:
     def _aggregate_iteration_stats(
         self, *, stats: UpdateStats, explained_variance_local: float
     ) -> _IterationAggregateStats:
+        """ローカル更新統計を rank 間集約して記録用指標へ整形する。"""
         stats_vec = torch.tensor(
             [
                 float(stats.policy_loss),
@@ -1428,6 +1495,7 @@ class PPORunner:
         )
 
     def _advance_global_step_and_measure_sps(self) -> int:
+        """`global_step` を進め、経過時間から SPS を算出する。"""
         self.global_step += int(self.global_batch_size)
         _sync_vecnorm_ddp_(self.train_vecnorm, device=self.device)
         elapsed_vec = torch.tensor([max(1e-9, time.time() - self.start_time)], device=self.device, dtype=torch.float64)
@@ -1443,6 +1511,7 @@ class PPORunner:
         runtime: RuntimeScheduleCoefficients,
         agg: _IterationAggregateStats,
     ) -> dict[str, Any]:
+        """学習ログ 1 行分のメトリクス辞書を組み立てる。"""
         return {
             "iteration": int(iteration),
             "global_step": int(self.global_step),
@@ -1466,6 +1535,7 @@ class PPORunner:
         }
 
     def _maybe_run_periodic_eval(self, *, iteration: int, row: dict[str, Any], mean_official: float) -> None:
+        """必要なタイミングで定期評価とベストモデル更新を実施する。"""
         args = self.args
         run_periodic_eval = bool(self.periodic_val_enabled and int(iteration) >= int(self.next_eval_iteration))
         if run_periodic_eval and self.is_distributed:
@@ -1529,6 +1599,7 @@ class PPORunner:
         agg: _IterationAggregateStats,
         row: dict[str, Any],
     ) -> None:
+        """イテレーション結果を JSONL / tracker / ログへ出力する。"""
         args = self.args
         if self.is_main:
             _append_jsonl(self.train_metrics_jsonl, row)
@@ -1561,6 +1632,7 @@ class PPORunner:
             )
 
     def _maybe_save_iteration_checkpoints(self, *, iteration: int) -> None:
+        """`last.pt` と定期間隔チェックポイントを必要に応じて保存する。"""
         local_cfg = self.local_cfg
         if self.is_main and (iteration % int(max(1, local_cfg.save_interval)) == 0 or iteration == self.num_iterations):
             save_agent_checkpoint(
@@ -1584,7 +1656,7 @@ class PPORunner:
             self.next_checkpoint_iteration += int(self.checkpoint_interval_iterations)
 
     def _main_training_loop(self) -> None:
-        """Run the main PPO training loop."""
+        """PPO 更新ループ本体を実行する。"""
         for iteration in range(self.start_iteration, self.num_iterations + 1):
             runtime = self._apply_runtime_schedule(iteration=int(iteration))
             update_stats, explained_variance_local = self._collect_rollout_and_update()
@@ -1616,7 +1688,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _finalize(self) -> None:
-        """Save final model and write training summary."""
+        """最終チェックポイント・サマリ・manifest を書き出して終了する。"""
         args = self.args
         if self.is_main:
             final_iteration = int(
@@ -1714,7 +1786,11 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def run(self) -> int:
-        """Execute all training stages in sequence."""
+        """PPO 学習ステージを順番に実行して終了コードを返す。
+
+        Returns:
+            int: プロセス終了コード。
+        """
         self._setup_device_and_dist()
         self._setup_run_dir()
         self._build_env_and_model()
@@ -1726,6 +1802,16 @@ class PPORunner:
 
 
 def run_ppo(args: PPORequest) -> int:
+    """PPO 学習のトップレベル実行関数。
+
+    分散設定・バッチ分割・スケジュールを解決したうえで `PPORunner` を起動する。
+
+    Args:
+        args (PPORequest): 学習実行要求。
+
+    Returns:
+        int: プロセス終了コード。
+    """
     cfg_global = args_to_cfg(args)
     train_seed_min, train_seed_max_exclusive = _resolve_train_seed_range(args)
     schedules = PPOScheduleSet.from_config(cfg_global)

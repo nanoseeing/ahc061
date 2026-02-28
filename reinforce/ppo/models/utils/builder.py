@@ -1,3 +1,4 @@
+"""`builder` に関するモデル処理。"""
 from __future__ import annotations
 
 import copy
@@ -20,10 +21,26 @@ _RESERVED_KEYS = {
 
 
 def _deepcopy_cfg(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """内部ヘルパー: `deepcopy_cfg` を実行する。
+
+    Args:
+        cfg (Mapping[str, Any]): 設定オブジェクト。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     return copy.deepcopy(dict(cfg))
 
 
 def _unwrap_model_key(cfg: dict[str, Any]) -> dict[str, Any]:
+    """内部ヘルパー: `unwrap_model_key` を実行する。
+
+    Args:
+        cfg (dict[str, Any]): 設定オブジェクト。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     if "model" in cfg and isinstance(cfg["model"], dict):
         top_reserved = _RESERVED_KEYS.intersection(cfg.keys())
         if not top_reserved:
@@ -32,6 +49,15 @@ def _unwrap_model_key(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_type(cfg: dict[str, Any], default_type: str) -> str:
+    """内部ヘルパー: `extract_type` を実行する。
+
+    Args:
+        cfg (dict[str, Any]): 設定オブジェクト。
+        default_type (str): default_type の値。
+
+    Returns:
+        str: 計算結果。
+    """
     for key in ("type", "class_name", "target"):
         v = cfg.get(key)
         if v is None:
@@ -47,15 +73,14 @@ def normalize_model_config(
     *,
     default_type: str = "DiscreteBoardAgent",
 ) -> dict[str, Any]:
-    """Normalize model config to canonical `{type, kwargs}` format.
+    """`model_config`を正規化する。
 
-    Rules:
-    - if `model_config` is None, use `default_type` with empty kwargs.
-    - if `model_config` is given, it can be either:
-      - `{type=..., kwargs={...}}`
-      - `{model={type=..., kwargs={...}}}`
-      - `{type=..., <extra kwargs at top-level>}`
-    - when explicit `model_config` is provided, legacy kwargs are not merged.
+    Args:
+        model_config (Mapping[str, Any] | None): model_config の値。
+        default_type (str): default_type の値。
+
+    Returns:
+        dict[str, Any]: 計算結果。
     """
 
     if model_config is None:
@@ -99,9 +124,16 @@ def build_agent(
     model_config: Mapping[str, Any] | None,
     default_type: str = "DiscreteBoardAgent",
 ) -> tuple[nn.Module, dict[str, Any]]:
-    """Build nn.Module agent from model config.
+    """`agent`を構築する。
 
-    Returns `(agent, resolved_model_config)`.
+    Args:
+        obs_shape (tuple[int, ...]): obs_shape の値。
+        action_dim (int): action_dim の値。
+        model_config (Mapping[str, Any] | None): model_config の値。
+        default_type (str): default_type の値。
+
+    Returns:
+        tuple[nn.Module, dict[str, Any]]: 計算結果。
     """
 
     resolved = normalize_model_config(
@@ -127,10 +159,14 @@ def load_model_config_from_sources(
     model_config_file: str | Path | None,
     model_config_json: str | None,
 ) -> dict[str, Any] | None:
-    """Load model config from optional file/json inputs.
+    """`model_config_from_sources`を読み込む。
 
-    Merge order: `file` then `json` (json overrides).
-    Accepts both `{model:{...}}` and direct `{type, kwargs}`.
+    Args:
+        model_config_file (str | Path | None): 対象パス。
+        model_config_json (str | None): model_config_json の値。
+
+    Returns:
+        dict[str, Any] | None: 計算結果。
     """
 
     cfg: dict[str, Any] | None = None

@@ -1,3 +1,4 @@
+"""`test_pipeline_service` のテストモジュール。"""
 from __future__ import annotations
 
 import json
@@ -8,6 +9,15 @@ from reinforce.ppo.pipeline import pipeline_service as ps
 
 
 def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:
+    """内部ヘルパー: `make_pipeline_args` を実行する。
+
+    Args:
+        tmp_path (Path): 対象パス。
+        **overrides (Any): 追加のキーワード引数。
+
+    Returns:
+        SimpleNamespace: 計算結果。
+    """
     data = dict(
         env_id="AHC061Local-v0",
         env_kwargs_json="{}",
@@ -45,6 +55,12 @@ def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:
 
 
 def test_run_pipeline_skip_all_stages(monkeypatch, tmp_path: Path) -> None:
+    """`run_pipeline_skip_all_stages` の振る舞いを検証する。
+
+    Args:
+        monkeypatch (Any): monkeypatch の値。
+        tmp_path (Path): 対象パス。
+    """
     monkeypatch.setattr(
         ps,
         "_maybe_prepare_cpp_bayes_backend",
@@ -63,6 +79,12 @@ def test_run_pipeline_skip_all_stages(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_run_pipeline_bc_stage_isolated(monkeypatch, tmp_path: Path) -> None:
+    """`run_pipeline_bc_stage_isolated` の振る舞いを検証する。
+
+    Args:
+        monkeypatch (Any): monkeypatch の値。
+        tmp_path (Path): 対象パス。
+    """
     calls: list[tuple[str, list[str]]] = []
 
     monkeypatch.setattr(
@@ -73,6 +95,14 @@ def test_run_pipeline_bc_stage_isolated(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(ps, "build_train_bc_cmd", lambda **_kwargs: ["python", "-m", "dummy_train_bc"])
 
     def _fake_run(cmd: list[str], *, tracker, stage: str | None, tee_fp) -> None:
+        """内部ヘルパー: `fake_run` を実行する。
+
+        Args:
+            cmd (list[str]): cmd の値。
+            tracker (Any): tracker の値。
+            stage (str | None): stage の値。
+            tee_fp (Any): tee_fp の値。
+        """
         calls.append((str(stage), list(cmd)))
 
     monkeypatch.setattr(ps, "run", _fake_run)
@@ -97,6 +127,12 @@ def test_run_pipeline_bc_stage_isolated(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_run_pipeline_resume_skips_ppo_when_target_already_reached(monkeypatch, tmp_path: Path) -> None:
+    """`run_pipeline_resume_skips_ppo_when_target_already_reached` の振る舞いを検証する。
+
+    Args:
+        monkeypatch (Any): monkeypatch の値。
+        tmp_path (Path): 対象パス。
+    """
     calls: list[tuple[str, list[str]]] = []
 
     monkeypatch.setattr(
@@ -106,6 +142,14 @@ def test_run_pipeline_resume_skips_ppo_when_target_already_reached(monkeypatch, 
     )
 
     def _fake_run(cmd: list[str], *, tracker, stage: str | None, tee_fp) -> None:
+        """内部ヘルパー: `fake_run` を実行する。
+
+        Args:
+            cmd (list[str]): cmd の値。
+            tracker (Any): tracker の値。
+            stage (str | None): stage の値。
+            tee_fp (Any): tee_fp の値。
+        """
         calls.append((str(stage), list(cmd)))
 
     monkeypatch.setattr(ps, "run", _fake_run)
@@ -146,6 +190,12 @@ def test_run_pipeline_resume_skips_ppo_when_target_already_reached(monkeypatch, 
 
 
 def test_run_pipeline_resume_skips_eval_when_report_exists(monkeypatch, tmp_path: Path) -> None:
+    """`run_pipeline_resume_skips_eval_when_report_exists` の振る舞いを検証する。
+
+    Args:
+        monkeypatch (Any): monkeypatch の値。
+        tmp_path (Path): 対象パス。
+    """
     calls: list[tuple[str, list[str]]] = []
 
     monkeypatch.setattr(
@@ -155,6 +205,14 @@ def test_run_pipeline_resume_skips_eval_when_report_exists(monkeypatch, tmp_path
     )
 
     def _fake_run(cmd: list[str], *, tracker, stage: str | None, tee_fp) -> None:
+        """内部ヘルパー: `fake_run` を実行する。
+
+        Args:
+            cmd (list[str]): cmd の値。
+            tracker (Any): tracker の値。
+            stage (str | None): stage の値。
+            tee_fp (Any): tee_fp の値。
+        """
         calls.append((str(stage), list(cmd)))
 
     monkeypatch.setattr(ps, "run", _fake_run)

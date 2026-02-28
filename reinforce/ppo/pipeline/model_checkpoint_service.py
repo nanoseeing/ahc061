@@ -1,3 +1,4 @@
+"""モデルチェックポイントの保存・読込を担うサービス層。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,6 +18,14 @@ def save_agent_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    """エージェント状態を再現可能なチェックポイントとして保存する。
+
+    Args:
+        path (str | Path): 出力先パス。
+        agent (DiscreteBoardAgent): 保存対象エージェント。
+        optimizer (torch.optim.Optimizer | None): 併せて保存する最適化器状態。
+        meta (dict[str, Any] | None): 任意メタ情報。
+    """
     model_cfg = getattr(agent, "model_config", None)
     resolved_model_cfg = normalize_model_config(
         model_cfg if isinstance(model_cfg, dict) else None,
@@ -40,6 +49,19 @@ def load_agent_checkpoint(
     *,
     device: torch.device | str = "cpu",
 ) -> tuple[DiscreteBoardAgent, dict[str, Any]]:
+    """チェックポイントからエージェントを復元する。
+
+    Args:
+        path (str | Path): 読み込み元パス。
+        device (torch.device | str): 復元後モデルを配置するデバイス。
+
+    Returns:
+        tuple[DiscreteBoardAgent, dict[str, Any]]:
+            `(agent, meta)`。
+
+    Raises:
+        ValueError: 必須キー不足などチェックポイント形式が不正な場合。
+    """
     payload = load_checkpoint_payload(path, device=device)
     if "model_state_dict" not in payload:
         raise ValueError(f"invalid checkpoint format (missing model_state_dict): {path}")

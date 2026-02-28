@@ -1,3 +1,4 @@
+"""CLI エントリーポイント間で共有する設定変換ユーティリティ。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,12 +16,17 @@ def cfg_to_namespace(
     optional_paths: Mapping[str, bool] | None = None,
     default_paths: Mapping[str, Path] | None = None,
 ) -> SimpleNamespace:
-    """Convert Hydra config to SimpleNamespace with common path coercions.
+    """Hydra の `DictConfig` を `SimpleNamespace` に変換する。
 
-    optional_paths:
-        key -> dot_is_none flag for coerce_optional_path.
-    default_paths:
-        key -> default path used when the config value is empty.
+    Args:
+        cfg (DictConfig): 変換元の Hydra 設定。
+        optional_paths (Mapping[str, bool] | None):
+            パス系フィールドごとの `.` を `None` と解釈するかの設定。
+        default_paths (Mapping[str, Path] | None):
+            フィールド未指定時に補完する既定パス。
+
+    Returns:
+        SimpleNamespace: エントリーポイントで扱うために正規化した設定オブジェクト。
     """
     d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
     for key, dot_is_none in dict(optional_paths or {}).items():

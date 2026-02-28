@@ -1,3 +1,4 @@
+"""TorchScript ベースの提出コードを生成する CLI エントリーポイント。"""
 from __future__ import annotations
 
 import argparse
@@ -24,12 +25,26 @@ if len(_BASE91_ALPHABET) != 91:
 
 
 class PolicyOnly(nn.Module):
+    """提出用にポリシー出力のみを公開するラッパーモデル。"""
     def __init__(self, model: nn.Module):
+        """ベースモデルを受け取りポリシー専用ラッパーを初期化する。
+
+        Args:
+            model (nn.Module): 価値ヘッドを含む元モデル。
+        """
         super().__init__()
         # Export only the policy trunk + head so the submission does not embed value-head weights.
         self.model = model
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """観測からポリシーロジットを返す。
+
+        Args:
+            x (torch.Tensor): 入力観測テンソル。
+
+        Returns:
+            torch.Tensor: 行動次元のロジットテンソル。
+        """
         if hasattr(self.model, "forward_policy"):
             return self.model.forward_policy(x)
         x = self.model.stem(x)
@@ -38,6 +53,14 @@ class PolicyOnly(nn.Module):
 
 
 def _encode_base91(data: bytes) -> str:
+    """内部ヘルパー: `encode_base91` を実行する。
+
+    Args:
+        data (bytes): data の値。
+
+    Returns:
+        str: 計算結果。
+    """
     b = 0
     n = 0
     out: list[str] = []
@@ -63,6 +86,14 @@ def _encode_base91(data: bytes) -> str:
 
 
 def _decode_base91(text: str) -> bytes:
+    """内部ヘルパー: `decode_base91` を実行する。
+
+    Args:
+        text (str): text の値。
+
+    Returns:
+        bytes: 計算結果。
+    """
     v = -1
     b = 0
     n = 0
@@ -88,6 +119,14 @@ def _decode_base91(text: str) -> bytes:
 
 
 def _encode_model_payload_base91(ts_bytes: bytes) -> str:
+    """内部ヘルパー: `encode_model_payload_base91` を実行する。
+
+    Args:
+        ts_bytes (bytes): ts_bytes の値。
+
+    Returns:
+        str: 計算結果。
+    """
     payload = _encode_base91(ts_bytes)
     if _decode_base91(payload) != ts_bytes:
         raise RuntimeError("[ENC] base91 roundtrip failed")
@@ -95,6 +134,13 @@ def _encode_model_payload_base91(ts_bytes: bytes) -> str:
 
 
 def _write_encoded_inc(out_path: Path, *, encoded_payload: str, meta: dict) -> None:
+    """内部ヘルパー: `write_encoded_inc` を実行する。
+
+    Args:
+        out_path (Path): 対象パス。
+        encoded_payload (str): encoded_payload の値。
+        meta (dict): meta の値。
+    """
     if ('"' in encoded_payload) or ("\\" in encoded_payload):
         raise RuntimeError('[ENC] payload contains C++-unsafe characters: " or \\')
     lines: list[str] = []
@@ -117,12 +163,29 @@ def _write_encoded_inc(out_path: Path, *, encoded_payload: str, meta: dict) -> N
 
 
 def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
+    """内部ヘルパー: `bundle_cpp` を実行する。
+
+    Args:
+        entry (Path): entry の値。
+        include_dirs (list[Path]): include_dirs の値。
+
+    Returns:
+        str: 計算結果。
+    """
     include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"\s*$')
     seen: set[Path] = set()
 
     def strip_trailing_line_comment(line: str) -> str:
         # Remove trailing // comment not in string/char literals.
         # Keep the original newline (if any).
+        """`strip_trailing_line_comment` を実行する。
+
+        Args:
+            line (str): line の値。
+
+        Returns:
+            str: 計算結果。
+        """
         keep_nl = line.endswith("\n")
         s = line[:-1] if keep_nl else line
         in_str = False
@@ -157,6 +220,15 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
         return line
 
     def should_drop_line(line: str, *, in_block_comment: bool) -> tuple[bool, bool]:
+        """`should_drop_line` を実行する。
+
+        Args:
+            line (str): line の値。
+            in_block_comment (bool): 有効化フラグ。
+
+        Returns:
+            tuple[bool, bool]: 計算結果。
+        """
         s = line.lstrip()
         if in_block_comment:
             if "*/" in s:
@@ -173,6 +245,15 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
         return False, False
 
     def resolve_include(cur: Path, name: str) -> Path | None:
+        """`include`を解決する。
+
+        Args:
+            cur (Path): cur の値。
+            name (str): name の値。
+
+        Returns:
+            Path | None: 計算結果。
+        """
         cand = (cur.parent / name).resolve()
         if cand.is_file():
             return cand
@@ -183,6 +264,14 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
         return None
 
     def rec(path: Path) -> list[str]:
+        """`rec` を実行する。
+
+        Args:
+            path (Path): 対象パス。
+
+        Returns:
+            list[str]: 計算結果。
+        """
         out: list[str] = []
         in_block_comment = False
         for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
@@ -212,6 +301,7 @@ def _bundle_cpp(entry: Path, *, include_dirs: list[Path]) -> str:
 
 
 def main() -> None:
+    """CLI 引数を解釈し TorchScript 提出ソースを生成する。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str, required=True)
     parser.add_argument("--out-dir", type=str, default="reinforce/outputs/submission/exp002_ts")
@@ -239,16 +329,40 @@ def main() -> None:
     feature_id = str(ms.feature_id)
 
     def feature_cpp_header(fid: str) -> str:
+        """`feature_cpp_header` を実行する。
+
+        Args:
+            fid (str): fid の値。
+
+        Returns:
+            str: 計算結果。
+        """
         if fid == "submit_v1":
             return "ahc061/core/features.hpp"
         return f"ahc061/core/features_{fid}.hpp"
 
     def feature_channels_expr(fid: str) -> str:
+        """`feature_channels_expr` を実行する。
+
+        Args:
+            fid (str): fid の値。
+
+        Returns:
+            str: 計算結果。
+        """
         if fid == "submit_v1":
             return "FEATURE_C"
         return "FEATURE_" + fid.upper() + "_C"
 
     def feature_writer_name(fid: str) -> str:
+        """`feature_writer_name` を実行する。
+
+        Args:
+            fid (str): fid の値。
+
+        Returns:
+            str: 計算結果。
+        """
         if fid == "submit_v1":
             return "write_features_submit_v1_from_common"
         return f"write_features_{fid}_from_common"

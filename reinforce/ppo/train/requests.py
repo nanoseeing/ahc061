@@ -1,3 +1,4 @@
+"""`requests` に関する学習処理。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ logger = get_logger("train_ppo")
 
 @dataclass(frozen=True)
 class TrainPPORequest:
+    """`TrainPPORequest` を表すクラス。"""
     env_id: str
     run_dir: Path
     run_name: str
@@ -59,6 +61,7 @@ class TrainPPORequest:
 
 @dataclass(frozen=True)
 class PPORequest:
+    """`PPORequest` を表すクラス。"""
     run_dir: Path
     run_name: str
     seed: int
@@ -134,10 +137,26 @@ class PPORequest:
 
 
 def args_to_cfg(args: PPORequest) -> PPOConfig:
+    """`args_to_cfg` を実行する。
+
+    Args:
+        args (PPORequest): 設定引数。
+
+    Returns:
+        PPOConfig: 計算結果。
+    """
     return ppo_config_from_source(args)
 
 
 def ppo_config_from_source(src: Any) -> PPOConfig:
+    """`ppo_config_from_source` を実行する。
+
+    Args:
+        src (Any): src の値。
+
+    Returns:
+        PPOConfig: 計算結果。
+    """
     return PPOConfig(
         seed=src.seed,
         total_iterations=src.total_iterations,
@@ -180,6 +199,17 @@ def build_ppo_request(
     device: torch.device,
     env_kwargs: Mapping[str, Any],
 ) -> PPORequest:
+    """`ppo_request`を構築する。
+
+    Args:
+        train_req (TrainPPORequest): train_req の値。
+        cfg (PPOConfig): 設定オブジェクト。
+        device (torch.device): 実行デバイス。
+        env_kwargs (Mapping[str, Any]): 環境関連の値。
+
+    Returns:
+        PPORequest: 計算結果。
+    """
     if str(train_req.env_id).strip() not in ("", "AHC061Local-v0"):
         raise ValueError(
             "train_ppo supports only AHC061Local-v0 "

@@ -1,3 +1,4 @@
+"""`tracking` に関するユーティリティ。"""
 from __future__ import annotations
 
 import json
@@ -10,14 +11,7 @@ from .experiment import to_jsonable
 
 
 class MetricTracker:
-    """Metrics logger: JSONL + optional MLflow + optional TensorBoard.
-
-    Outputs:
-    - logs/metrics.jsonl  (always written)
-    - logs/events.jsonl   (always written)
-    - MLflow run          (if mlflow_tracking_uri is set)
-    - TensorBoard events  (if tensorboard is true)
-    """
+    """`MetricTracker` を表すクラス。"""
 
     def __init__(
         self,
@@ -30,6 +24,17 @@ class MetricTracker:
         tensorboard: bool = False,
         config: dict[str, Any] | None = None,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            run_dir (str | Path): 対象パス。
+            run_name (str): run_name の値。
+            mlflow_tracking_uri (str): mlflow_tracking_uri の値。
+            mlflow_experiment (str): mlflow_experiment の値。
+            mlflow_run_name (str): mlflow_run_name の値。
+            tensorboard (bool): 有効化フラグ。
+            config (dict[str, Any] | None): 設定オブジェクト。
+        """
         self.run_dir = Path(run_dir)
         self.logs_dir = self.run_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +87,12 @@ class MetricTracker:
             cfg_path.write_text(json.dumps(safe_config, indent=2, ensure_ascii=True), encoding="utf-8")
 
     def log_metrics(self, step: int, metrics: dict[str, float | int]) -> None:
+        """`log_metrics` を実行する。
+
+        Args:
+            step (int): step の値。
+            metrics (dict[str, float | int]): metrics の値。
+        """
         row = {"step": int(step), "time": time.time(), **{k: _safe_numeric(v) for k, v in metrics.items()}}
         with self.metrics_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=True) + "\n")
@@ -103,11 +114,18 @@ class MetricTracker:
                     continue
 
     def log_event(self, name: str, payload: dict[str, Any] | None = None) -> None:
+        """`log_event` を実行する。
+
+        Args:
+            name (str): name の値。
+            payload (dict[str, Any] | None): payload の値。
+        """
         row = {"event": name, "time": time.time(), "payload": to_jsonable(payload or {})}
         with self.events_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=True) + "\n")
 
     def close(self) -> None:
+        """`close` を実行する。"""
         self.log_event("run_end", {})
         if self._mlflow is not None and self._mlflow_run is not None:
             try:
@@ -123,6 +141,15 @@ class MetricTracker:
 
 
 def _flatten_dict(d: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    """内部ヘルパー: `flatten_dict` を実行する。
+
+    Args:
+        d (dict[str, Any]): d の値。
+        prefix (str): prefix の値。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     out: dict[str, Any] = {}
     for k, v in d.items():
         key = f"{prefix}.{k}" if prefix else str(k)
@@ -134,6 +161,14 @@ def _flatten_dict(d: dict[str, Any], prefix: str = "") -> dict[str, Any]:
 
 
 def _safe_numeric(v: Any) -> float | int | None:
+    """内部ヘルパー: `safe_numeric` を実行する。
+
+    Args:
+        v (Any): v の値。
+
+    Returns:
+        float | int | None: 計算結果。
+    """
     if isinstance(v, bool):
         return int(v)
     if isinstance(v, (int, float)):

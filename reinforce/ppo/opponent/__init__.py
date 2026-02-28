@@ -1,3 +1,4 @@
+"""`__init__` に関する相手モデル処理。"""
 from __future__ import annotations
 
 import contextlib
@@ -14,6 +15,7 @@ _FALLBACK_LOCK = threading.Lock()
 @contextlib.contextmanager
 def _build_lock():
     # opponent/ -> ppo/ -> reinforce/
+    """内部ヘルパー: `build_lock` を実行する。"""
     reinforce_dir = Path(__file__).resolve().parents[2]
     lock_path = reinforce_dir / "build" / "ahc061_cpp_bayes" / "opponent_bayes_cpp.build.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,6 +37,16 @@ def _build_lock():
 
 
 def load_cpp_backend(*, build_if_missing: bool = True, force_build: bool = False, verbose: bool = False) -> ModuleType:
+    """`cpp_backend`を読み込む。
+
+    Args:
+        build_if_missing (bool): 有効化フラグ。
+        force_build (bool): 有効化フラグ。
+        verbose (bool): 有効化フラグ。
+
+    Returns:
+        ModuleType: 計算結果。
+    """
     if force_build:
         with _build_lock():
             from .build_ext import build_extension
@@ -64,6 +76,16 @@ def load_cpp_backend(*, build_if_missing: bool = True, force_build: bool = False
 
 
 def ensure_cpp_backend(*, build_if_missing: bool = True, force_build: bool = False, verbose: bool = False) -> bool:
+    """`cpp_backend`を保証する。
+
+    Args:
+        build_if_missing (bool): 有効化フラグ。
+        force_build (bool): 有効化フラグ。
+        verbose (bool): 有効化フラグ。
+
+    Returns:
+        bool: 計算結果。
+    """
     try:
         load_cpp_backend(build_if_missing=build_if_missing, force_build=force_build, verbose=verbose)
         return True

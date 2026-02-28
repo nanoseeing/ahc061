@@ -1,3 +1,4 @@
+"""`config_utils` に関するユーティリティ。"""
 from __future__ import annotations
 
 import json
@@ -6,6 +7,15 @@ from typing import Any
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """`deep_merge` を実行する。
+
+    Args:
+        base (dict[str, Any]): base の値。
+        override (dict[str, Any]): override の値。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     out = dict(base)
     for k, v in override.items():
         if k in out and isinstance(out[k], dict) and isinstance(v, dict):
@@ -16,6 +26,14 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def load_config_file(path: str | Path) -> dict[str, Any]:
+    """`config_file`を読み込む。
+
+    Args:
+        path (str | Path): 対象パス。
+
+    Returns:
+        dict[str, Any]: 計算結果。
+    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"config file not found: {p}")
@@ -41,6 +59,12 @@ def load_config_file(path: str | Path) -> dict[str, Any]:
 
 
 def save_json(path: str | Path, obj: Any) -> None:
+    """`json`を保存する。
+
+    Args:
+        path (str | Path): 対象パス。
+        obj (Any): obj の値。
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(obj, indent=2, ensure_ascii=True), encoding="utf-8")

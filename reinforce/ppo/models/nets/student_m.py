@@ -1,3 +1,4 @@
+"""`student_m` に関するモデル処理。"""
 from __future__ import annotations
 
 from typing import Any
@@ -12,6 +13,14 @@ from ..utils.nn_init import layer_init, to_int_tuple
 
 
 def _build_activation(name: str) -> nn.Module:
+    """内部ヘルパー: `build_activation` を実行する。
+
+    Args:
+        name (str): name の値。
+
+    Returns:
+        nn.Module: 計算結果。
+    """
     key = str(name).strip().lower()
     if key in ("tanh", ""):
         return nn.Tanh()
@@ -23,7 +32,14 @@ def _build_activation(name: str) -> nn.Module:
 
 
 class _ResidualBlock(nn.Module):
+    """`_ResidualBlock` を表すクラス。"""
     def __init__(self, width: int, *, activation: str = "tanh"):
+        """インスタンスを初期化する。
+
+        Args:
+            width (int): width の値。
+            activation (str): activation の値。
+        """
         super().__init__()
         act = _build_activation(activation)
         self.conv1 = layer_init(nn.Conv2d(width, width, kernel_size=3, stride=1, padding=1))
@@ -32,20 +48,21 @@ class _ResidualBlock(nn.Module):
         self.act2 = _build_activation(activation)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """`forward` を実行する。
+
+        Args:
+            x (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         h = self.act1(self.conv1(x))
         h = self.conv2(h)
         return self.act2(x + h)
 
 
 class StudentMBoardAgent(nn.Module):
-    """Compact board-policy model intended for student/distillation runs.
-
-    Architecture:
-    - board stem conv + residual blocks (fixed 10x10 board)
-    - optional global MLP + FiLM conditioning
-    - policy: 1x1 conv -> 100 logits (+ optional global bias)
-    - value: GAP(board) + global -> small MLP
-    """
+    """`StudentMBoardAgent` を表すクラス。"""
 
     def __init__(
         self,
@@ -65,6 +82,24 @@ class StudentMBoardAgent(nn.Module):
         aux_opp_param_head: bool = False,
         aux_opp_param_hidden_dim: int = 64,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            obs_shape (tuple[int, ...]): obs_shape の値。
+            action_dim (int): action_dim の値。
+            board_channels (int): board_channels の値。
+            board_size (int): board_size の値。
+            global_dim (int): global_dim の値。
+            width (int): width の値。
+            num_blocks (int): num_blocks の値。
+            global_hidden_dim (int): global_hidden_dim の値。
+            value_hidden_dims (tuple[int, ...] | list[int] | str): value_hidden_dims の値。
+            activation (str): activation の値。
+            use_global_film (bool): 有効化フラグ。
+            use_global_policy_bias (bool): 有効化フラグ。
+            aux_opp_param_head (bool): 有効化フラグ。
+            aux_opp_param_hidden_dim (int): aux_opp_param_hidden_dim の値。
+        """
         super().__init__()
         if int(action_dim) <= 0:
             raise ValueError("action_dim must be positive")
@@ -172,15 +207,40 @@ class StudentMBoardAgent(nn.Module):
 
     def _flatten_obs(self, obs: torch.Tensor) -> torch.Tensor:
         # reshape handles non-standard strides (e.g., channels_last) safely.
+        """内部ヘルパー: `flatten_obs` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         return obs.reshape(obs.shape[0], -1)
 
     def _split_obs(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """内部ヘルパー: `split_obs` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor | None]: 計算結果。
+        """
         x = self._flatten_obs(obs)
         board = x[:, : self.board_dim].view(x.shape[0], self.board_channels, self.board_size, self.board_size)
         g = x[:, self.board_dim : self.board_dim + self.global_dim] if self.global_dim > 0 else None
         return board, g
 
     def _encode_board(self, board: torch.Tensor, global_emb: torch.Tensor | None) -> torch.Tensor:
+        """内部ヘルパー: `encode_board` を実行する。
+
+        Args:
+            board (torch.Tensor): 入力テンソル。
+            global_emb (torch.Tensor | None): global_emb の値。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         h = self.stem(board)
         h = self.blocks(h)
         if self.film is not None and global_emb is not None:
@@ -191,6 +251,14 @@ class StudentMBoardAgent(nn.Module):
         return h
 
     def _encode(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """内部ヘルパー: `encode` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor | None]: 計算結果。
+        """
         board, g = self._split_obs(obs)
         g_emb = self.global_mlp(g) if (self.global_mlp is not None and g is not None) else None
         h = self._encode_board(board, g_emb)
@@ -198,12 +266,29 @@ class StudentMBoardAgent(nn.Module):
 
     @staticmethod
     def _merge_value_input(h: torch.Tensor, g_emb: torch.Tensor | None) -> torch.Tensor:
+        """内部ヘルパー: `merge_value_input` を実行する。
+
+        Args:
+            h (torch.Tensor): h の値。
+            g_emb (torch.Tensor | None): g_emb の値。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         pooled = h.mean(dim=(2, 3))
         if g_emb is not None:
             pooled = torch.cat([pooled, g_emb], dim=1)
         return pooled
 
     def get_logits(self, obs: torch.Tensor) -> torch.Tensor:
+        """`logits`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         h, g_emb = self._encode(obs)
         logits = self.policy_conv(h).reshape(h.shape[0], -1)
         if self.policy_global_bias is not None and g_emb is not None:
@@ -211,11 +296,27 @@ class StudentMBoardAgent(nn.Module):
         return logits
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
+        """`value`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         h, g_emb = self._encode(obs)
         pooled = self._merge_value_input(h, g_emb)
         return self.value_head(pooled)
 
     def get_aux_opp_param(self, obs: torch.Tensor) -> torch.Tensor:
+        """`aux_opp_param`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         if self.aux_opp_param_head is None:
             raise RuntimeError("aux_opp_param_head is disabled for this model")
         h, g_emb = self._encode(obs)
@@ -230,6 +331,17 @@ class StudentMBoardAgent(nn.Module):
         action_mask: torch.Tensor | None = None,
         return_aux_opp_param: bool = False,
     ):
+        """`action_and_value`を取得する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action (torch.Tensor | None): action の値。
+            action_mask (torch.Tensor | None): action_mask の値。
+            return_aux_opp_param (bool): 有効化フラグ。
+
+        Returns:
+            Any: 計算結果。
+        """
         h, g_emb = self._encode(obs)
         logits = self.policy_conv(h).reshape(h.shape[0], -1)
         if self.policy_global_bias is not None and g_emb is not None:
@@ -263,6 +375,17 @@ class StudentMBoardAgent(nn.Module):
         return_aux_opp_param: bool = False,
     ):
         # Keep PPO update path on module forward so DDP hooks are triggered.
+        """`forward` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action (torch.Tensor | None): action の値。
+            action_mask (torch.Tensor | None): action_mask の値。
+            return_aux_opp_param (bool): 有効化フラグ。
+
+        Returns:
+            Any: 計算結果。
+        """
         return self.get_action_and_value(
             obs,
             action=action,
@@ -276,6 +399,16 @@ class StudentMBoardAgent(nn.Module):
         action_mask: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> torch.Tensor:
+        """`act` を実行する。
+
+        Args:
+            obs (torch.Tensor): 入力テンソル。
+            action_mask (torch.Tensor | None): action_mask の値。
+            deterministic (bool): 有効化フラグ。
+
+        Returns:
+            torch.Tensor: 計算結果。
+        """
         logits = self.get_logits(obs)
         if action_mask is not None:
             if action_mask.ndim == 1:
@@ -288,9 +421,7 @@ class StudentMBoardAgent(nn.Module):
 
 
 class TeacherP0V1BoardAgent(StudentMBoardAgent):
-    """Teacher-P0-v1:
-    88ch board-only encoder + wider residual trunk.
-    """
+    """`TeacherP0V1BoardAgent` を表すクラス。"""
 
     def __init__(
         self,
@@ -308,6 +439,22 @@ class TeacherP0V1BoardAgent(StudentMBoardAgent):
         use_global_film: bool = False,
         use_global_policy_bias: bool = False,
     ):
+        """インスタンスを初期化する。
+
+        Args:
+            obs_shape (tuple[int, ...]): obs_shape の値。
+            action_dim (int): action_dim の値。
+            board_channels (int): board_channels の値。
+            board_size (int): board_size の値。
+            global_dim (int): global_dim の値。
+            width (int): width の値。
+            num_blocks (int): num_blocks の値。
+            global_hidden_dim (int): global_hidden_dim の値。
+            value_hidden_dims (tuple[int, ...] | list[int] | str): value_hidden_dims の値。
+            activation (str): activation の値。
+            use_global_film (bool): 有効化フラグ。
+            use_global_policy_bias (bool): 有効化フラグ。
+        """
         super().__init__(
             obs_shape=obs_shape,
             action_dim=action_dim,

@@ -1,3 +1,7 @@
+"""`reinforce.ppo.entrypoints` パッケージの初期化処理。
+
+CLI 実行時の共通実行環境（ログ色設定など）を整える。
+"""
 from __future__ import annotations
 
 import os
