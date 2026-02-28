@@ -22,8 +22,8 @@ class TrainPPORequest:
     init_model: Path | None
     resume: bool
     resume_from: Path | None
-    checkpoint_interval_steps: int
-    eval_interval_steps: int
+    checkpoint_interval_iterations: int
+    eval_interval_iterations: int
     eval_episodes: int
     eval_num_envs: int
     eval_seed_start: int
@@ -68,7 +68,7 @@ class PPORequest:
     init_model: Path | None
     resume: bool
     resume_from: Path | None
-    total_timesteps: int
+    total_iterations: int
     num_envs: int
     num_steps: int
     learning_rate: float
@@ -98,8 +98,8 @@ class PPORequest:
     max_grad_norm: float
     target_kl: float | None
     save_interval: int
-    checkpoint_interval_steps: int
-    eval_interval_steps: int
+    checkpoint_interval_iterations: int
+    eval_interval_iterations: int
     eval_episodes: int
     eval_num_envs: int
     eval_seed_start: int
@@ -140,7 +140,7 @@ def args_to_cfg(args: PPORequest) -> PPOConfig:
 def ppo_config_from_source(src: Any) -> PPOConfig:
     return PPOConfig(
         seed=src.seed,
-        total_timesteps=src.total_timesteps,
+        total_iterations=src.total_iterations,
         num_envs=src.num_envs,
         num_steps=src.num_steps,
         learning_rate=src.learning_rate,
@@ -215,7 +215,7 @@ def build_ppo_request(
         init_model=train_req.init_model,
         resume=bool(train_req.resume),
         resume_from=train_req.resume_from,
-        total_timesteps=int(cfg.total_timesteps),
+        total_iterations=int(cfg.total_iterations),
         num_envs=int(cfg.num_envs),
         num_steps=int(cfg.num_steps),
         learning_rate=float(cfg.learning_rate),
@@ -245,8 +245,8 @@ def build_ppo_request(
         max_grad_norm=float(cfg.max_grad_norm),
         target_kl=(None if cfg.target_kl is None else float(cfg.target_kl)),
         save_interval=int(cfg.save_interval),
-        checkpoint_interval_steps=int(train_req.checkpoint_interval_steps),
-        eval_interval_steps=int(train_req.eval_interval_steps),
+        checkpoint_interval_iterations=int(train_req.checkpoint_interval_iterations),
+        eval_interval_iterations=int(train_req.eval_interval_iterations),
         eval_episodes=int(train_req.eval_episodes),
         eval_num_envs=int(train_req.eval_num_envs),
         eval_seed_start=int(train_req.eval_seed_start),

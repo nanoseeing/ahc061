@@ -16,7 +16,7 @@ init_model: null
 num_envs: 8
 num_steps: 100
 # Training
-total_transitions: 200000
+total_iterations: 250
 learning_rate: 1.0e-3
 weight_decay: 0.0
 num_minibatches: 4

@@ -55,7 +55,7 @@ ppo_aux_opp_param_loss_coef: 0
 ppo_aux_opp_param_use_valid_mask: true
 ppo_max_grad_norm: 1.0
 ppo_target_kl: null
-ppo_checkpoint_interval_steps: 2_000_000
+ppo_checkpoint_interval_iterations: 40
 ppo_feature_id: teacher_p0_v1_88ch
 ppo_model_preset: exp002_submit_v1_88ch
 ppo_pf_enabled: true
@@ -65,7 +65,7 @@ ppo_pin_memory: true
 ppo_rollout_cache_device: auto
 ppo_distributed: auto
 ppo_compile: true
-ppo_eval_interval_steps: 2_000_000
+ppo_eval_interval_iterations: 40
 ppo_eval_episodes: 100
 ppo_eval_num_envs: 0
 ppo_eval_seed_start: 2_000_000

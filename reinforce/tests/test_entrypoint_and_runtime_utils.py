@@ -43,7 +43,7 @@ def test_parse_json_object_rejects_non_object() -> None:
 def test_ppo_config_from_source_builds_expected_fields() -> None:
     src = SimpleNamespace(
         seed=3,
-        total_timesteps=400,
+        total_iterations=400,
         num_envs=4,
         num_steps=20,
         learning_rate=1e-3,
@@ -75,7 +75,7 @@ def test_ppo_config_from_source_builds_expected_fields() -> None:
         save_interval=7,
     )
     cfg = ppo_config_from_source(src)
-    assert cfg.total_timesteps == 400
+    assert cfg.total_iterations == 400
     assert cfg.learning_rate == pytest.approx(1e-3)
     assert cfg.warmup_iters == 25
     assert cfg.clip_coef_schedule == "linear"

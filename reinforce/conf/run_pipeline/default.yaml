@@ -13,7 +13,7 @@ train_seed_max_exclusive: 9223372036854775807
 bc_teacher_model_path: null # required to run BC; null means skip BC
 bc_seed_min: 0
 bc_seed_max_exclusive: 9223372036854775807
-bc_total_iterations: 250 # iterations (actual transitions = iterations * bc_num_envs * bc_num_steps)
+bc_total_iterations: 250
 bc_num_envs: 8
 bc_num_steps: 100
 bc_learning_rate: 1.0e-3
@@ -22,7 +22,7 @@ bc_max_grad_norm: 0.5
 bc_temperature: 1.0
 skip_bc: false
 # PPO core
-ppo_total_iterations: 250 # iterations (actual timesteps = iterations * ppo_num_envs * ppo_num_steps)
+ppo_total_iterations: 250
 ppo_num_envs: 8
 ppo_num_steps: 100
 ppo_learning_rate: 2.5e-4
@@ -51,7 +51,7 @@ ppo_target_kl: null
 ppo_clip_coef_schedule: constant
 ppo_clip_coef_final: null
 ppo_clip_coef_schedule_expr: ''
-ppo_checkpoint_interval_steps: 0
+ppo_checkpoint_interval_iterations: 0
 ppo_feature_id: submit_v1
 ppo_pf_enabled: true
 ppo_amp: false
@@ -61,7 +61,7 @@ ppo_rollout_cache_device: auto
 ppo_distributed: auto
 ppo_compile: false
 ppo_model_preset: ''
-ppo_eval_interval_steps: 0
+ppo_eval_interval_iterations: 0
 ppo_eval_episodes: 100
 ppo_eval_num_envs: 0
 ppo_eval_seed_start: 2000000

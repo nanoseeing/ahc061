@@ -365,8 +365,8 @@ class _RestoredTrainState:
     best_metric_name: str
     best_metric_source: str
     restored_eval_round: int | None
-    restored_next_eval_step: int | None
-    restored_next_checkpoint_step: int | None
+    restored_next_eval_iteration: int | None
+    restored_next_checkpoint_iteration: int | None
 
 
 @dataclass(frozen=True)
@@ -402,8 +402,8 @@ def _restore_training_state(
     resume_meta: dict[str, Any] = {}
     global_step = 0
     restored_eval_round: int | None = None
-    restored_next_eval_step: int | None = None
-    restored_next_checkpoint_step: int | None = None
+    restored_next_eval_iteration: int | None = None
+    restored_next_checkpoint_iteration: int | None = None
 
     if resume_enabled:
         assert resume_from is not None
@@ -460,10 +460,10 @@ def _restore_training_state(
             best_metric_source = str(resume_meta.get("best_metric_source"))
         rv = resume_meta.get("eval_round")
         restored_eval_round = _safe_int(rv) if rv is not None else None
-        rv = resume_meta.get("next_eval_step")
-        restored_next_eval_step = _safe_int(rv) if rv is not None else None
-        rv = resume_meta.get("next_checkpoint_step")
-        restored_next_checkpoint_step = _safe_int(rv) if rv is not None else None
+        rv = resume_meta.get("next_eval_iteration")
+        restored_next_eval_iteration = _safe_int(rv) if rv is not None else None
+        rv = resume_meta.get("next_checkpoint_iteration")
+        restored_next_checkpoint_iteration = _safe_int(rv) if rv is not None else None
         if is_main:
             logger.info("loaded resume model: %s", resume_from)
     elif args.init_model is not None:
@@ -479,8 +479,8 @@ def _restore_training_state(
         best_metric_name=str(best_metric_name),
         best_metric_source=str(best_metric_source),
         restored_eval_round=restored_eval_round,
-        restored_next_eval_step=restored_next_eval_step,
-        restored_next_checkpoint_step=restored_next_checkpoint_step,
+        restored_next_eval_iteration=restored_next_eval_iteration,
+        restored_next_checkpoint_iteration=restored_next_checkpoint_iteration,
     )
 
 
@@ -488,15 +488,15 @@ def _resolve_eval_checkpoint_state(
     *,
     args: PPORequest,
     resume_enabled: bool,
-    global_step: int,
+    completed_iterations: int,
     best_metric_name: str,
     restored_eval_round: int | None,
-    restored_next_eval_step: int | None,
-    restored_next_checkpoint_step: int | None,
+    restored_next_eval_iteration: int | None,
+    restored_next_checkpoint_iteration: int | None,
 ) -> tuple[bool, bool, str, int, int, int, int]:
-    checkpoint_interval_steps = int(max(0, _safe_int(args.checkpoint_interval_steps, 0)))
+    checkpoint_interval_iterations = int(max(0, _safe_int(args.checkpoint_interval_iterations, 0)))
     periodic_val_enabled = bool(
-        _safe_int(getattr(args, "eval_interval_steps", 0), 0) > 0
+        _safe_int(getattr(args, "eval_interval_iterations", 0), 0) > 0
         and _safe_int(getattr(args, "eval_episodes", 0), 0) > 0
     )
     eval_at_start_enabled = bool(
@@ -508,38 +508,40 @@ def _resolve_eval_checkpoint_state(
         best_metric_name = "mean_official_score"
 
     eval_round = 0
-    next_eval_step = int(max(1, _safe_int(getattr(args, "eval_interval_steps", 0), 0)))
-    next_checkpoint_step = 0
+    next_eval_iteration = int(max(1, _safe_int(getattr(args, "eval_interval_iterations", 0), 0)))
+    next_checkpoint_iteration = 0
     if resume_enabled:
         if restored_eval_round is not None and int(restored_eval_round) >= 0:
             eval_round = int(restored_eval_round)
-        elif periodic_val_enabled and int(args.eval_interval_steps) > 0:
-            eval_round = int(global_step // int(args.eval_interval_steps))
-            if bool(eval_at_start_enabled) and global_step > 0:
+        elif periodic_val_enabled and int(args.eval_interval_iterations) > 0:
+            eval_round = int(completed_iterations // int(args.eval_interval_iterations))
+            if bool(eval_at_start_enabled) and completed_iterations > 0:
                 eval_round += 1
-        if restored_next_eval_step is not None and int(restored_next_eval_step) > 0:
-            next_eval_step = int(restored_next_eval_step)
-        elif periodic_val_enabled and int(args.eval_interval_steps) > 0:
-            interval = int(args.eval_interval_steps)
-            next_eval_step = int(((global_step // interval) + 1) * interval)
-        if checkpoint_interval_steps > 0:
-            if restored_next_checkpoint_step is not None and int(restored_next_checkpoint_step) > 0:
-                next_checkpoint_step = int(restored_next_checkpoint_step)
-            elif global_step > 0:
-                next_checkpoint_step = int(((global_step // checkpoint_interval_steps) + 1) * checkpoint_interval_steps)
+        if restored_next_eval_iteration is not None and int(restored_next_eval_iteration) > 0:
+            next_eval_iteration = int(restored_next_eval_iteration)
+        elif periodic_val_enabled and int(args.eval_interval_iterations) > 0:
+            interval = int(args.eval_interval_iterations)
+            next_eval_iteration = int(((completed_iterations // interval) + 1) * interval)
+        if checkpoint_interval_iterations > 0:
+            if restored_next_checkpoint_iteration is not None and int(restored_next_checkpoint_iteration) > 0:
+                next_checkpoint_iteration = int(restored_next_checkpoint_iteration)
+            elif completed_iterations > 0:
+                next_checkpoint_iteration = int(
+                    ((completed_iterations // checkpoint_interval_iterations) + 1) * checkpoint_interval_iterations
+                )
             else:
-                next_checkpoint_step = int(checkpoint_interval_steps)
-    elif checkpoint_interval_steps > 0:
-        next_checkpoint_step = int(checkpoint_interval_steps)
+                next_checkpoint_iteration = int(checkpoint_interval_iterations)
+    elif checkpoint_interval_iterations > 0:
+        next_checkpoint_iteration = int(checkpoint_interval_iterations)
 
     return (
         periodic_val_enabled,
         eval_at_start_enabled,
         str(best_metric_name),
         int(eval_round),
-        int(next_eval_step),
-        int(checkpoint_interval_steps),
-        int(next_checkpoint_step),
+        int(next_eval_iteration),
+        int(checkpoint_interval_iterations),
+        int(next_checkpoint_iteration),
     )
 
 
@@ -562,8 +564,8 @@ def _build_resume_meta_payload(
     best_metric_value: float,
     best_metric_source: str,
     eval_round: int,
-    next_eval_step: int,
-    next_checkpoint_step: int,
+    next_eval_iteration: int,
+    next_checkpoint_iteration: int,
     rng: np.random.Generator,
     train_vecnorm: VecNormalize | None,
 ) -> dict[str, Any]:
@@ -586,8 +588,8 @@ def _build_resume_meta_payload(
         "best_metric_value": float(best_metric_value),
         "best_metric_source": str(best_metric_source),
         "eval_round": int(eval_round),
-        "next_eval_step": int(next_eval_step),
-        "next_checkpoint_step": int(next_checkpoint_step),
+        "next_eval_iteration": int(next_eval_iteration),
+        "next_checkpoint_iteration": int(next_checkpoint_iteration),
         "rng_state": to_jsonable(rng.bit_generator.state),
         "vecnormalize_state": _vecnorm_state_or_none(train_vecnorm),
     }
@@ -687,9 +689,9 @@ class PPORunner:
         self.best_metric_name = "mean_official_score"
         self.best_metric_source = ""
         self.eval_round = 0
-        self.next_eval_step = int(max(1, _safe_int(getattr(args, "eval_interval_steps", 0), 0)))
-        self.next_checkpoint_step = 0
-        self.checkpoint_interval_steps = 0
+        self.next_eval_iteration = int(max(1, _safe_int(getattr(args, "eval_interval_iterations", 0), 0)))
+        self.next_checkpoint_iteration = 0
+        self.checkpoint_interval_iterations = 0
         self.periodic_val_enabled = False
         self.eval_at_start_enabled = False
         self.train_metrics_jsonl: Path = Path(".")
@@ -706,8 +708,7 @@ class PPORunner:
         self.runtime_schedules = RuntimeScheduleResolver(
             schedules=self.schedules,
             total_iterations=int(self.num_iterations),
-            warmup_steps=int(self.args.warmup_iters),
-            global_batch_size=int(self.global_batch_size),
+            warmup_iterations=int(self.args.warmup_iters),
         )
 
     # ------------------------------------------------------------------
@@ -979,8 +980,8 @@ class PPORunner:
         self.best_metric_name = str(restored_state.best_metric_name)
         self.best_metric_source = str(restored_state.best_metric_source)
         restored_eval_round = restored_state.restored_eval_round
-        restored_next_eval_step = restored_state.restored_next_eval_step
-        restored_next_checkpoint_step = restored_state.restored_next_checkpoint_step
+        restored_next_eval_iteration = restored_state.restored_next_eval_iteration
+        restored_next_checkpoint_iteration = restored_state.restored_next_checkpoint_iteration
 
         incoming_vec_state = None
         incoming_vec_source = ""
@@ -1117,24 +1118,25 @@ class PPORunner:
         self.best_model = self.layout.models_dir / "best.pt"
         self.last_model = self.layout.models_dir / "last.pt"
         self.checkpoint_dir = self.layout.models_dir / "checkpoints"
+        completed_iterations = int(self.global_step // max(1, self.global_batch_size))
         (
             self.periodic_val_enabled,
             self.eval_at_start_enabled,
             self.best_metric_name,
             self.eval_round,
-            self.next_eval_step,
-            self.checkpoint_interval_steps,
-            self.next_checkpoint_step,
+            self.next_eval_iteration,
+            self.checkpoint_interval_iterations,
+            self.next_checkpoint_iteration,
         ) = _resolve_eval_checkpoint_state(
             args=args,
             resume_enabled=bool(self.resume_enabled),
-            global_step=int(self.global_step),
+            completed_iterations=int(completed_iterations),
             best_metric_name=str(self.best_metric_name),
             restored_eval_round=restored_eval_round,
-            restored_next_eval_step=restored_next_eval_step,
-            restored_next_checkpoint_step=restored_next_checkpoint_step,
+            restored_next_eval_iteration=restored_next_eval_iteration,
+            restored_next_checkpoint_iteration=restored_next_checkpoint_iteration,
         )
-        if self.checkpoint_interval_steps > 0 and self.is_main:
+        if self.checkpoint_interval_iterations > 0 and self.is_main:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         vf_clip_schedule_desc = (
@@ -1152,12 +1154,17 @@ class PPORunner:
                 logger.warning("clip_vloss=true but clip_range_vf is unset; value clipping is disabled")
 
         self.start_time = time.time()
-        self.start_iteration = int(self.global_step // self.global_batch_size) + 1
+        self.start_iteration = int(completed_iterations) + 1
         if self.start_iteration > self.num_iterations and self.is_main:
             logger.info(
-                "no PPO update needed: global_step=%d already reached total_timesteps=%d",
+                "no PPO update needed: completed_iterations=%d already reached total_iterations=%d",
+                int(completed_iterations),
+                int(self.cfg_global.total_iterations),
+            )
+            logger.info(
+                "resume progress: global_step=%d global_batch_size=%d",
                 int(self.global_step),
-                int(self.cfg_global.total_timesteps),
+                int(self.global_batch_size),
             )
 
     # ------------------------------------------------------------------
@@ -1183,8 +1190,8 @@ class PPORunner:
             best_metric_value=float(self.best_metric_value),
             best_metric_source=str(self.best_metric_source),
             eval_round=int(self.eval_round),
-            next_eval_step=int(self.next_eval_step),
-            next_checkpoint_step=int(self.next_checkpoint_step),
+            next_eval_iteration=int(self.next_eval_iteration),
+            next_checkpoint_iteration=int(self.next_checkpoint_iteration),
             rng=self.rng,
             train_vecnorm=self.train_vecnorm,
         )
@@ -1270,7 +1277,7 @@ class PPORunner:
     # ------------------------------------------------------------------
 
     def _apply_runtime_schedule(self, *, iteration: int) -> RuntimeScheduleCoefficients:
-        runtime = self.runtime_schedules.resolve(iteration=int(iteration), global_step=int(self.global_step))
+        runtime = self.runtime_schedules.resolve(iteration=int(iteration))
         self.optimizer.param_groups[0]["lr"] = float(runtime.learning_rate)
         self.trainer.set_runtime_coefficients(
             ent_coef=float(runtime.ent_coef),
@@ -1460,13 +1467,14 @@ class PPORunner:
 
     def _maybe_run_periodic_eval(self, *, iteration: int, row: dict[str, Any], mean_official: float) -> None:
         args = self.args
-        run_periodic_eval = bool(self.periodic_val_enabled and self.global_step >= self.next_eval_step)
+        run_periodic_eval = bool(self.periodic_val_enabled and int(iteration) >= int(self.next_eval_iteration))
         if run_periodic_eval and self.is_distributed:
             dist.barrier()
         if run_periodic_eval and self.is_main:
             seed_base = self._eval_seed_base()
             eval_summary = _run_periodic_val(seed_start=seed_base, **self._make_val_kwargs())
             eval_row = {
+                "iteration": int(iteration),
                 "global_step": int(self.global_step),
                 "eval_round": int(self.eval_round),
                 "seed_base": int(seed_base),
@@ -1499,7 +1507,7 @@ class PPORunner:
             dist.barrier()
         if run_periodic_eval:
             self.eval_round += 1
-            self.next_eval_step += int(max(1, args.eval_interval_steps))
+            self.next_eval_iteration += int(max(1, args.eval_interval_iterations))
         elif self.is_main and not self.periodic_val_enabled:
             cand = float(mean_official)
             if np.isfinite(cand) and cand > self.best_metric_value:
@@ -1562,14 +1570,18 @@ class PPORunner:
                 meta=self._build_resume_meta(iteration=int(iteration)),
             )
 
-        if self.is_main and self.checkpoint_interval_steps > 0 and self.global_step >= int(self.next_checkpoint_step):
+        if (
+            self.is_main
+            and self.checkpoint_interval_iterations > 0
+            and int(iteration) >= int(self.next_checkpoint_iteration)
+        ):
             save_agent_checkpoint(
-                self.checkpoint_dir / f"step_{int(self.global_step):012d}.pt",
+                self.checkpoint_dir / f"iter_{int(iteration):08d}.pt",
                 _unwrap_model(self.agent),
                 optimizer=self.optimizer,
                 meta=self._build_resume_meta(iteration=int(iteration)),
             )
-            self.next_checkpoint_step += int(self.checkpoint_interval_steps)
+            self.next_checkpoint_iteration += int(self.checkpoint_interval_iterations)
 
     def _main_training_loop(self) -> None:
         """Run the main PPO training loop."""
@@ -1645,7 +1657,7 @@ class PPORunner:
                 },
                 "periodic_val": {
                     "enabled": bool(self.periodic_val_enabled),
-                    "interval_steps": int(args.eval_interval_steps),
+                    "interval_iterations": int(args.eval_interval_iterations),
                     "episodes": int(args.eval_episodes),
                     "num_envs": int(getattr(args, "eval_num_envs", 0)),
                     "seed_start": int(args.eval_seed_start),
@@ -1665,8 +1677,8 @@ class PPORunner:
                 "models": {
                     "best": str(self.best_model),
                     "last": str(self.last_model),
-                    "checkpoint_dir": (str(self.checkpoint_dir) if self.checkpoint_interval_steps > 0 else ""),
-                    "checkpoint_interval_steps": int(self.checkpoint_interval_steps),
+                    "checkpoint_dir": (str(self.checkpoint_dir) if self.checkpoint_interval_iterations > 0 else ""),
+                    "checkpoint_interval_iterations": int(self.checkpoint_interval_iterations),
                 },
                 "logs": {
                     "train_metrics_jsonl": str(self.train_metrics_jsonl),

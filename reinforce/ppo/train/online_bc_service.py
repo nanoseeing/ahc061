@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import random
 import time
 from dataclasses import dataclass
@@ -49,7 +48,7 @@ class OnlineBCConfig:
     num_envs: int
     num_steps: int
     # Training
-    total_transitions: int
+    total_iterations: int
     learning_rate: float
     weight_decay: float
     num_minibatches: int
@@ -73,7 +72,7 @@ class OnlineBCConfig:
 
     @property
     def num_iterations(self) -> int:
-        return max(1, math.ceil(self.total_transitions / self.batch_size))
+        return int(self.total_iterations)
 
 
 def _resolve_student_model_config(cfg: OnlineBCConfig) -> dict[str, Any]:
@@ -194,6 +193,8 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
     student.train()
 
     # Validate config
+    if int(cfg.total_iterations) <= 0:
+        raise ValueError(f"total_iterations must be > 0, got {cfg.total_iterations}")
     if cfg.batch_size <= 0:
         raise ValueError(f"batch_size must be > 0, got {cfg.batch_size}")
     if cfg.batch_size % cfg.num_minibatches != 0:
@@ -252,7 +253,7 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
     board_dev = torch.empty(B, *obs_shape, dtype=torch.float32, device=device) if use_cuda else board
     mask_dev = torch.empty(B, A, dtype=torch.uint8, device=device) if use_cuda else mask
 
-    num_iterations = cfg.num_iterations
+    num_iterations = int(cfg.num_iterations)
     T_temp = float(cfg.temperature)
     total_transitions_done = 0
     iter_kl_losses: list[float] = []
@@ -262,9 +263,15 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
     seed_sampler = np.random.default_rng()
 
     logger.info(
-        "starting online BC: total_transitions=%d num_envs=%d num_steps=%d "
+        "starting online BC: total_iterations=%d num_envs=%d num_steps=%d "
         "num_minibatches=%d minibatch_size=%d num_iterations=%d temperature=%.3f",
-        cfg.total_transitions, B, T, cfg.num_minibatches, cfg.minibatch_size, num_iterations, cfg.temperature,
+        int(cfg.total_iterations),
+        B,
+        T,
+        cfg.num_minibatches,
+        cfg.minibatch_size,
+        num_iterations,
+        cfg.temperature,
     )
 
     for iteration in range(num_iterations):
@@ -389,6 +396,7 @@ def _run_online_bc(cfg: OnlineBCConfig, *, layout: Any, tracker: MetricTracker |
     meta = {
         "bc_type": "online_kl_distillation",
         "teacher_model_path": str(cfg.teacher_model_path),
+        "total_iterations": int(cfg.total_iterations),
         "total_transitions": total_transitions_done,
         "num_iterations": num_iterations,
         "final_kl_loss": final_kl,

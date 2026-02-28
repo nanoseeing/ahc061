@@ -287,30 +287,22 @@ class RuntimeScheduleResolver:
         *,
         schedules: PPOScheduleSet,
         total_iterations: int,
-        warmup_steps: int,
-        global_batch_size: int,
+        warmup_iterations: int,
     ) -> None:
         self.schedules = schedules
         self.total_iterations = int(total_iterations)
-        self.warmup_steps = int(warmup_steps)
-        self.global_batch_size = int(global_batch_size)
+        self.warmup_iterations = int(warmup_iterations)
         if self.total_iterations <= 0:
             raise ValueError(f"total_iterations must be > 0: {self.total_iterations}")
-        if self.warmup_steps < 0:
-            raise ValueError(f"warmup_steps must be >= 0: {self.warmup_steps}")
-        if self.global_batch_size <= 0:
-            raise ValueError(f"global_batch_size must be > 0: {self.global_batch_size}")
+        if self.warmup_iterations < 0:
+            raise ValueError(f"warmup_iterations must be >= 0: {self.warmup_iterations}")
 
-    def resolve(self, *, iteration: int, global_step: int) -> RuntimeScheduleCoefficients:
-        if int(global_step) < 0:
-            raise ValueError(f"global_step must be >= 0: {global_step}")
-
+    def resolve(self, *, iteration: int) -> RuntimeScheduleCoefficients:
         iteration_i = int(iteration)
         progress = schedule_progress(iteration_i, int(self.total_iterations))
 
         learning_rate, lr_progress = self._resolve_learning_rate(
             iteration=iteration_i,
-            global_step=int(global_step),
         )
         self._validate_nonnegative_finite(learning_rate, name="learning_rate", progress=progress)
 
@@ -333,18 +325,15 @@ class RuntimeScheduleResolver:
             clip_range_vf=(None if clip_range_vf is None else float(clip_range_vf)),
         )
 
-    def _resolve_learning_rate(self, *, iteration: int, global_step: int) -> tuple[float, float]:
-        if self.warmup_steps <= 0:
+    def _resolve_learning_rate(self, *, iteration: int) -> tuple[float, float]:
+        if self.warmup_iterations <= 0:
             lr_progress = schedule_progress(int(iteration), int(self.total_iterations))
             return float(self.schedules.learning_rate(lr_progress)), float(lr_progress)
 
-        # warmup_steps is interpreted in environment steps.
-        step_after = float(int(global_step) + int(self.global_batch_size))
-        warmup_ratio = float(min(1.0, step_after / float(self.warmup_steps)))
-        warmup_iters = int(math.ceil(float(self.warmup_steps) / float(self.global_batch_size)))
-
+        warmup_iters = min(int(self.total_iterations), int(self.warmup_iterations))
         if int(iteration) <= warmup_iters:
             base_lr = float(self.schedules.learning_rate(0.0))
+            warmup_ratio = float(min(1.0, float(iteration) / float(max(1, warmup_iters))))
             return float(base_lr * warmup_ratio), 0.0
 
         # Start annealing only after warmup window has finished.

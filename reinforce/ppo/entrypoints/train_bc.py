@@ -59,7 +59,7 @@ def _run(args: SimpleNamespace) -> int:
         output_model=Path(output_model),
         num_envs=int(args.num_envs),
         num_steps=int(args.num_steps),
-        total_transitions=int(args.total_transitions),
+        total_iterations=int(args.total_iterations),
         learning_rate=float(args.learning_rate),
         weight_decay=float(args.weight_decay),
         num_minibatches=int(args.num_minibatches),

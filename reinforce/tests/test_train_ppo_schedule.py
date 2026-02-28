@@ -63,7 +63,7 @@ class TestTrainPPOSchedule:
 
     def test_runtime_schedule_resolver_applies_warmup(self) -> None:
         cfg = PPOConfig(
-            total_timesteps=500,
+            total_iterations=5,
             num_envs=2,
             num_steps=50,
             num_minibatches=2,
@@ -78,24 +78,23 @@ class TestTrainPPOSchedule:
         resolver = RuntimeScheduleResolver(
             schedules=schedules,
             total_iterations=5,
-            warmup_steps=200,
-            global_batch_size=100,
+            warmup_iterations=2,
         )
 
-        c1 = resolver.resolve(iteration=1, global_step=0)
+        c1 = resolver.resolve(iteration=1)
         assert c1.progress == pytest.approx(0.0, abs=1e-6)
         assert c1.learning_rate == pytest.approx(0.5, abs=1e-6)
         assert c1.ent_coef == pytest.approx(0.02, abs=1e-6)
         assert c1.clip_coef == pytest.approx(0.3, abs=1e-6)
         assert c1.clip_range_vf is None
 
-        c2 = resolver.resolve(iteration=2, global_step=100)
+        c2 = resolver.resolve(iteration=2)
         assert c2.progress == pytest.approx(0.0, abs=1e-6)
         assert c2.learning_rate == pytest.approx(1.0, abs=1e-6)
 
     def test_runtime_schedule_resolver_starts_lr_anneal_after_warmup(self) -> None:
         cfg = PPOConfig(
-            total_timesteps=500,
+            total_iterations=5,
             num_envs=2,
             num_steps=50,
             num_minibatches=2,
@@ -110,27 +109,26 @@ class TestTrainPPOSchedule:
         resolver = RuntimeScheduleResolver(
             schedules=schedules,
             total_iterations=5,
-            warmup_steps=200,
-            global_batch_size=100,
+            warmup_iterations=2,
         )
 
         # warmup phase
-        c1 = resolver.resolve(iteration=1, global_step=0)
-        c2 = resolver.resolve(iteration=2, global_step=100)
+        c1 = resolver.resolve(iteration=1)
+        c2 = resolver.resolve(iteration=2)
         assert c1.learning_rate == pytest.approx(0.5, abs=1e-6)
         assert c2.learning_rate == pytest.approx(1.0, abs=1e-6)
 
         # anneal starts after warmup (iteration=3 starts from base LR)
-        c3 = resolver.resolve(iteration=3, global_step=200)
-        c4 = resolver.resolve(iteration=4, global_step=300)
-        c5 = resolver.resolve(iteration=5, global_step=400)
+        c3 = resolver.resolve(iteration=3)
+        c4 = resolver.resolve(iteration=4)
+        c5 = resolver.resolve(iteration=5)
         assert c3.learning_rate == pytest.approx(1.0, abs=1e-6)
         assert c4.learning_rate == pytest.approx(0.5, abs=1e-6)
         assert c5.learning_rate == pytest.approx(0.0, abs=1e-6)
 
     def test_runtime_schedule_resolver_validates_inputs(self) -> None:
         cfg = PPOConfig(
-            total_timesteps=100,
+            total_iterations=10,
             num_envs=2,
             num_steps=10,
             num_minibatches=2,
@@ -140,37 +138,33 @@ class TestTrainPPOSchedule:
             RuntimeScheduleResolver(
                 schedules=schedules,
                 total_iterations=0,
-                warmup_steps=0,
-                global_batch_size=20,
+                warmup_iterations=0,
             )
         with pytest.raises(ValueError):
             RuntimeScheduleResolver(
                 schedules=schedules,
                 total_iterations=10,
-                warmup_steps=-1,
-                global_batch_size=20,
-            )
-        with pytest.raises(ValueError):
-            RuntimeScheduleResolver(
-                schedules=schedules,
-                total_iterations=10,
-                warmup_steps=0,
-                global_batch_size=0,
+                warmup_iterations=-1,
             )
 
-    def test_runtime_schedule_resolver_rejects_negative_global_step(self) -> None:
+    def test_runtime_schedule_resolver_clamps_warmup_to_total_iterations(self) -> None:
         cfg = PPOConfig(
-            total_timesteps=100,
+            total_iterations=3,
             num_envs=2,
             num_steps=10,
             num_minibatches=2,
+            learning_rate=1.0,
+            learning_rate_schedule="constant",
         )
         schedules = PPOScheduleSet.from_config(cfg)
         resolver = RuntimeScheduleResolver(
             schedules=schedules,
-            total_iterations=10,
-            warmup_steps=100,
-            global_batch_size=20,
+            total_iterations=3,
+            warmup_iterations=10,
         )
-        with pytest.raises(ValueError):
-            resolver.resolve(iteration=1, global_step=-1)
+        c1 = resolver.resolve(iteration=1)
+        c2 = resolver.resolve(iteration=2)
+        c3 = resolver.resolve(iteration=3)
+        assert c1.learning_rate == pytest.approx(1.0 / 3.0, abs=1e-6)
+        assert c2.learning_rate == pytest.approx(2.0 / 3.0, abs=1e-6)
+        assert c3.learning_rate == pytest.approx(1.0, abs=1e-6)

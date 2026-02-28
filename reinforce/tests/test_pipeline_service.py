@@ -35,6 +35,8 @@ def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         ppo_total_iterations=20,
         ppo_num_envs=4,
         ppo_num_steps=16,
+        ppo_checkpoint_interval_iterations=0,
+        ppo_eval_interval_iterations=0,
         ppo_aux_opp_param_loss_coef=0.0,
         ppo_aux_opp_param_use_valid_mask=True,
     )
@@ -119,7 +121,7 @@ def test_run_pipeline_resume_skips_ppo_when_target_already_reached(monkeypatch, 
     (latest_ppo / "reports").mkdir(parents=True, exist_ok=True)
     (latest_ppo / "models" / "last.pt").write_bytes(b"x")
     (latest_ppo / "reports" / "train_summary.json").write_text(
-        json.dumps({"global_step": 1000}),
+        json.dumps({"final_iteration": 1000}),
         encoding="utf-8",
     )
 
@@ -139,7 +141,7 @@ def test_run_pipeline_resume_skips_ppo_when_target_already_reached(monkeypatch, 
     summary_path = run_dir / "reports" / "pipeline_summary.json"
     obj = json.loads(summary_path.read_text(encoding="utf-8"))
     assert obj["stages"]["ppo"]["resumed"] is True
-    assert obj["stages"]["ppo"]["resumed_step"] == 1000
+    assert obj["stages"]["ppo"]["resumed_iteration"] == 1000
     assert obj["trained_model"] == str(run_dir / "models" / "ppo_final.pt")
 
 

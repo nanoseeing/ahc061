@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,7 +18,7 @@ class PPOConfig(BaseModel):
     seed: int = 1
     cuda: bool = True
 
-    total_timesteps: int = Field(default=500_000, gt=0)
+    total_iterations: int = Field(default=500, gt=0)
     num_envs: int = Field(default=8, gt=0)
     num_steps: int = Field(default=128, gt=0)
 
@@ -101,6 +100,4 @@ class PPOConfig(BaseModel):
 
     @property
     def num_iterations(self) -> int:
-        if self.batch_size <= 0:
-            return 0
-        return int(math.ceil(float(self.total_timesteps) / float(self.batch_size)))
+        return int(self.total_iterations)

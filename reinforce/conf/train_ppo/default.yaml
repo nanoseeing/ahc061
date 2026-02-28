@@ -22,7 +22,7 @@ rollout_cache_device: auto
 distributed: auto
 model_preset: ''
 # PPO core
-total_timesteps: 500000
+total_iterations: 625
 num_envs: 8
 num_steps: 100
 learning_rate: 2.5e-4
@@ -59,8 +59,8 @@ compile: false
 use_action_mask: true
 # checkpointing / eval
 save_interval: 10
-checkpoint_interval_steps: 0
-eval_interval_steps: 0
+checkpoint_interval_iterations: 0
+eval_interval_iterations: 0
 eval_episodes: 100
 eval_num_envs: 0
 eval_seed_start: 2000000

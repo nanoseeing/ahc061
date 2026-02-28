@@ -80,7 +80,7 @@ def test_build_train_bc_cmd_basic(tmp_path: Path) -> None:
     assert "seed=7" in cmd
     assert "seed_min=100000" in cmd
     assert "seed_max_exclusive=200000" in cmd
-    assert "total_transitions=12800" in cmd
+    assert "total_iterations=50" in cmd
     assert "num_envs=4" in cmd
     assert "num_steps=64" in cmd
     assert "learning_rate=0.001" in cmd
@@ -131,8 +131,8 @@ def _make_train_ppo_args(**kwargs) -> SimpleNamespace:
         ppo_aux_opp_param_loss_coef=0.0,
         ppo_aux_opp_param_use_valid_mask=True,
         ppo_max_grad_norm=0.5,
-        ppo_checkpoint_interval_steps=0,
-        ppo_eval_interval_steps=0,
+        ppo_checkpoint_interval_iterations=0,
+        ppo_eval_interval_iterations=0,
         ppo_eval_episodes=0,
         ppo_eval_num_envs=0,
         ppo_eval_seed_start=0,
@@ -193,7 +193,9 @@ def test_build_train_ppo_cmd_basic(tmp_path: Path) -> None:
     assert "env_id=AHC061Local-v0" in cmd
     assert "train_seed_min=0" in cmd
     assert "train_seed_max_exclusive=9223372036854775807" in cmd
-    assert "total_timesteps=64000" in cmd
+    assert "total_iterations=1000" in cmd
+    assert "checkpoint_interval_iterations=0" in cmd
+    assert "eval_interval_iterations=0" in cmd
     assert "num_envs=4" in cmd
     assert "feature_id=v1" in cmd
     assert "use_action_mask=true" in cmd
@@ -213,6 +215,24 @@ def test_build_train_ppo_cmd_with_target_kl(tmp_path: Path) -> None:
         ppo_val_env_kwargs_json="",
     )
     assert "target_kl=0.02" in cmd
+
+
+def test_build_train_ppo_cmd_uses_iteration_intervals_verbatim(tmp_path: Path) -> None:
+    args = _make_train_ppo_args(
+        ppo_num_envs=8,
+        ppo_num_steps=100,
+        ppo_checkpoint_interval_iterations=5,
+        ppo_eval_interval_iterations=3,
+    )
+    cmd = build_train_ppo_cmd(
+        py="python",
+        args=args,
+        run_dir=tmp_path,
+        env_kwargs={},
+        ppo_val_env_kwargs_json="",
+    )
+    assert "checkpoint_interval_iterations=5" in cmd
+    assert "eval_interval_iterations=3" in cmd
 
 
 def test_build_train_ppo_cmd_with_init_model(tmp_path: Path) -> None:

@@ -24,9 +24,7 @@ from .pipeline_commands import (
     build_train_bc_cmd,
     build_train_ppo_cmd,
     resolve_bc_total_iterations,
-    resolve_bc_total_transitions,
     resolve_ppo_total_iterations,
-    resolve_ppo_total_timesteps,
 )
 
 logger = get_logger("run_pipeline")
@@ -165,7 +163,7 @@ def resolve_ppo_model(ppo_run_dir: Path) -> Path:
     raise FileNotFoundError(f"no trained model found under: {ppo_run_dir}")
 
 
-def read_ppo_global_step(ppo_run_dir: Path) -> int | None:
+def read_ppo_final_iteration(ppo_run_dir: Path) -> int | None:
     candidates = [
         ppo_run_dir / "reports" / "train_summary.json",
         ppo_run_dir / "summary.json",
@@ -175,8 +173,8 @@ def read_ppo_global_step(ppo_run_dir: Path) -> int | None:
             continue
         try:
             obj = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(obj, dict) and "global_step" in obj:
-                return int(obj["global_step"])
+            if isinstance(obj, dict) and "final_iteration" in obj:
+                return int(obj["final_iteration"])
         except Exception:
             continue
     return None
@@ -409,13 +407,11 @@ class _PipelineRunner:
         if bool(args.skip_bc) or rt.bc_teacher_model_path is None:
             return
         target_bc_iterations = int(resolve_bc_total_iterations(args))
-        target_bc_transitions = int(resolve_bc_total_transitions(args))
         if rt.resume_enabled and rt.bc_model.exists():
             logger.info("resume: skip train_bc (found %s)", rt.bc_model)
             rt.stage_result["bc"]["resumed"] = True
             rt.stage_result["bc"]["model"] = str(rt.bc_model)
             rt.stage_result["bc"]["target_iterations"] = int(target_bc_iterations)
-            rt.stage_result["bc"]["target_transitions"] = int(target_bc_transitions)
             return
         if not rt.bc_teacher_model_path.exists():
             raise FileNotFoundError(f"bc_teacher_model_path does not exist: {rt.bc_teacher_model_path}")
@@ -429,14 +425,12 @@ class _PipelineRunner:
         rt.stage_result["bc"]["model"] = str(rt.bc_model)
         rt.stage_result["bc"]["teacher_model"] = str(rt.bc_teacher_model_path)
         rt.stage_result["bc"]["target_iterations"] = int(target_bc_iterations)
-        rt.stage_result["bc"]["target_transitions"] = int(target_bc_transitions)
 
     def _run_ppo_stage(self, rt: _PipelineRuntime) -> None:
         args = rt.args
         if bool(args.skip_ppo):
             return
         target_ppo_iterations = int(resolve_ppo_total_iterations(args))
-        target_ppo_timesteps = int(resolve_ppo_total_timesteps(args))
 
         resume_ppo_dir = maybe_latest_dir(rt.ppo_root) if rt.resume_enabled else None
         resume_ppo_ckpt = None
@@ -444,23 +438,22 @@ class _PipelineRunner:
             cand = resume_ppo_dir / "models" / "last.pt"
             if cand.exists():
                 resume_ppo_ckpt = cand
-        resume_ppo_step = read_ppo_global_step(resume_ppo_dir) if resume_ppo_dir is not None else None
+        resume_ppo_iteration = read_ppo_final_iteration(resume_ppo_dir) if resume_ppo_dir is not None else None
         if (
             rt.resume_enabled
             and rt.consolidated_model.exists()
-            and resume_ppo_step is not None
-            and int(resume_ppo_step) >= int(target_ppo_timesteps)
+            and resume_ppo_iteration is not None
+            and int(resume_ppo_iteration) >= int(target_ppo_iterations)
         ):
             logger.info(
-                "resume: skip train_ppo (already reached step %d >= target %d)",
-                int(resume_ppo_step),
-                int(target_ppo_timesteps),
+                "resume: skip train_ppo (already reached iteration %d >= target %d)",
+                int(resume_ppo_iteration),
+                int(target_ppo_iterations),
             )
             rt.trained_model = rt.consolidated_model
             rt.stage_result["ppo"]["resumed"] = True
-            rt.stage_result["ppo"]["resumed_step"] = int(resume_ppo_step)
+            rt.stage_result["ppo"]["resumed_iteration"] = int(resume_ppo_iteration)
             rt.stage_result["ppo"]["target_iterations"] = int(target_ppo_iterations)
-            rt.stage_result["ppo"]["target_timesteps"] = int(target_ppo_timesteps)
             rt.stage_result["ppo"]["consolidated_model"] = str(rt.consolidated_model)
             return
 
@@ -490,7 +483,6 @@ class _PipelineRunner:
         rt.stage_result["ppo"]["aux_opp_param_loss_coef"] = float(args.ppo_aux_opp_param_loss_coef)
         rt.stage_result["ppo"]["aux_opp_param_use_valid_mask"] = bool(args.ppo_aux_opp_param_use_valid_mask)
         rt.stage_result["ppo"]["target_iterations"] = int(target_ppo_iterations)
-        rt.stage_result["ppo"]["target_timesteps"] = int(target_ppo_timesteps)
         run(cmd, tracker=rt.tracker, stage="train_ppo", tee_fp=rt.stdout_fp)
 
         latest = latest_dir(rt.ppo_root)

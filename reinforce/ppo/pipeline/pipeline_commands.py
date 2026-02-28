@@ -55,8 +55,8 @@ class TrainPPOArgs(ModelArgs, Protocol):
     ppo_aux_opp_param_loss_coef: float
     ppo_aux_opp_param_use_valid_mask: bool
     ppo_max_grad_norm: float
-    ppo_checkpoint_interval_steps: int
-    ppo_eval_interval_steps: int
+    ppo_checkpoint_interval_iterations: int
+    ppo_eval_interval_iterations: int
     ppo_eval_episodes: int
     ppo_eval_num_envs: int
     ppo_eval_seed_start: int
@@ -126,29 +126,11 @@ class PipelineArgs(TrainPPOArgs, TrainBCArgs, EvalPolicyArgs, Protocol):
     ppo_init_model: Path | None
 
 
-def _get_int_arg(args: object, *, name: str, default: int | None = None) -> int:
-    if not hasattr(args, name):
-        if default is None:
-            raise AttributeError(f"missing required argument: {name}")
-        return int(default)
-    return int(getattr(args, name))
-
-
 def resolve_bc_total_iterations(args: TrainBCArgs) -> int:
     v = int(getattr(args, "bc_total_iterations"))
     if v <= 0:
         raise ValueError(f"bc_total_iterations must be > 0, got {v}")
     return int(v)
-
-
-def resolve_bc_total_transitions(args: TrainBCArgs) -> int:
-    iters = int(resolve_bc_total_iterations(args))
-    num_envs = int(_get_int_arg(args, name="bc_num_envs"))
-    num_steps = int(_get_int_arg(args, name="bc_num_steps"))
-    batch_size = int(num_envs * num_steps)
-    if batch_size <= 0:
-        raise ValueError(f"bc batch_size must be > 0: num_envs={num_envs}, num_steps={num_steps}")
-    return int(iters * batch_size)
 
 
 def resolve_ppo_total_iterations(args: TrainPPOArgs) -> int:
@@ -158,14 +140,18 @@ def resolve_ppo_total_iterations(args: TrainPPOArgs) -> int:
     return int(v)
 
 
-def resolve_ppo_total_timesteps(args: TrainPPOArgs) -> int:
-    iters = int(resolve_ppo_total_iterations(args))
-    num_envs = int(_get_int_arg(args, name="ppo_num_envs"))
-    num_steps = int(_get_int_arg(args, name="ppo_num_steps"))
-    batch_size = int(num_envs * num_steps)
-    if batch_size <= 0:
-        raise ValueError(f"ppo batch_size must be > 0: num_envs={num_envs}, num_steps={num_steps}")
-    return int(iters * batch_size)
+def resolve_ppo_checkpoint_interval_iterations(args: TrainPPOArgs) -> int:
+    v = int(getattr(args, "ppo_checkpoint_interval_iterations"))
+    if v < 0:
+        raise ValueError(f"ppo_checkpoint_interval_iterations must be >= 0, got {v}")
+    return int(v)
+
+
+def resolve_ppo_eval_interval_iterations(args: TrainPPOArgs) -> int:
+    v = int(getattr(args, "ppo_eval_interval_iterations"))
+    if v < 0:
+        raise ValueError(f"ppo_eval_interval_iterations must be >= 0, got {v}")
+    return int(v)
 
 
 def append_bool_flag(cmd: list[str], name: str, value: bool) -> None:
@@ -199,7 +185,7 @@ def build_train_bc_cmd(
     output_model: Path,
     teacher_model_path: Path,
 ) -> list[str]:
-    total_transitions = int(resolve_bc_total_transitions(args))
+    total_iterations = int(resolve_bc_total_iterations(args))
     cmd = [
         py,
         "-m",
@@ -210,7 +196,7 @@ def build_train_bc_cmd(
         f"seed={int(args.seed)}",
         f"seed_min={int(args.bc_seed_min)}",
         f"seed_max_exclusive={int(args.bc_seed_max_exclusive)}",
-        f"total_transitions={total_transitions}",
+        f"total_iterations={total_iterations}",
         f"num_envs={int(args.bc_num_envs)}",
         f"num_steps={int(args.bc_num_steps)}",
         f"learning_rate={float(args.bc_learning_rate)}",
@@ -236,7 +222,9 @@ def build_train_ppo_cmd(
     resume_run_name: str = "",
     resume_from: Path | None = None,
 ) -> list[str]:
-    total_timesteps = int(resolve_ppo_total_timesteps(args))
+    total_iterations = int(resolve_ppo_total_iterations(args))
+    checkpoint_interval_iterations = int(resolve_ppo_checkpoint_interval_iterations(args))
+    eval_interval_iterations = int(resolve_ppo_eval_interval_iterations(args))
     cmd = [
         py,
         "-m",
@@ -246,7 +234,7 @@ def build_train_ppo_cmd(
         f"seed={int(args.seed)}",
         f"train_seed_min={int(args.train_seed_min)}",
         f"train_seed_max_exclusive={int(args.train_seed_max_exclusive)}",
-        f"total_timesteps={total_timesteps}",
+        f"total_iterations={total_iterations}",
         f"num_envs={int(args.ppo_num_envs)}",
         f"num_steps={int(args.ppo_num_steps)}",
         f"learning_rate={float(args.ppo_learning_rate)}",
@@ -261,8 +249,8 @@ def build_train_ppo_cmd(
         f"vf_coef={float(args.ppo_vf_coef)}",
         f"aux_opp_param_loss_coef={float(args.ppo_aux_opp_param_loss_coef)}",
         f"max_grad_norm={float(args.ppo_max_grad_norm)}",
-        f"checkpoint_interval_steps={int(args.ppo_checkpoint_interval_steps)}",
-        f"eval_interval_steps={int(args.ppo_eval_interval_steps)}",
+        f"checkpoint_interval_iterations={checkpoint_interval_iterations}",
+        f"eval_interval_iterations={eval_interval_iterations}",
         f"eval_episodes={int(args.ppo_eval_episodes)}",
         f"eval_num_envs={int(args.ppo_eval_num_envs)}",
         f"eval_seed_start={int(args.ppo_eval_seed_start)}",

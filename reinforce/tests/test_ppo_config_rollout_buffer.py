@@ -8,10 +8,10 @@ from reinforce.ppo.ppo.rollout_buffer import RolloutBuffer
 
 
 class TestPPOConfigAndRolloutBuffer:
-    def test_num_iterations_uses_ceil(self) -> None:
-        cfg = PPOConfig(total_timesteps=250, num_envs=2, num_steps=64)
+    def test_num_iterations_equals_total_iterations(self) -> None:
+        cfg = PPOConfig(total_iterations=250, num_envs=2, num_steps=64)
         assert cfg.batch_size == 128
-        assert cfg.num_iterations == 2
+        assert cfg.num_iterations == 250
 
     def test_rollout_buffer_compute_gae_matches_manual(self) -> None:
         device = torch.device("cpu")
