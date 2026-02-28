@@ -27,9 +27,9 @@ def _module_candidates(pkg_dir: Path) -> list[Path]:
 
 def build_extension(*, force: bool = False, verbose: bool = False) -> Path:
     pkg_dir = Path(__file__).resolve().parent
-    # opponent/ -> ppo_discrete/ -> reinforce/ -> cpp/src/
+    # opponent/ -> ppo/ -> reinforce/ -> ppo_cpp_ext/src/
     reinforce_dir = Path(__file__).resolve().parents[2]
-    src = reinforce_dir / "cpp" / "src" / "opponent_bayes_ext.cpp"
+    src = reinforce_dir / "ppo_cpp_ext" / "src" / "opponent_bayes_ext.cpp"
     if not src.exists():
         raise FileNotFoundError(f"cpp source not found: {src}")
 
@@ -44,7 +44,7 @@ def build_extension(*, force: bool = False, verbose: bool = False) -> Path:
         raise RuntimeError("pybind11 is required to build opponent_bayes_cpp extension") from e
 
     ext = Extension(
-        "reinforce.ppo_discrete.opponent._opponent_bayes_cpp",
+        "reinforce.ppo.opponent._opponent_bayes_cpp",
         sources=[str(src)],
         include_dirs=[pybind11.get_include()],
         language="c++",

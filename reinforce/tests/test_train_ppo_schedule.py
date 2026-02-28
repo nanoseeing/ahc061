@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from reinforce.ppo_discrete.ppo.config import PPOConfig
-from reinforce.ppo_discrete.train.schedule import (
+from reinforce.ppo.ppo.config import PPOConfig
+from reinforce.ppo.train.schedule import (
     PPOScheduleSet,
     RuntimeScheduleResolver,
     parse_schedule_expr,

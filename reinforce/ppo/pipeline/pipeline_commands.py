@@ -150,7 +150,7 @@ def build_train_bc_cmd(
     cmd = [
         py,
         "-m",
-        "reinforce.ppo_discrete.entrypoints.train_bc",
+        "reinforce.ppo.entrypoints.train_bc",
         f"output_model={output_model}",
         f"teacher_model_path={teacher_model_path}",
         f"env_id={args.env_id}",
@@ -184,7 +184,7 @@ def build_train_ppo_cmd(
     cmd = [
         py,
         "-m",
-        "reinforce.ppo_discrete.entrypoints.train_ppo",
+        "reinforce.ppo.entrypoints.train_ppo",
         f"env_id={args.env_id}",
         f"run_dir={run_dir}",
         f"seed={int(args.seed)}",
@@ -291,7 +291,7 @@ def build_eval_policy_cmd(
     cmd = [
         py,
         "-m",
-        "reinforce.ppo_discrete.entrypoints.eval_policy",
+        "reinforce.ppo.entrypoints.eval_policy",
         f"env_id={args.env_id}",
         f"model_path={model_path}",
         f"episodes={int(args.eval_episodes)}",

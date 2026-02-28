@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from reinforce.ppo_discrete.entrypoints.eval_policy import _build_summary
+from reinforce.ppo.entrypoints.eval_policy import _build_summary
 
 
 def test_build_summary_uses_game_score_ratio_for_terminal_score_ratio() -> None:

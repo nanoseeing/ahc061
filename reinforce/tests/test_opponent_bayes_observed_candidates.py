@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from reinforce.ppo_discrete.opponent import ensure_cpp_backend, opponent_bayes as ob
-from reinforce.ppo_discrete.opponent.opponent_bayes import create_opponent_bayes_estimator
+from reinforce.ppo.opponent import ensure_cpp_backend, opponent_bayes as ob
+from reinforce.ppo.opponent.opponent_bayes import create_opponent_bayes_estimator
 
 
 def _build_small_state():

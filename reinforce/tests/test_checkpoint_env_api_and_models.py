@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from reinforce.ppo_discrete.pipeline.model_checkpoint_service import load_agent_checkpoint, save_agent_checkpoint
-from reinforce.ppo_discrete.models.nets.discrete_board import DiscreteBoardAgent
-from reinforce.ppo_discrete.models import (
+from reinforce.ppo.pipeline.model_checkpoint_service import load_agent_checkpoint, save_agent_checkpoint
+from reinforce.ppo.models.nets.discrete_board import DiscreteBoardAgent
+from reinforce.ppo.models import (
     Exp002ResNetBoardAgent,
     StudentMBoardAgent,
     TeacherP0V1BoardAgent,

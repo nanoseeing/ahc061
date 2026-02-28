@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from reinforce.ppo_discrete.pipeline import pipeline_service as ps
+from reinforce.ppo.pipeline import pipeline_service as ps
 
 
 def _make_pipeline_args(tmp_path: Path, **overrides) -> SimpleNamespace:

@@ -1,4 +1,4 @@
-"""Tests for reinforce.ppo_discrete.pipeline.pipeline_commands."""
+"""Tests for reinforce.ppo.pipeline.pipeline_commands."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from reinforce.ppo_discrete.pipeline.pipeline_commands import (
+from reinforce.ppo.pipeline.pipeline_commands import (
     append_bool_flag,
     build_eval_policy_cmd,
     build_train_bc_cmd,

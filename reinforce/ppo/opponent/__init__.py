@@ -7,13 +7,13 @@ import threading
 from pathlib import Path
 from types import ModuleType
 
-_MODULE_NAME = "reinforce.ppo_discrete.opponent._opponent_bayes_cpp"
+_MODULE_NAME = "reinforce.ppo.opponent._opponent_bayes_cpp"
 _FALLBACK_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
 def _build_lock():
-    # opponent/ -> ppo_discrete/ -> reinforce/
+    # opponent/ -> ppo/ -> reinforce/
     reinforce_dir = Path(__file__).resolve().parents[2]
     lock_path = reinforce_dir / "build" / "ahc061_cpp_bayes" / "opponent_bayes_cpp.build.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)

@@ -19,10 +19,10 @@ def load_ext(*, verbose: bool = False):
     if pf_particles <= 0:
         raise ValueError(f"AHC061_PF_PARTICLES must be >= 1: {pf_particles}")
 
-    # env/ -> ppo_discrete/ -> reinforce/
+    # env/ -> ppo/ -> reinforce/
     reinforce_dir = Path(__file__).resolve().parents[2]
-    src = reinforce_dir / "cpp" / "src" / "ahc061_ext.cpp"
-    include_dir = reinforce_dir / "cpp" / "include"
+    src = reinforce_dir / "ppo_cpp_ext" / "src" / "ahc061_ext.cpp"
+    include_dir = reinforce_dir / "ppo_cpp_ext" / "include"
     build_dir = reinforce_dir / "build" / "ahc061_batch_env" / f"torch_ext_build_pf{pf_particles}"
     build_dir.mkdir(parents=True, exist_ok=True)
 

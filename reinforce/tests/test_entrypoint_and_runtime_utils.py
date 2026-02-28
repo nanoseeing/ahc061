@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 from omegaconf import OmegaConf
 
-from reinforce.ppo_discrete.entrypoints.common import cfg_to_namespace
-from reinforce.ppo_discrete.train.requests import ppo_config_from_source
-from reinforce.ppo_discrete.utils.runtime import parse_json_object
+from reinforce.ppo.entrypoints.common import cfg_to_namespace
+from reinforce.ppo.train.requests import ppo_config_from_source
+from reinforce.ppo.utils.runtime import parse_json_object
 
 
 def test_cfg_to_namespace_applies_path_coercion_and_defaults() -> None:
