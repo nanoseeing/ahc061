@@ -17,11 +17,12 @@ from ..ppo.config import PPOConfig
 from ..ppo.rollout import collect_rollout, create_rollout_workspace
 from ..ppo.vecnorm import VecNormalize
 from ..ppo.rollout_buffer import RolloutBuffer
-from ..ppo.trainer import PPOTrainer
+from ..ppo.trainer import PPOTrainer, UpdateStats
 from ..train.schedule import (
     PPOScheduleSet,
+    RuntimeScheduleCoefficients,
+    RuntimeScheduleResolver,
     resolve_vecnorm_gamma,
-    schedule_progress,
     validate_vecnorm_config,
 )
 from ..env import BatchEnv, BatchEnvProtocol, ensure_batch_env
@@ -43,6 +44,7 @@ from ..utils.experiment import (
 )
 from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize
+from ..utils.runtime import choose_device as choose_runtime_device
 from ..game_constants import AUX_OPP_PARAM_TOTAL, OPP_SLOT_COUNT
 from .requests import PPORequest, TrainPPORequest, args_to_cfg, build_ppo_request
 from ..eval.eval_service import run_policy_episodes
@@ -51,9 +53,7 @@ logger = get_logger("train_ppo")
 
 
 def choose_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
+    return choose_runtime_device(name)
 
 
 def _resolve_model_config(args: PPORequest) -> dict[str, Any]:
@@ -353,6 +353,19 @@ class _RestoredTrainState:
     restored_eval_round: int | None
     restored_next_eval_step: int | None
     restored_next_checkpoint_step: int | None
+
+
+@dataclass(frozen=True)
+class _IterationAggregateStats:
+    policy_loss: float
+    value_loss: float
+    entropy: float
+    approx_kl: float
+    clipfrac: float
+    value_clipfrac: float
+    explained_variance: float
+    aux_opp_param_loss: float
+    mean_official_score: float
 
 
 def _restore_training_state(
@@ -671,6 +684,12 @@ class PPORunner:
         self.global_batch_size = int(cfg_global.batch_size)
         self.start_iteration = 1
         self.summary: dict[str, Any] | None = None
+        self.runtime_schedules = RuntimeScheduleResolver(
+            schedules=self.schedules,
+            total_iterations=int(self.num_iterations),
+            warmup_steps=int(self.args.warmup_iters),
+            global_batch_size=int(self.global_batch_size),
+        )
 
     # ------------------------------------------------------------------
     # Stage 1: device and distributed setup
@@ -1190,250 +1209,290 @@ class PPORunner:
     # Stage 6: main training loop
     # ------------------------------------------------------------------
 
-    def _main_training_loop(self) -> None:
-        """Run the main PPO training loop."""
+    def _apply_runtime_schedule(self, *, iteration: int) -> RuntimeScheduleCoefficients:
+        runtime = self.runtime_schedules.resolve(iteration=int(iteration), global_step=int(self.global_step))
+        self.optimizer.param_groups[0]["lr"] = float(runtime.learning_rate)
+        self.trainer.set_runtime_coefficients(
+            ent_coef=float(runtime.ent_coef),
+            clip_coef=float(runtime.clip_coef),
+            clip_range_vf=(None if runtime.clip_range_vf is None else float(runtime.clip_range_vf)),
+            aux_opp_param_loss_coef=float(self.aux_opp_param_loss_coef),
+            aux_opp_param_use_valid_mask=bool(self.aux_opp_param_use_valid_mask),
+        )
+        return runtime
+
+    def _collect_rollout_and_update(self) -> tuple[UpdateStats, float]:
         args = self.args
         local_cfg = self.local_cfg
+        seeds = torch.as_tensor(
+            self.rng.integers(0, np.iinfo(np.int64).max, size=(local_cfg.num_envs,), dtype=np.int64),
+            dtype=torch.int64,
+            device="cpu",
+        )
+        self.env.reset_random(seeds)
 
-        for iteration in range(self.start_iteration, self.num_iterations + 1):
-            progress = schedule_progress(int(iteration), int(self.num_iterations))
-            lr_current = float(self.schedules.learning_rate(progress))
-            if not np.isfinite(lr_current) or lr_current < 0.0:
-                raise ValueError(f"invalid scheduled learning_rate={lr_current} at progress={progress}")
-            warmup_steps = int(args.warmup_iters)
-            if warmup_steps > 0:
-                step_after = float(self.global_step + self.global_batch_size)
-                lr_current = lr_current * min(1.0, step_after / float(warmup_steps))
-            self.optimizer.param_groups[0]["lr"] = lr_current
+        rollout = collect_rollout(
+            self.env,
+            self.rollout_agent,
+            self.device,
+            local_cfg.num_steps,
+            use_action_mask=bool(args.use_action_mask),
+            sample=True,
+            amp=bool(args.amp),
+            channels_last=bool(self.use_channels_last),
+            workspace=self.rollout_workspace,
+            pin_memory=bool(self.use_pin_memory),
+            vecnorm=self.train_vecnorm,
+            collect_aux_targets=bool(self.aux_opp_param_active),
+        )
 
-            ent_coef_current = float(self.schedules.ent_coef(progress))
-            clip_coef_current = float(self.schedules.clip_coef(progress))
-            if not np.isfinite(ent_coef_current) or ent_coef_current < 0.0:
-                raise ValueError(f"invalid scheduled ent_coef={ent_coef_current} at progress={progress}")
-            if not np.isfinite(clip_coef_current) or clip_coef_current < 0.0:
-                raise ValueError(f"invalid scheduled clip_coef={clip_coef_current} at progress={progress}")
-            clip_range_vf_current: float | None = None
-            if self.schedules.clip_range_vf is not None:
-                clip_range_vf_current = float(self.schedules.clip_range_vf(progress))
-                if not np.isfinite(clip_range_vf_current) or clip_range_vf_current < 0.0:
-                    raise ValueError(
-                        f"invalid scheduled clip_range_vf={clip_range_vf_current} at progress={progress}"
-                    )
-            self.trainer.set_runtime_coefficients(
-                ent_coef=float(ent_coef_current),
-                clip_coef=float(clip_coef_current),
-                clip_range_vf=(None if clip_range_vf_current is None else float(clip_range_vf_current)),
-                aux_opp_param_loss_coef=float(self.aux_opp_param_loss_coef),
-                aux_opp_param_use_valid_mask=bool(self.aux_opp_param_use_valid_mask),
-            )
-
-            seeds = torch.as_tensor(
-                self.rng.integers(0, np.iinfo(np.int64).max, size=(local_cfg.num_envs,), dtype=np.int64),
-                dtype=torch.int64,
-                device="cpu",
-            )
-            self.env.reset_random(seeds)
-
-            rollout = collect_rollout(
-                self.env,
-                self.rollout_agent,
-                self.device,
-                local_cfg.num_steps,
-                use_action_mask=bool(args.use_action_mask),
-                sample=True,
-                amp=bool(args.amp),
-                channels_last=bool(self.use_channels_last),
-                workspace=self.rollout_workspace,
-                pin_memory=bool(self.use_pin_memory),
-                vecnorm=self.train_vecnorm,
-                collect_aux_targets=bool(self.aux_opp_param_active),
-            )
-
-            copy_non_blocking = bool(self.cache_device.type == "cuda")
-            self.buffer.obs.copy_(rollout.obs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            self.buffer.actions.copy_(rollout.actions.to(device=self.cache_device, dtype=torch.long, non_blocking=copy_non_blocking))
-            self.buffer.logprobs.copy_(rollout.logprobs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            self.buffer.rewards.copy_(rollout.rewards.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            self.buffer.dones.copy_(rollout.dones.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            self.buffer.values.copy_(rollout.values.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
-            if self.buffer.action_masks is not None:
-                self.buffer.action_masks.copy_(rollout.masks.to(device=self.cache_device, dtype=torch.bool, non_blocking=copy_non_blocking))
-            if bool(self.aux_opp_param_active):
-                if rollout.aux_opp_param_true is None or rollout.aux_opp_valid is None:
-                    raise RuntimeError("rollout did not provide aux_opp_param targets")
-                if self.buffer.aux_opp_param_true is None or self.buffer.aux_opp_valid is None:
-                    raise RuntimeError("rollout buffer is missing aux_opp_param storage")
-                self.buffer.aux_opp_param_true.copy_(
-                    rollout.aux_opp_param_true.to(
-                        device=self.cache_device,
-                        dtype=torch.float32,
-                        non_blocking=copy_non_blocking,
-                    )
+        copy_non_blocking = bool(self.cache_device.type == "cuda")
+        self.buffer.obs.copy_(rollout.obs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+        self.buffer.actions.copy_(rollout.actions.to(device=self.cache_device, dtype=torch.long, non_blocking=copy_non_blocking))
+        self.buffer.logprobs.copy_(rollout.logprobs.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+        self.buffer.rewards.copy_(rollout.rewards.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+        self.buffer.dones.copy_(rollout.dones.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+        self.buffer.values.copy_(rollout.values.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking))
+        if self.buffer.action_masks is not None:
+            self.buffer.action_masks.copy_(rollout.masks.to(device=self.cache_device, dtype=torch.bool, non_blocking=copy_non_blocking))
+        if bool(self.aux_opp_param_active):
+            if rollout.aux_opp_param_true is None or rollout.aux_opp_valid is None:
+                raise RuntimeError("rollout did not provide aux_opp_param targets")
+            if self.buffer.aux_opp_param_true is None or self.buffer.aux_opp_valid is None:
+                raise RuntimeError("rollout buffer is missing aux_opp_param storage")
+            self.buffer.aux_opp_param_true.copy_(
+                rollout.aux_opp_param_true.to(
+                    device=self.cache_device,
+                    dtype=torch.float32,
+                    non_blocking=copy_non_blocking,
                 )
-                self.buffer.aux_opp_valid.copy_(
-                    rollout.aux_opp_valid.to(
-                        device=self.cache_device,
-                        dtype=torch.bool,
-                        non_blocking=copy_non_blocking,
-                    )
+            )
+            self.buffer.aux_opp_valid.copy_(
+                rollout.aux_opp_valid.to(
+                    device=self.cache_device,
+                    dtype=torch.bool,
+                    non_blocking=copy_non_blocking,
                 )
-
-            next_value = rollout.last_value.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
-            next_done = rollout.last_done.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
-            self.buffer.compute_gae(next_value, next_done, local_cfg.gamma, local_cfg.gae_lambda)
-            explained_variance_local = _explained_variance(self.buffer.values, self.buffer.returns)
-            stats = self.trainer.update(self.buffer)
-
-            stats_vec = torch.tensor(
-                [
-                    float(stats.policy_loss),
-                    float(stats.value_loss),
-                    float(stats.entropy),
-                    float(stats.approx_kl),
-                    float(stats.clipfrac),
-                    (0.0 if not np.isfinite(float(stats.value_clipfrac)) else float(stats.value_clipfrac)),
-                    (1.0 if not np.isfinite(float(stats.value_clipfrac)) else 0.0),
-                    (0.0 if not np.isfinite(float(explained_variance_local)) else float(explained_variance_local)),
-                    (0.0 if not np.isfinite(float(explained_variance_local)) else 1.0),
-                    (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else float(stats.aux_opp_param_loss)),
-                    (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else 1.0),
-                ],
-                device=self.device,
-                dtype=torch.float64,
             )
-            _all_reduce_sum_tensor(stats_vec)
-            ws = float(max(1, int(self.world_size)))
-            policy_loss_g = float((stats_vec[0] / ws).item())
-            value_loss_g = float((stats_vec[1] / ws).item())
-            entropy_g = float((stats_vec[2] / ws).item())
-            approx_kl_g = float((stats_vec[3] / ws).item())
-            clipfrac_g = float((stats_vec[4] / ws).item())
-            value_clipfrac_g = float("nan") if float(stats_vec[6].item()) >= ws else float((stats_vec[5] / ws).item())
-            explained_variance_g = float("nan") if float(stats_vec[8].item()) <= 0.0 else float((stats_vec[7] / stats_vec[8]).item())
-            aux_opp_param_loss_g = float("nan") if float(stats_vec[10].item()) <= 0.0 else float((stats_vec[9] / stats_vec[10]).item())
 
-            score_now = self.env.official_score().to(dtype=torch.float32)
-            metric_vec = torch.tensor(
-                [float(score_now.sum().item()), float(score_now.numel())],
-                device=self.device,
-                dtype=torch.float64,
-            )
-            _all_reduce_sum_tensor(metric_vec)
-            mean_official = float((metric_vec[0] / metric_vec[1]).item()) if float(metric_vec[1].item()) > 0.0 else 0.0
+        next_value = rollout.last_value.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        next_done = rollout.last_done.to(device=self.cache_device, dtype=torch.float32, non_blocking=copy_non_blocking)
+        self.buffer.compute_gae(next_value, next_done, local_cfg.gamma, local_cfg.gae_lambda)
+        explained_variance_local = _explained_variance(self.buffer.values, self.buffer.returns)
+        stats = self.trainer.update(self.buffer)
+        return stats, float(explained_variance_local)
 
-            self.global_step += int(self.global_batch_size)
-            _sync_vecnorm_ddp_(self.train_vecnorm, device=self.device)
-            elapsed_vec = torch.tensor([max(1e-9, time.time() - self.start_time)], device=self.device, dtype=torch.float64)
-            _all_reduce_max_tensor(elapsed_vec)
-            elapsed = float(elapsed_vec[0].item())
-            sps = int(float(self.global_step) / max(1e-9, elapsed))
+    def _aggregate_iteration_stats(self, *, stats: UpdateStats, explained_variance_local: float) -> _IterationAggregateStats:
+        stats_vec = torch.tensor(
+            [
+                float(stats.policy_loss),
+                float(stats.value_loss),
+                float(stats.entropy),
+                float(stats.approx_kl),
+                float(stats.clipfrac),
+                (0.0 if not np.isfinite(float(stats.value_clipfrac)) else float(stats.value_clipfrac)),
+                (1.0 if not np.isfinite(float(stats.value_clipfrac)) else 0.0),
+                (0.0 if not np.isfinite(float(explained_variance_local)) else float(explained_variance_local)),
+                (0.0 if not np.isfinite(float(explained_variance_local)) else 1.0),
+                (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else float(stats.aux_opp_param_loss)),
+                (0.0 if not np.isfinite(float(stats.aux_opp_param_loss)) else 1.0),
+            ],
+            device=self.device,
+            dtype=torch.float64,
+        )
+        _all_reduce_sum_tensor(stats_vec)
+        ws = float(max(1, int(self.world_size)))
+        policy_loss = float((stats_vec[0] / ws).item())
+        value_loss = float((stats_vec[1] / ws).item())
+        entropy = float((stats_vec[2] / ws).item())
+        approx_kl = float((stats_vec[3] / ws).item())
+        clipfrac = float((stats_vec[4] / ws).item())
+        value_clipfrac = float("nan") if float(stats_vec[6].item()) >= ws else float((stats_vec[5] / ws).item())
+        explained_variance = float("nan") if float(stats_vec[8].item()) <= 0.0 else float((stats_vec[7] / stats_vec[8]).item())
+        aux_opp_param_loss = float("nan") if float(stats_vec[10].item()) <= 0.0 else float((stats_vec[9] / stats_vec[10]).item())
 
-            row: dict[str, Any] = {
-                "iteration": int(iteration),
+        score_now = self.env.official_score().to(dtype=torch.float32)
+        metric_vec = torch.tensor(
+            [float(score_now.sum().item()), float(score_now.numel())],
+            device=self.device,
+            dtype=torch.float64,
+        )
+        _all_reduce_sum_tensor(metric_vec)
+        mean_official_score = float((metric_vec[0] / metric_vec[1]).item()) if float(metric_vec[1].item()) > 0.0 else 0.0
+        return _IterationAggregateStats(
+            policy_loss=float(policy_loss),
+            value_loss=float(value_loss),
+            entropy=float(entropy),
+            approx_kl=float(approx_kl),
+            clipfrac=float(clipfrac),
+            value_clipfrac=float(value_clipfrac),
+            explained_variance=float(explained_variance),
+            aux_opp_param_loss=float(aux_opp_param_loss),
+            mean_official_score=float(mean_official_score),
+        )
+
+    def _advance_global_step_and_measure_sps(self) -> int:
+        self.global_step += int(self.global_batch_size)
+        _sync_vecnorm_ddp_(self.train_vecnorm, device=self.device)
+        elapsed_vec = torch.tensor([max(1e-9, time.time() - self.start_time)], device=self.device, dtype=torch.float64)
+        _all_reduce_max_tensor(elapsed_vec)
+        elapsed = float(elapsed_vec[0].item())
+        return int(float(self.global_step) / max(1e-9, elapsed))
+
+    def _build_train_row(
+        self,
+        *,
+        iteration: int,
+        sps: int,
+        runtime: RuntimeScheduleCoefficients,
+        agg: _IterationAggregateStats,
+    ) -> dict[str, Any]:
+        return {
+            "iteration": int(iteration),
+            "global_step": int(self.global_step),
+            "sps": int(sps),
+            "learning_rate": float(runtime.learning_rate),
+            "schedule_progress": float(runtime.progress),
+            "ent_coef_current": float(runtime.ent_coef),
+            "clip_coef_current": float(runtime.clip_coef),
+            "clip_range_vf_current": (
+                float(runtime.clip_range_vf) if runtime.clip_range_vf is not None else float("nan")
+            ),
+            "policy_loss": float(agg.policy_loss),
+            "value_loss": float(agg.value_loss),
+            "entropy": float(agg.entropy),
+            "approx_kl": float(agg.approx_kl),
+            "clipfrac": float(agg.clipfrac),
+            "value_clipfrac": float(agg.value_clipfrac),
+            "explained_variance": float(agg.explained_variance),
+            "aux_opp_param_loss": float(agg.aux_opp_param_loss),
+            "mean_official_score": float(agg.mean_official_score),
+        }
+
+    def _maybe_run_periodic_eval(self, *, iteration: int, row: dict[str, Any], mean_official: float) -> None:
+        args = self.args
+        run_periodic_eval = bool(self.periodic_val_enabled and self.global_step >= self.next_eval_step)
+        if run_periodic_eval and self.is_distributed:
+            dist.barrier()
+        if run_periodic_eval and self.is_main:
+            seed_base = self._eval_seed_base()
+            eval_summary = _run_periodic_val(seed_start=seed_base, **self._make_val_kwargs())
+            eval_row = {
                 "global_step": int(self.global_step),
-                "sps": int(sps),
-                "learning_rate": float(lr_current),
-                "schedule_progress": float(progress),
-                "ent_coef_current": float(ent_coef_current),
-                "clip_coef_current": float(clip_coef_current),
-                "clip_range_vf_current": (
-                    float(clip_range_vf_current) if clip_range_vf_current is not None else float("nan")
-                ),
-                "policy_loss": float(policy_loss_g),
-                "value_loss": float(value_loss_g),
-                "entropy": float(entropy_g),
-                "approx_kl": float(approx_kl_g),
-                "clipfrac": float(clipfrac_g),
-                "value_clipfrac": float(value_clipfrac_g),
-                "explained_variance": float(explained_variance_g),
-                "aux_opp_param_loss": float(aux_opp_param_loss_g),
-                "mean_official_score": float(mean_official),
+                "eval_round": int(self.eval_round),
+                "seed_base": int(seed_base),
+                "fixed_seeds": bool(args.eval_fixed_seeds),
+                "summary": eval_summary,
             }
-
-            run_periodic_eval = bool(self.periodic_val_enabled and self.global_step >= self.next_eval_step)
-            if run_periodic_eval and self.is_distributed:
-                dist.barrier()
-            if run_periodic_eval and self.is_main:
-                seed_base = self._eval_seed_base()
-                eval_summary = _run_periodic_val(seed_start=seed_base, **self._make_val_kwargs())
-                eval_row = {
-                    "global_step": int(self.global_step),
-                    "eval_round": int(self.eval_round),
-                    "seed_base": int(seed_base),
-                    "fixed_seeds": bool(args.eval_fixed_seeds),
-                    "summary": eval_summary,
-                }
-                _append_jsonl(self.periodic_val_jsonl, eval_row)
-                row["periodic_val_mean_return"] = float(eval_summary["return"]["mean"])
-                row["periodic_val_mean_illegal_penalty"] = float(eval_summary["illegal_penalty"]["mean"])
-                row["periodic_val_mean_terminal_score"] = float(eval_summary["terminal_score"]["mean"])
-                row["periodic_val_mean_terminal_game_score"] = float(eval_summary["terminal_game_score"]["mean"])
-                row["periodic_val_mean_game_score_ratio"] = float(eval_summary["game_score_ratio"]["mean"])
-                cand = float(eval_summary["terminal_game_score"]["mean"])
-                if np.isfinite(cand) and cand > self.best_metric_value:
-                    self.best_metric_value = float(cand)
-                    self.best_metric_source = "periodic_val"
-                    save_agent_checkpoint(
-                        self.best_model,
-                        _unwrap_model(self.agent),
-                        optimizer=self.optimizer,
-                        meta=self._build_resume_meta(iteration=int(iteration)),
-                    )
-            if run_periodic_eval and self.is_distributed:
-                dist.barrier()
-            if run_periodic_eval:
-                self.eval_round += 1
-                self.next_eval_step += int(max(1, args.eval_interval_steps))
-            elif self.is_main and not self.periodic_val_enabled:
-                cand = float(mean_official)
-                if np.isfinite(cand) and cand > self.best_metric_value:
-                    self.best_metric_value = float(cand)
-                    self.best_metric_source = "mean_official_score"
-                    save_agent_checkpoint(
-                        self.best_model,
-                        _unwrap_model(self.agent),
-                        optimizer=self.optimizer,
-                        meta=self._build_resume_meta(iteration=int(iteration)),
-                    )
-
-            if self.is_main:
-                _append_jsonl(self.train_metrics_jsonl, row)
-
-            if self.is_main and args.log_interval_iters > 0 and (iteration % int(args.log_interval_iters) == 0):
-                logger.info(
-                    "iter=%d/%d step=%d sps=%d lr=%.6g ploss=%.5f vloss=%.5f aux=%.5f ent=%.5f kl=%.5f clip=%.4f ev=%.5f vclip=%.5f score=%.1f",
-                    iteration,
-                    self.num_iterations,
-                    self.global_step,
-                    sps,
-                    lr_current,
-                    policy_loss_g,
-                    value_loss_g,
-                    aux_opp_param_loss_g,
-                    entropy_g,
-                    approx_kl_g,
-                    clipfrac_g,
-                    explained_variance_g,
-                    value_clipfrac_g,
-                    mean_official,
-                )
-
-            if self.is_main and (iteration % int(max(1, local_cfg.save_interval)) == 0 or iteration == self.num_iterations):
+            _append_jsonl(self.periodic_val_jsonl, eval_row)
+            row["periodic_val_mean_return"] = float(eval_summary["return"]["mean"])
+            row["periodic_val_mean_illegal_penalty"] = float(eval_summary["illegal_penalty"]["mean"])
+            row["periodic_val_mean_terminal_score"] = float(eval_summary["terminal_score"]["mean"])
+            row["periodic_val_mean_terminal_game_score"] = float(eval_summary["terminal_game_score"]["mean"])
+            row["periodic_val_mean_game_score_ratio"] = float(eval_summary["game_score_ratio"]["mean"])
+            cand = float(eval_summary["terminal_game_score"]["mean"])
+            if np.isfinite(cand) and cand > self.best_metric_value:
+                self.best_metric_value = float(cand)
+                self.best_metric_source = "periodic_val"
                 save_agent_checkpoint(
-                    self.last_model,
+                    self.best_model,
+                    _unwrap_model(self.agent),
+                    optimizer=self.optimizer,
+                    meta=self._build_resume_meta(iteration=int(iteration)),
+                )
+        if run_periodic_eval and self.is_distributed:
+            dist.barrier()
+        if run_periodic_eval:
+            self.eval_round += 1
+            self.next_eval_step += int(max(1, args.eval_interval_steps))
+        elif self.is_main and not self.periodic_val_enabled:
+            cand = float(mean_official)
+            if np.isfinite(cand) and cand > self.best_metric_value:
+                self.best_metric_value = float(cand)
+                self.best_metric_source = "mean_official_score"
+                save_agent_checkpoint(
+                    self.best_model,
                     _unwrap_model(self.agent),
                     optimizer=self.optimizer,
                     meta=self._build_resume_meta(iteration=int(iteration)),
                 )
 
-            if self.is_main and self.checkpoint_interval_steps > 0 and self.global_step >= int(self.next_checkpoint_step):
-                save_agent_checkpoint(
-                    self.checkpoint_dir / f"step_{int(self.global_step):012d}.pt",
-                    _unwrap_model(self.agent),
-                    optimizer=self.optimizer,
-                    meta=self._build_resume_meta(iteration=int(iteration)),
-                )
-                self.next_checkpoint_step += int(self.checkpoint_interval_steps)
+    def _record_and_log_iteration(
+        self,
+        *,
+        iteration: int,
+        sps: int,
+        runtime: RuntimeScheduleCoefficients,
+        agg: _IterationAggregateStats,
+        row: dict[str, Any],
+    ) -> None:
+        args = self.args
+        if self.is_main:
+            _append_jsonl(self.train_metrics_jsonl, row)
+
+        if self.is_main and args.log_interval_iters > 0 and (iteration % int(args.log_interval_iters) == 0):
+            logger.info(
+                "iter=%d/%d step=%d sps=%d lr=%.6g ploss=%.5f vloss=%.5f aux=%.5f ent=%.5f kl=%.5f clip=%.4f ev=%.5f vclip=%.5f score=%.1f",
+                iteration,
+                self.num_iterations,
+                self.global_step,
+                sps,
+                float(runtime.learning_rate),
+                float(agg.policy_loss),
+                float(agg.value_loss),
+                float(agg.aux_opp_param_loss),
+                float(agg.entropy),
+                float(agg.approx_kl),
+                float(agg.clipfrac),
+                float(agg.explained_variance),
+                float(agg.value_clipfrac),
+                float(agg.mean_official_score),
+            )
+
+    def _maybe_save_iteration_checkpoints(self, *, iteration: int) -> None:
+        local_cfg = self.local_cfg
+        if self.is_main and (iteration % int(max(1, local_cfg.save_interval)) == 0 or iteration == self.num_iterations):
+            save_agent_checkpoint(
+                self.last_model,
+                _unwrap_model(self.agent),
+                optimizer=self.optimizer,
+                meta=self._build_resume_meta(iteration=int(iteration)),
+            )
+
+        if self.is_main and self.checkpoint_interval_steps > 0 and self.global_step >= int(self.next_checkpoint_step):
+            save_agent_checkpoint(
+                self.checkpoint_dir / f"step_{int(self.global_step):012d}.pt",
+                _unwrap_model(self.agent),
+                optimizer=self.optimizer,
+                meta=self._build_resume_meta(iteration=int(iteration)),
+            )
+            self.next_checkpoint_step += int(self.checkpoint_interval_steps)
+
+    def _main_training_loop(self) -> None:
+        """Run the main PPO training loop."""
+        for iteration in range(self.start_iteration, self.num_iterations + 1):
+            runtime = self._apply_runtime_schedule(iteration=int(iteration))
+            update_stats, explained_variance_local = self._collect_rollout_and_update()
+            agg = self._aggregate_iteration_stats(
+                stats=update_stats,
+                explained_variance_local=float(explained_variance_local),
+            )
+            sps = self._advance_global_step_and_measure_sps()
+            row = self._build_train_row(
+                iteration=int(iteration),
+                sps=int(sps),
+                runtime=runtime,
+                agg=agg,
+            )
+            self._maybe_run_periodic_eval(iteration=int(iteration), row=row, mean_official=float(agg.mean_official_score))
+            self._record_and_log_iteration(
+                iteration=int(iteration),
+                sps=int(sps),
+                runtime=runtime,
+                agg=agg,
+                row=row,
+            )
+            self._maybe_save_iteration_checkpoints(iteration=int(iteration))
 
     # ------------------------------------------------------------------
     # Stage 7: finalization

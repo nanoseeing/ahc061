@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from ..train.online_bc_service import OnlineBCConfig, run_online_bc
-from ..utils.experiment import coerce_optional_path
+from .common import cfg_to_namespace
 
 _CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
@@ -20,13 +19,16 @@ def main(cfg: DictConfig) -> None:
 
 
 def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
-    d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
-    d["teacher_model_path"] = coerce_optional_path(d.get("teacher_model_path"), dot_is_none=True)
-    d["init_model"] = coerce_optional_path(d.get("init_model"), dot_is_none=True)
-    d["output_model"] = coerce_optional_path(d.get("output_model"), dot_is_none=True)
-    d["model_config_file"] = coerce_optional_path(d.get("model_config_file"), dot_is_none=True)
-    d["run_root"] = coerce_optional_path(d.get("run_root"))
-    return SimpleNamespace(**d)
+    return cfg_to_namespace(
+        cfg,
+        optional_paths={
+            "teacher_model_path": True,
+            "init_model": True,
+            "output_model": True,
+            "model_config_file": True,
+            "run_root": False,
+        },
+    )
 
 
 def _run(args: SimpleNamespace) -> int:

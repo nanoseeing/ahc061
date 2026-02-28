@@ -8,12 +8,11 @@ from typing import Any
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from ..eval.eval_service import run_policy_episodes
 from ..pipeline.model_checkpoint_service import load_agent_checkpoint
 from ..utils.experiment import (
-    coerce_optional_path,
     create_run_layout,
     make_run_name,
     to_jsonable,
@@ -21,7 +20,9 @@ from ..utils.experiment import (
 )
 from ..utils.log_utils import get_logger
 from ..utils.metrics import summarize
+from ..utils.runtime import choose_device, parse_json_object
 from ..utils.tracking import MetricTracker
+from .common import cfg_to_namespace
 
 logger = get_logger("eval_policy")
 _CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
@@ -34,17 +35,14 @@ def main(cfg: DictConfig) -> None:
 
 
 def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
-    d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
-    d["model_path"] = coerce_optional_path(d.get("model_path"), dot_is_none=True)
-    d["output_json"] = coerce_optional_path(d.get("output_json"), dot_is_none=True)
-    d["run_root"] = coerce_optional_path(d.get("run_root"))
-    return SimpleNamespace(**d)
-
-
-def _choose_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
+    return cfg_to_namespace(
+        cfg,
+        optional_paths={
+            "model_path": True,
+            "output_json": True,
+            "run_root": False,
+        },
+    )
 
 
 def _prepare_run(args: SimpleNamespace) -> tuple[Any, MetricTracker | None]:
@@ -179,10 +177,8 @@ def _run(args: SimpleNamespace) -> int:
     tracker: MetricTracker | None = None
     try:
         layout, tracker = _prepare_run(args)
-        device_obj = _choose_device(str(args.device))
-        env_kwargs_dict = json.loads(str(args.env_kwargs_json))
-        if not isinstance(env_kwargs_dict, dict):
-            raise ValueError("env_kwargs_json must be a JSON object")
+        device_obj = choose_device(str(args.device))
+        env_kwargs_dict = parse_json_object(str(args.env_kwargs_json), field_name="env_kwargs_json")
         agent, meta = load_agent_checkpoint(args.model_path, device=device_obj)
 
         summary = _run_eval(args=args, agent=agent, model_meta=meta, device=device_obj, env_kwargs=env_kwargs_dict)

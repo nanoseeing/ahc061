@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from ..ppo.config import PPOConfig
 from ..train.schedule import (
     validate_schedule_args,
     validate_vecnorm_config,
 )
-from ..utils.experiment import coerce_optional_path
+from ..train.requests import ppo_config_from_source
+from ..utils.runtime import choose_device, parse_json_object
 from ..utils.log_utils import get_logger
+from .common import cfg_to_namespace
 
 logger = get_logger("train_ppo")
 _CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
@@ -28,62 +28,19 @@ def main(cfg: DictConfig) -> None:
 
 
 def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
-    d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
-    d["init_model"] = coerce_optional_path(d.get("init_model"), dot_is_none=True)
-    d["resume_from"] = coerce_optional_path(d.get("resume_from"), dot_is_none=True)
-    d["model_config_file"] = coerce_optional_path(d.get("model_config_file"), dot_is_none=True)
-    run_dir = d.get("run_dir")
-    d["run_dir"] = Path(run_dir) if run_dir else Path("reinforce/outputs/ppo_runs")
-    return SimpleNamespace(**d)
-
-
-def _ns_to_ppo_cfg(args: SimpleNamespace) -> PPOConfig:
-    return PPOConfig(
-        seed=args.seed,
-        total_timesteps=args.total_timesteps,
-        num_envs=args.num_envs,
-        num_steps=args.num_steps,
-        learning_rate=args.learning_rate,
-        learning_rate_schedule=str(args.learning_rate_schedule),
-        warmup_iters=int(args.warmup_iters),
-        gamma=args.gamma,
-        gae_lambda=args.gae_lambda,
-        num_minibatches=args.num_minibatches,
-        update_epochs=args.update_epochs,
-        norm_adv=args.norm_adv,
-        clip_coef=args.clip_coef,
-        clip_range_vf=args.clip_range_vf,
-        clip_range_vf_schedule=str(args.clip_range_vf_schedule),
-        clip_range_vf_final=args.clip_range_vf_final,
-        clip_range_vf_schedule_expr=str(args.clip_range_vf_schedule_expr),
-        clip_vloss=args.clip_vloss,
-        ent_coef=args.ent_coef,
-        ent_coef_schedule=str(args.ent_coef_schedule),
-        ent_coef_final=args.ent_coef_final,
-        ent_coef_schedule_expr=str(args.ent_coef_schedule_expr),
-        vf_coef=args.vf_coef,
-        aux_opp_param_loss_coef=float(args.aux_opp_param_loss_coef),
-        aux_opp_param_use_valid_mask=bool(args.aux_opp_param_use_valid_mask),
-        max_grad_norm=args.max_grad_norm,
-        target_kl=args.target_kl,
-        clip_coef_schedule=str(args.clip_coef_schedule),
-        clip_coef_final=args.clip_coef_final,
-        clip_coef_schedule_expr=str(args.clip_coef_schedule_expr),
-        save_interval=args.save_interval,
+    return cfg_to_namespace(
+        cfg,
+        optional_paths={
+            "init_model": True,
+            "resume_from": True,
+            "model_config_file": True,
+        },
+        default_paths={"run_dir": Path("reinforce/outputs/ppo_runs")},
     )
 
 
-def choose_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
-
-
-def parse_env_kwargs(text: str) -> dict[str, Any]:
-    obj = json.loads(text)
-    if not isinstance(obj, dict):
-        raise ValueError("env_kwargs_json must be a JSON object")
-    return obj
+def _ns_to_ppo_cfg(args: SimpleNamespace) -> PPOConfig:
+    return ppo_config_from_source(args)
 
 
 def _run(args: SimpleNamespace) -> int:
@@ -109,7 +66,7 @@ def _run(args: SimpleNamespace) -> int:
 def _run_backend(*, args: SimpleNamespace, cfg: PPOConfig, device: torch.device) -> int:
     from ..train.ppo_service import TrainPPORequest, run_ppo_from_train_request
 
-    env_kwargs = parse_env_kwargs(args.env_kwargs_json)
+    env_kwargs = parse_json_object(str(args.env_kwargs_json), field_name="env_kwargs_json")
     train_req = TrainPPORequest(
         env_id=str(args.env_id),
         run_dir=args.run_dir,

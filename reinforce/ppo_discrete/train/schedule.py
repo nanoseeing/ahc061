@@ -265,6 +265,74 @@ class PPOScheduleSet:
         )
 
 
+@dataclass(frozen=True)
+class RuntimeScheduleCoefficients:
+    progress: float
+    learning_rate: float
+    ent_coef: float
+    clip_coef: float
+    clip_range_vf: float | None
+
+
+class RuntimeScheduleResolver:
+    """Resolve per-iteration runtime coefficients (including LR warmup)."""
+
+    def __init__(
+        self,
+        *,
+        schedules: PPOScheduleSet,
+        total_iterations: int,
+        warmup_steps: int,
+        global_batch_size: int,
+    ) -> None:
+        self.schedules = schedules
+        self.total_iterations = int(total_iterations)
+        self.warmup_steps = int(warmup_steps)
+        self.global_batch_size = int(global_batch_size)
+        if self.total_iterations <= 0:
+            raise ValueError(f"total_iterations must be > 0: {self.total_iterations}")
+        if self.warmup_steps < 0:
+            raise ValueError(f"warmup_steps must be >= 0: {self.warmup_steps}")
+        if self.global_batch_size <= 0:
+            raise ValueError(f"global_batch_size must be > 0: {self.global_batch_size}")
+
+    def resolve(self, *, iteration: int, global_step: int) -> RuntimeScheduleCoefficients:
+        if int(global_step) < 0:
+            raise ValueError(f"global_step must be >= 0: {global_step}")
+
+        progress = schedule_progress(int(iteration), int(self.total_iterations))
+
+        learning_rate = float(self.schedules.learning_rate(progress))
+        if self.warmup_steps > 0:
+            step_after = float(int(global_step) + int(self.global_batch_size))
+            learning_rate = learning_rate * min(1.0, step_after / float(self.warmup_steps))
+        self._validate_nonnegative_finite(learning_rate, name="learning_rate", progress=progress)
+
+        ent_coef = float(self.schedules.ent_coef(progress))
+        self._validate_nonnegative_finite(ent_coef, name="ent_coef", progress=progress)
+
+        clip_coef = float(self.schedules.clip_coef(progress))
+        self._validate_nonnegative_finite(clip_coef, name="clip_coef", progress=progress)
+
+        clip_range_vf: float | None = None
+        if self.schedules.clip_range_vf is not None:
+            clip_range_vf = float(self.schedules.clip_range_vf(progress))
+            self._validate_nonnegative_finite(clip_range_vf, name="clip_range_vf", progress=progress)
+
+        return RuntimeScheduleCoefficients(
+            progress=float(progress),
+            learning_rate=float(learning_rate),
+            ent_coef=float(ent_coef),
+            clip_coef=float(clip_coef),
+            clip_range_vf=(None if clip_range_vf is None else float(clip_range_vf)),
+        )
+
+    @staticmethod
+    def _validate_nonnegative_finite(value: float, *, name: str, progress: float) -> None:
+        if not np.isfinite(value) or float(value) < 0.0:
+            raise ValueError(f"invalid scheduled {name}={value} at progress={progress}")
+
+
 def parse_schedule_expr(
     expr: str,
     *,

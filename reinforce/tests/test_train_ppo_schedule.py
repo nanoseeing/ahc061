@@ -5,6 +5,7 @@ import pytest
 from reinforce.ppo_discrete.ppo.config import PPOConfig
 from reinforce.ppo_discrete.train.schedule import (
     PPOScheduleSet,
+    RuntimeScheduleResolver,
     parse_schedule_expr,
     schedule_progress,
     validate_schedule_args,
@@ -59,3 +60,82 @@ class TestTrainPPOSchedule:
         assert vf_fn is not None
         assert vf_fn(0.0) == pytest.approx(0.2, abs=1e-6)
         assert vf_fn(1.0) == pytest.approx(0.05, abs=1e-6)
+
+    def test_runtime_schedule_resolver_applies_warmup(self) -> None:
+        cfg = PPOConfig(
+            total_timesteps=500,
+            num_envs=2,
+            num_steps=50,
+            num_minibatches=2,
+            learning_rate=1.0,
+            learning_rate_schedule="constant",
+            ent_coef=0.02,
+            ent_coef_schedule="constant",
+            clip_coef=0.3,
+            clip_coef_schedule="constant",
+        )
+        schedules = PPOScheduleSet.from_config(cfg)
+        resolver = RuntimeScheduleResolver(
+            schedules=schedules,
+            total_iterations=5,
+            warmup_steps=200,
+            global_batch_size=100,
+        )
+
+        c1 = resolver.resolve(iteration=1, global_step=0)
+        assert c1.progress == pytest.approx(0.0, abs=1e-6)
+        assert c1.learning_rate == pytest.approx(0.5, abs=1e-6)
+        assert c1.ent_coef == pytest.approx(0.02, abs=1e-6)
+        assert c1.clip_coef == pytest.approx(0.3, abs=1e-6)
+        assert c1.clip_range_vf is None
+
+        c2 = resolver.resolve(iteration=2, global_step=100)
+        assert c2.progress == pytest.approx(0.25, abs=1e-6)
+        assert c2.learning_rate == pytest.approx(1.0, abs=1e-6)
+
+    def test_runtime_schedule_resolver_validates_inputs(self) -> None:
+        cfg = PPOConfig(
+            total_timesteps=100,
+            num_envs=2,
+            num_steps=10,
+            num_minibatches=2,
+        )
+        schedules = PPOScheduleSet.from_config(cfg)
+        with pytest.raises(ValueError):
+            RuntimeScheduleResolver(
+                schedules=schedules,
+                total_iterations=0,
+                warmup_steps=0,
+                global_batch_size=20,
+            )
+        with pytest.raises(ValueError):
+            RuntimeScheduleResolver(
+                schedules=schedules,
+                total_iterations=10,
+                warmup_steps=-1,
+                global_batch_size=20,
+            )
+        with pytest.raises(ValueError):
+            RuntimeScheduleResolver(
+                schedules=schedules,
+                total_iterations=10,
+                warmup_steps=0,
+                global_batch_size=0,
+            )
+
+    def test_runtime_schedule_resolver_rejects_negative_global_step(self) -> None:
+        cfg = PPOConfig(
+            total_timesteps=100,
+            num_envs=2,
+            num_steps=10,
+            num_minibatches=2,
+        )
+        schedules = PPOScheduleSet.from_config(cfg)
+        resolver = RuntimeScheduleResolver(
+            schedules=schedules,
+            total_iterations=10,
+            warmup_steps=100,
+            global_batch_size=20,
+        )
+        with pytest.raises(ValueError):
+            resolver.resolve(iteration=1, global_step=-1)

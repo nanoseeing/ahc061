@@ -16,6 +16,7 @@ from typing import Any, TextIO
 from ..opponent import ensure_cpp_backend
 from ..utils.experiment import coerce_optional_path, create_run_layout, make_run_name, to_jsonable, update_manifest
 from ..utils.log_utils import get_logger
+from ..utils.runtime import parse_json_object
 from ..utils.tracking import MetricTracker
 from .pipeline_commands import (
     PipelineArgs,
@@ -192,13 +193,6 @@ def read_ppo_global_step(ppo_run_dir: Path) -> int | None:
     return None
 
 
-def _parse_env_kwargs(text: str) -> dict[str, Any]:
-    obj = json.loads(text)
-    if not isinstance(obj, dict):
-        raise ValueError("--env-kwargs-json must be a JSON object")
-    return obj
-
-
 def _validate_backend_combinations(args: PipelineArgs) -> None:
     env_id = str(args.env_id).strip()
     if env_id != "AHC061Local-v0":
@@ -251,9 +245,11 @@ def _maybe_prepare_cpp_bayes_backend(*, env_id: str, env_kwargs: dict[str, Any],
 
 def run_pipeline(args: PipelineArgs) -> int:
     _validate_backend_combinations(args)
-    base_env_kwargs = _parse_env_kwargs(args.env_kwargs_json)
+    base_env_kwargs = parse_json_object(str(args.env_kwargs_json), field_name="--env-kwargs-json")
     eval_env_kwargs = (
-        _parse_env_kwargs(args.eval_env_kwargs_json) if str(args.eval_env_kwargs_json).strip() else dict(base_env_kwargs)
+        parse_json_object(str(args.eval_env_kwargs_json), field_name="--eval-env-kwargs-json")
+        if str(args.eval_env_kwargs_json).strip()
+        else dict(base_env_kwargs)
     )
     env_kwargs = dict(base_env_kwargs)
     resume_enabled = bool(args.resume)

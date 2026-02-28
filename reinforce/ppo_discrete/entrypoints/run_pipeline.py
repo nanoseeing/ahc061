@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
-from ..utils.experiment import coerce_optional_path
 from ..pipeline.pipeline_service import run_pipeline
+from .common import cfg_to_namespace
 
 _CONF_DIR = str(Path(__file__).parent.parent.parent / "conf")
 
@@ -20,12 +19,14 @@ def main(cfg: DictConfig) -> None:
 
 
 def _cfg_to_ns(cfg: DictConfig) -> SimpleNamespace:
-    d: dict[str, Any] = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False)  # type: ignore[assignment]
-    d["model_config_file"] = coerce_optional_path(d.get("model_config_file"), dot_is_none=True)
-    d["ppo_init_model"] = coerce_optional_path(d.get("ppo_init_model"), dot_is_none=True)
-    run_root = d.get("run_root")
-    d["run_root"] = Path(run_root) if run_root else Path("reinforce/outputs/pipeline_runs")
-    return SimpleNamespace(**d)
+    return cfg_to_namespace(
+        cfg,
+        optional_paths={
+            "model_config_file": True,
+            "ppo_init_model": True,
+        },
+        default_paths={"run_root": Path("reinforce/outputs/pipeline_runs")},
+    )
 
 
 if __name__ == "__main__":
