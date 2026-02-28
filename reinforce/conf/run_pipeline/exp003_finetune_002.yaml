@@ -24,14 +24,14 @@ bc_temperature: 1.0
 skip_bc: true
 
 # PPO core
-ppo_total_iterations: 1000
+ppo_total_iterations: 2000
 ppo_num_envs: 512
 ppo_num_steps: 100
 train_seed_min: 2_000_000_000
 train_seed_max_exclusive: 3_000_000_000
-ppo_warmup_iters: 50
-ppo_learning_rate: 4.0e-5
-ppo_learning_rate_schedule: constant
+ppo_warmup_iters: 100
+ppo_learning_rate: 1.0e-4
+ppo_learning_rate_schedule: 'linear(1.0e-4, 2.0e-5)'
 ppo_gamma: 1.0
 ppo_gae_lambda: 0.99
 ppo_num_minibatches: 512
@@ -64,8 +64,8 @@ ppo_pin_memory: true
 ppo_rollout_cache_device: auto
 ppo_distributed: auto
 ppo_compile: true
-ppo_checkpoint_interval_iterations: 10
-ppo_eval_interval_iterations: 10
+ppo_checkpoint_interval_iterations: 100
+ppo_eval_interval_iterations: 100
 ppo_eval_episodes: 10000
 ppo_eval_num_envs: 512
 ppo_eval_seed_start: 3_000_000_000
