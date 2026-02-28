@@ -664,6 +664,20 @@ public:
         return out;
     }
 
+    torch::Tensor m_u() const {
+        auto out = torch::empty({batch_size_, 2}, torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
+        auto* a_ptr = out.data_ptr<std::int64_t>();
+        const auto grain = pick_grain(batch_size_);
+        at::parallel_for(0, batch_size_, grain, [&](std::int64_t begin, std::int64_t end) {
+            for (std::int64_t i = begin; i < end; i++) {
+                const auto& st = envs_[static_cast<std::size_t>(i)].st;
+                a_ptr[static_cast<std::ptrdiff_t>(i) * 2 + 0] = static_cast<std::int64_t>(st.m);
+                a_ptr[static_cast<std::ptrdiff_t>(i) * 2 + 1] = static_cast<std::int64_t>(st.u_max);
+            }
+        });
+        return out;
+    }
+
 private:
     int batch_size_ = 0;
     std::string feature_id_{};
@@ -756,5 +770,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             pybind11::arg("feature_id_b"))
         .def("pos0", &BatchEnv::pos0)
         .def("official_score", &BatchEnv::official_score)
-        .def("score_s0_sa", &BatchEnv::score_s0_sa);
+        .def("score_s0_sa", &BatchEnv::score_s0_sa)
+        .def("m_u", &BatchEnv::m_u);
 }

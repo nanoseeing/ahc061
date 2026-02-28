@@ -19,7 +19,7 @@ from ..utils.experiment import (
     update_manifest,
 )
 from ..utils.log_utils import get_logger
-from ..utils.metrics import summarize
+from ..utils.metrics import summarize, group_score_mean_variance_by_m_u
 from ..utils.runtime import choose_device, parse_json_object
 from ..utils.tracking import MetricTracker
 from .common import cfg_to_namespace
@@ -78,29 +78,56 @@ def _build_summary(
     env_kwargs: dict[str, Any],
     model_meta: dict[str, Any] | Any,
     episode_returns: list[float],
-    episode_illegal_penalties: list[float],
-    episode_terminal_scores: list[float],
-    episode_terminal_game_scores: list[float],
-    episode_game_score_ratio: list[float],
-    episode_game_score_self: list[float],
-    episode_game_score_enemy_max: list[float],
+    episode_scores: list[float],
+    episode_m: list[int],
+    episode_u: list[int],
+    episode_self_scores: list[float],
+    episode_enemy_max_scores: list[float],
 ) -> dict[str, Any]:
+    if not (
+        len(episode_scores)
+        == len(episode_m)
+        == len(episode_u)
+        == len(episode_self_scores)
+        == len(episode_enemy_max_scores)
+    ):
+        raise ValueError(
+            "eval episode summary length mismatch: "
+            f"scores={len(episode_scores)} m={len(episode_m)} u={len(episode_u)} "
+            f"self={len(episode_self_scores)} enemy={len(episode_enemy_max_scores)}"
+        )
+
+    per_episode: list[dict[str, float | int]] = []
+    for idx in range(len(episode_scores)):
+        per_episode.append(
+            {
+                "episode": int(idx),
+                "M": int(episode_m[idx]),
+                "U": int(episode_u[idx]),
+                "self_score": float(episode_self_scores[idx]),
+                "enemy_max_score": float(episode_enemy_max_scores[idx]),
+                "score": float(episode_scores[idx]),
+            }
+        )
+
+    grouped_score = group_score_mean_variance_by_m_u(
+        scores=episode_scores,
+        m_values=episode_m,
+        u_values=episode_u,
+        m_key="M",
+        u_key="U",
+    )
+
+    score_summary = summarize(episode_scores).as_dict()
     return {
         "env_id": args.env_id,
         "episodes": int(args.episodes),
         "deterministic": bool(args.deterministic),
         "return": summarize(episode_returns).as_dict(),
-        "reward_components": {
-            "illegal_penalty": summarize(episode_illegal_penalties).as_dict(),
-            "terminal_score": summarize(episode_terminal_scores).as_dict(),
-            "terminal_score_ratio": summarize(episode_game_score_ratio).as_dict(),
-            "terminal_game_score": summarize(episode_terminal_game_scores).as_dict(),
-        },
-        "game_score": {
-            "ratio": summarize(episode_game_score_ratio).as_dict(),
-            "self_score": summarize(episode_game_score_self).as_dict(),
-            "enemy_max_score": summarize(episode_game_score_enemy_max).as_dict(),
-        },
+        "score": score_summary,
+        "terminal_game_score": score_summary,
+        "per_episode": per_episode,
+        "grouped_score": grouped_score,
         "model_path": str(args.model_path),
         "env_kwargs": env_kwargs,
         "model_meta": to_jsonable(model_meta),
@@ -149,6 +176,7 @@ def _run_eval(
         vecnorm_clip_reward=float(args.vecnorm_clip_reward),
         vecnorm_epsilon=float(args.vecnorm_epsilon),
         vecnorm_gamma=float(args.vecnorm_gamma),
+        collect_score_breakdown=True,
     )
 
     return _build_summary(
@@ -156,12 +184,11 @@ def _run_eval(
         env_kwargs=env_kwargs,
         model_meta=model_meta,
         episode_returns=stats.episode_returns,
-        episode_illegal_penalties=stats.episode_illegal_penalties,
-        episode_terminal_scores=stats.episode_terminal_scores,
-        episode_terminal_game_scores=stats.episode_terminal_game_scores,
-        episode_game_score_ratio=stats.episode_game_score_ratio,
-        episode_game_score_self=stats.episode_game_score_self,
-        episode_game_score_enemy_max=stats.episode_game_score_enemy_max,
+        episode_scores=stats.episode_terminal_game_scores,
+        episode_m=stats.episode_m,
+        episode_u=stats.episode_u,
+        episode_self_scores=stats.episode_game_score_self,
+        episode_enemy_max_scores=stats.episode_game_score_enemy_max,
     )
 
 
@@ -200,10 +227,7 @@ def _run(args: SimpleNamespace) -> int:
                         "output_json": str(args.output_json) if args.output_json is not None else "",
                         "report_json": str(report_path),
                         "mean_return": summary["return"]["mean"],
-                        "mean_illegal_penalty": summary["reward_components"]["illegal_penalty"]["mean"],
-                        "mean_terminal_score": summary["reward_components"]["terminal_score"]["mean"],
-                        "mean_terminal_game_score": summary["reward_components"]["terminal_game_score"]["mean"],
-                        "mean_game_score_ratio": summary["game_score"]["ratio"]["mean"],
+                        "mean_terminal_game_score": summary["terminal_game_score"]["mean"],
                     },
                     "timestamps": {"finished_at": time.time()},
                 },

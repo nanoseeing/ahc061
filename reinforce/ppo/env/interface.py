@@ -108,6 +108,8 @@ class BatchEnvProtocol(Protocol):
 
     def score_s0_sa(self) -> torch.Tensor: ...
 
+    def m_u(self) -> torch.Tensor: ...
+
 
 def ensure_batch_env(env: object) -> BatchEnvProtocol:
     if isinstance(env, BatchEnvProtocol):

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -28,10 +27,9 @@ class EpisodeStats:
     action_dim: int
     episode_returns: list[float]
     episode_lengths: list[int]
-    episode_illegal_penalties: list[float]
-    episode_terminal_scores: list[float]
     episode_terminal_game_scores: list[float]
-    episode_game_score_ratio: list[float]
+    episode_m: list[int]
+    episode_u: list[int]
     episode_game_score_self: list[float]
     episode_game_score_enemy_max: list[float]
 
@@ -74,6 +72,7 @@ def run_policy_episodes(
     on_transition: Callable[[Transition], None] | None = None,
     on_aux_transition: Callable[[AuxTransition], None] | None = None,
     on_episode_end: Callable[[int, float, int], None] | None = None,
+    collect_score_breakdown: bool = False,
 ) -> EpisodeStats:
     if str(env_id) != "AHC061Local-v0":
         raise ValueError(
@@ -144,10 +143,9 @@ def run_policy_episodes(
 
     ep_returns: list[float] = []
     ep_lengths: list[int] = []
-    ep_illegal_penalties: list[float] = []
-    ep_terminal_scores: list[float] = []
     ep_terminal_game_scores: list[float] = []
-    ep_game_score_ratio: list[float] = []
+    ep_m: list[int] = []
+    ep_u: list[int] = []
     ep_game_score_self: list[float] = []
     ep_game_score_enemy_max: list[float] = []
     rng = np.random.default_rng(int(seed))
@@ -160,6 +158,9 @@ def run_policy_episodes(
         for epi in range(int(episodes)):
             seed_t[0] = int(seed) + int(epi)
             env.reset_random(seed_t)
+            mu = env.m_u().to(dtype=torch.int64, device="cpu")
+            m_val = int(mu[0, 0].item())
+            u_val = int(mu[0, 1].item())
             env.observe_into(board, mask)
             if vecnorm is not None:
                 vecnorm.normalize_obs_inplace(board)
@@ -267,24 +268,18 @@ def run_policy_episodes(
                 if d:
                     break
 
-            score_pair = env.score_s0_sa().to(dtype=torch.float64, device="cpu")
-            s0 = float(score_pair[0, 0].item())
-            sa = float(score_pair[0, 1].item())
-            ratio = float("inf") if sa <= 0.0 else float(s0 / sa)
-            terminal_score = float(math.log2(max(1e-9, s0) / max(1e-9, sa)))
             terminal_game_score = float(env.official_score()[0].item())
 
             ep_returns.append(float(ep_ret))
             ep_lengths.append(int(ep_len))
-            # cpp env raises on illegal action; penalty component remains zero.
-            ep_illegal_penalties.append(0.0)
-            ep_terminal_scores.append(terminal_score)
             ep_terminal_game_scores.append(terminal_game_score)
-            if np.isfinite(ratio):
-                ep_game_score_ratio.append(float(ratio))
-            if np.isfinite(s0):
+            ep_m.append(int(m_val))
+            ep_u.append(int(u_val))
+            if bool(collect_score_breakdown):
+                score_pair = env.score_s0_sa().to(dtype=torch.float64, device="cpu")
+                s0 = float(score_pair[0, 0].item())
+                sa = float(score_pair[0, 1].item())
                 ep_game_score_self.append(float(s0))
-            if np.isfinite(sa):
                 ep_game_score_enemy_max.append(float(sa))
 
             if on_episode_end is not None:
@@ -298,10 +293,9 @@ def run_policy_episodes(
         action_dim=int(a),
         episode_returns=ep_returns,
         episode_lengths=ep_lengths,
-        episode_illegal_penalties=ep_illegal_penalties,
-        episode_terminal_scores=ep_terminal_scores,
         episode_terminal_game_scores=ep_terminal_game_scores,
-        episode_game_score_ratio=ep_game_score_ratio,
+        episode_m=ep_m,
+        episode_u=ep_u,
         episode_game_score_self=ep_game_score_self,
         episode_game_score_enemy_max=ep_game_score_enemy_max,
     )

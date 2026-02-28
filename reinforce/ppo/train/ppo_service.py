@@ -43,7 +43,7 @@ from ..utils.experiment import (
     update_manifest,
 )
 from ..utils.log_utils import get_logger
-from ..utils.metrics import summarize
+from ..utils.metrics import summarize, group_score_mean_variance_by_m_u
 from ..utils.runtime import choose_device as choose_runtime_device
 from ..game_constants import AUX_OPP_PARAM_TOTAL, OPP_SLOT_COUNT
 from .requests import PPORequest, TrainPPORequest, args_to_cfg, build_ppo_request
@@ -329,16 +329,19 @@ def _run_periodic_val(
         vecnorm_clip_reward=float(vecnorm_clip_reward),
         vecnorm_epsilon=float(vecnorm_epsilon),
         vecnorm_gamma=float(vecnorm_gamma),
+        collect_score_breakdown=False,
     )
     return {
         "episodes": int(episodes),
         "return": summarize(stats.episode_returns).as_dict(),
-        "illegal_penalty": summarize(stats.episode_illegal_penalties).as_dict(),
-        "terminal_score": summarize(stats.episode_terminal_scores).as_dict(),
         "terminal_game_score": summarize(stats.episode_terminal_game_scores).as_dict(),
-        "game_score_ratio": summarize(stats.episode_game_score_ratio).as_dict(),
-        "game_score_self": summarize(stats.episode_game_score_self).as_dict(),
-        "game_score_enemy_max": summarize(stats.episode_game_score_enemy_max).as_dict(),
+        "terminal_game_score_grouped": group_score_mean_variance_by_m_u(
+            scores=stats.episode_terminal_game_scores,
+            m_values=stats.episode_m,
+            u_values=stats.episode_u,
+            m_key="m",
+            u_key="u",
+        ),
     }
 
 
@@ -1386,10 +1389,16 @@ class PPORunner:
             }
             _append_jsonl(self.periodic_val_jsonl, eval_row)
             row["periodic_val_mean_return"] = float(eval_summary["return"]["mean"])
-            row["periodic_val_mean_illegal_penalty"] = float(eval_summary["illegal_penalty"]["mean"])
-            row["periodic_val_mean_terminal_score"] = float(eval_summary["terminal_score"]["mean"])
+            row["periodic_val_episodes"] = int(eval_summary["episodes"])
             row["periodic_val_mean_terminal_game_score"] = float(eval_summary["terminal_game_score"]["mean"])
-            row["periodic_val_mean_game_score_ratio"] = float(eval_summary["game_score_ratio"]["mean"])
+            logger.info(
+                "periodic_val step=%d round=%d episodes=%d return=%.5f game_score=%.2f",
+                int(self.global_step),
+                int(self.eval_round),
+                int(eval_summary["episodes"]),
+                float(eval_summary["return"]["mean"]),
+                float(eval_summary["terminal_game_score"]["mean"]),
+            )
             cand = float(eval_summary["terminal_game_score"]["mean"])
             if np.isfinite(cand) and cand > self.best_metric_value:
                 self.best_metric_value = float(cand)

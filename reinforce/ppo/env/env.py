@@ -170,6 +170,9 @@ class BatchEnv:
     def score_s0_sa(self) -> torch.Tensor:
         return self._env.score_s0_sa()
 
+    def m_u(self) -> torch.Tensor:
+        return self._env.m_u()
+
 
 def tools_input_paths(seed_begin: int, seed_end: int) -> list[str]:
     repo_root = Path(__file__).resolve().parents[5]
